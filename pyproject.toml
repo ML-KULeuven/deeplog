@@ -1,0 +1,158 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["deeplog*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+"deeplog" = ["**/*.pl"]
+
+[project]
+name = "pydeeplog"
+version = "3.0.1"
+dependencies = [
+    "torch >=2.4,<3",
+    "pysdd >=1.0,<2",
+    "numpy >=2.4.0,<3",
+    "klaycircuits >=0.0.3,<0.1",
+    "lark >=1.0,<2",
+]
+requires-python = ">= 3.12"
+readme = "README.md"
+description = "An operational framework for building neurosymbolic (NeSy) systems on top of PyTorch."
+authors = [
+    { name = "KU Leuven" },
+]
+license = { text = "LGPL-2.1-only" }
+keywords = [
+    "neurosymbolic",
+    "nesy",
+    "deep learning",
+    "logic",
+    "probabilistic logic",
+    "knowledge compilation",
+    "differentiable reasoning",
+    "pytorch",
+    "deepproblog",
+    "semantic loss",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Lesser General Public License v2 (LGPLv2)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/ML-KULeuven/deeplog"
+Documentation = "https://ml-kuleuven.github.io/deeplog/"
+Repository = "https://github.com/ML-KULeuven/deeplog"
+Source = "https://github.com/ML-KULeuven/deeplog"
+Issues = "https://github.com/ML-KULeuven/deeplog/issues"
+Changelog = "https://github.com/ML-KULeuven/deeplog/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+examples = [
+    "pytorch-lightning",
+    "torchvision",
+    "torchmetrics",
+    "notebook",
+    "graphviz",
+]
+janus_engine = ["janus_swi"]
+tests = [
+    "pytest",
+    "pytest-xdist",
+    "coverage",
+    "pytest-cov",
+    "nbmake",
+    "pytorch-lightning",
+    "torchvision",
+    "torchmetrics",
+    "graphviz",
+]
+site = [
+    "sphinx",
+    "sphinx-autoapi",
+    "pydata-sphinx-theme==0.16.1",
+    "myst-nb",
+    "sphinx-design==0.6.1",
+    "sphinx-copybutton",
+    "nbconvert",
+    "ipykernel",
+    "pytorch-lightning",
+    "torchvision",
+    "torchmetrics",
+    "graphviz",
+]
+dev = [
+    "nbstripout",
+    "ruff",
+    "pyright",
+    "pytest",
+    "pytest-xdist",
+    "pytest-cov",
+    "nbmake",
+    "build",
+    "twine",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+lint.select = ["E", "F", "W", "I", "D1", "B", "UP", "S", "CPY001"]
+lint.ignore = ["E501", "S101"]
+lint.preview = true
+lint.explicit-preview-rules = true
+extend-exclude = ["examples/**/*.ipynb"]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+lines-after-imports = 2
+known-first-party = ["deeplog"]
+
+[tool.ruff.lint.flake8-copyright]
+notice-rgx = "(?i)Copyright \\(c\\) \\d{4}(-\\d{4})?\\. KU Leuven"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["D100", "D101", "D102", "D103", "D104", "D107", "CPY001"]
+"conftest.py" = ["CPY001"]
+"site/source/conf.py" = ["CPY001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "examples"]
+addopts = ["--nbmake", "--nbmake-timeout=120"]
+
+[tool.coverage.report]
+# Don't count imports that only exist for static type checkers — they never
+# execute at runtime.
+exclude_also = ["if TYPE_CHECKING:"]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+reportMissingImports = false
+# torch's top-level package doesn't list most of its public API in __all__,
+# so pyright flags well-known names (torch.zeros, torch.tensor, torch.float32, …)
+# as private. Silence this project-wide rather than per-line.
+reportPrivateImportUsage = false
+# Stable, correctness-critical modules are type-checked in strict mode.
+# Everything else stays in basic. Expand this list as modules stabilize;
+# avoid strict on dynamic code (Prolog interop, torch-heavy internals).
+strict = [
+    "src/deeplog/symbol.py",
+    "src/deeplog/circuit/__init__.py",
+    "src/deeplog/circuit/circuit.py",
+    # circuit/generic.py was previously strict but constructs torch tensors,
+    # so strict mode re-enables reportPrivateImportUsage and trips on
+    # torch.zeros/torch.ones/torch.float32/… (torch's stubs don't re-export
+    # those at the top level). Demoted back to basic. Same applies to
+    # shape.py (torch tensor construction) and util.py (broadcast_tensors).
+    "src/deeplog/circuit/graph.py",
+    "src/deeplog/circuit/transform.py",
+]

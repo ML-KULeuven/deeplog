@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/ML-KULeuven/deeplog/discussions
+    about: Ask a question or start a design discussion (please search existing threads first).
+  - name: Security vulnerability
+    url: https://github.com/ML-KULeuven/deeplog/security/advisories/new
+    about: Report a security issue privately. Do NOT open a public issue.

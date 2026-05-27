@@ -1,0 +1,40 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "DeepLog"
+authors:
+  - family-names: Manhaeve
+    given-names: Robin
+  - family-names: Colamonaco
+    given-names: Stefano
+  - family-names: Derkinderen
+    given-names: Vincent
+  - family-names: Adriaensen
+    given-names: Rik
+  - family-names: Van Praet
+    given-names: Lucas
+  - family-names: De Raedt
+    given-names: Luc
+  - family-names: Marra
+    given-names: Giuseppe
+preferred-citation:
+  type: article
+  title: "DeepLog: An Operational Neurosymbolic Framework"
+  authors:
+    - family-names: Manhaeve
+      given-names: Robin
+    - family-names: Colamonaco
+      given-names: Stefano
+    - family-names: Derkinderen
+      given-names: Vincent
+    - family-names: Adriaensen
+      given-names: Rik
+    - family-names: Van Praet
+      given-names: Lucas
+    - family-names: De Raedt
+      given-names: Luc
+    - family-names: Marra
+      given-names: Giuseppe
+  year: 2026
+  url: "https://arxiv.org/abs/2605.10279"
+  doi: "10.48550/arXiv.2605.10279"
+  notes: "Preprint accepted at IJCAI2026 Demo Track"

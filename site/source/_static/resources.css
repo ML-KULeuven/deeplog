@@ -1,0 +1,291 @@
+:root {
+    --dl-font-stack: "Inter", "Space Grotesk", "Work Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --dl-card-radius: 18px;
+}
+
+body:not(.homepage) .bd-article {
+    font-family: var(--dl-font-stack);
+    color: var(--dl-color-text);
+}
+
+.dl-section {
+    border-radius: var(--dl-card-radius);
+    padding: 1rem clamp(1rem, 3vw, 2.5rem) 1.25rem;
+    margin: 0.9rem 0;
+    background: var(--dl-color-section);
+    border: 1px solid rgba(7, 55, 99, 0.08);
+    box-shadow: 0 20px 60px rgba(7, 55, 99, 0.07);
+}
+
+.dl-section.docutils.container,
+.docutils.container.dl-section {
+    padding: 1rem clamp(1rem, 3vw, 2.5rem) 1.35rem !important;
+}
+
+#tutorial .dl-section.docutils.container,
+#tutorial .docutils.container.dl-section {
+    padding: 0.65rem clamp(0.65rem, 2.2vw, 1.6rem) 1.05rem !important;
+}
+
+html[data-theme="dark"] .dl-section {
+    background: var(--dl-color-section);
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.65);
+}
+
+.dl-section--hero,
+.dl-section-hero {
+    background: var(--dl-color-surface-alt);
+    color: var(--dl-color-text);
+    border: 1px solid rgba(7, 55, 99, 0.08);
+    box-shadow: 0 8px 24px rgba(7, 55, 99, 0.08);
+}
+
+html[data-theme="dark"] .dl-section--hero,
+html[data-theme="dark"] .dl-section-hero {
+    background: var(--dl-color-surface-alt);
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65);
+}
+
+.dl-section--hero::after,
+.dl-section-hero::after,
+.dl-section--hero::before,
+.dl-section-hero::before {
+    display: none;
+}
+
+.dl-section--hero > *,
+.dl-section-hero > * {
+    position: relative;
+    z-index: 1;
+}
+
+.dl-section__eyebrow,
+.dl-section-eyebrow {
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    font-size: 0.76rem;
+    margin-bottom: 0.25rem;
+    opacity: 0.8;
+    color: var(--dl-color-primary);
+}
+
+.dl-section__title,
+.dl-section-title {
+    font-family: "Space Grotesk", var(--dl-font-stack);
+    font-size: clamp(2rem, 4.5vw, 3.1rem);
+    margin: 0 0 0.65rem;
+    line-height: 1.1;
+}
+
+.dl-section__lead,
+.dl-section-lead {
+    font-size: 1rem;
+    line-height: 1.55;
+    max-width: 720px;
+    margin: 0 0 1.1rem;
+}
+
+.dl-install-tabs .sd-tab-set {
+    border-radius: var(--dl-card-radius);
+    border: 1px solid rgba(7, 55, 99, 0.1);
+    box-shadow: 0 16px 36px rgba(7, 55, 99, 0.08);
+}
+
+.dl-cta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1rem;
+    margin-top: 1.2rem;
+}
+
+.dl-card {
+    background: var(--dl-color-surface);
+    border-radius: var(--dl-card-radius);
+    padding: 1.1rem 1.05rem;
+    border: 1px solid rgba(7, 55, 99, 0.08);
+    box-shadow: 0 10px 30px rgba(7, 55, 99, 0.08);
+}
+
+.dl-card-tutorial,
+.dl-card--tutorial {
+    padding: 1rem 0.9rem;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+/* Ensure the tutorial hero cards stay flat (override sphinx-design defaults) */
+.sd-card.dl-card-tutorial,
+.sd-card.dl-card--tutorial {
+    background-color: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+}
+
+.dl-card-tutorial .sd-card-body,
+.dl-card--tutorial .sd-card-body {
+    padding: 0;
+}
+
+.dl-card h3 {
+    margin-top: 0;
+    font-size: 1.05rem;
+}
+
+.dl-card--tutorial h3,
+.dl-card-tutorial .sd-card-title,
+.dl-card--tutorial .sd-card-title {
+    font-size: 1.25rem;
+    font-weight: 750;
+    color: var(--dl-color-primary);
+    letter-spacing: -0.01em;
+}
+
+.dl-card__summary {
+    margin-bottom: 0.8rem;
+    line-height: 1.45;
+}
+
+.dl-card__cta {
+    font-weight: 600;
+    text-decoration: none;
+    color: var(--dl-color-primary);
+}
+
+.dl-card__cta::after {
+    content: "↗";
+    margin-left: 0.3rem;
+}
+
+/* Tutorial hero cards: keep gradients on the cards themselves */
+.tutorial-hero-grid .sd-card.dl-card-tutorial {
+    background: var(--dl-color-surface);
+    border-radius: var(--dl-card-radius);
+    border: 1px solid rgba(7, 55, 99, 0.08);
+    box-shadow: 0 10px 30px rgba(7, 55, 99, 0.08);
+}
+
+.tutorial-hero-grid .sd-col:nth-child(1) > .sd-card.dl-card-tutorial {
+    background: linear-gradient(135deg, rgba(82, 189, 236, 0.16), rgba(221, 138, 46, 0.12)), var(--dl-color-surface);
+}
+
+.tutorial-hero-grid .sd-col:nth-child(2) > .sd-card.dl-card-tutorial {
+    background: linear-gradient(135deg, rgba(0, 64, 122, 0.12), rgba(82, 189, 236, 0.12)), var(--dl-color-surface);
+}
+
+.tutorial-hero-grid .sd-card.dl-card-tutorial .sd-card-body {
+    background: transparent !important;
+}
+
+html[data-theme="dark"] .tutorial-hero-grid .sd-card.dl-card-tutorial {
+    border-color: rgba(255, 255, 255, 0.12);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+
+html[data-theme="dark"] .tutorial-hero-grid .sd-col:nth-child(1) > .sd-card.dl-card-tutorial {
+    background: linear-gradient(135deg, rgba(111, 195, 255, 0.22), rgba(221, 138, 46, 0.18)), var(--dl-color-surface-alt);
+}
+
+html[data-theme="dark"] .tutorial-hero-grid .sd-col:nth-child(2) > .sd-card.dl-card-tutorial {
+    background: linear-gradient(135deg, rgba(0, 64, 122, 0.2), rgba(82, 189, 236, 0.2)), var(--dl-color-surface-alt);
+}
+
+.dl-card--ghost {
+    background: transparent;
+    border-style: dashed;
+}
+
+.dl-resources-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.2rem;
+    margin-top: 1.4rem;
+}
+
+.dl-resource-card {
+    padding: 1.4rem;
+    background: var(--dl-color-surface);
+    border-radius: var(--dl-card-radius);
+    border: 1px solid rgba(7, 55, 99, 0.08);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-height: 220px;
+    box-shadow: 0 10px 35px rgba(7, 55, 99, 0.08);
+}
+
+.dl-resource-card.docutils.container,
+.docutils.container.dl-resource-card {
+    padding: 1.4rem !important;
+}
+
+.dl-resource-card p {
+    margin: 0.4rem 0 0;
+    line-height: 1.4;
+}
+
+.dl-resource-card footer {
+    margin-top: 1.2rem;
+}
+
+.dl-cta-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.55rem 1.2rem;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    font-weight: 600;
+    text-decoration: none;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    background: var(--dl-color-primary);
+    color: #fff;
+    box-shadow: 0 10px 24px rgba(7, 55, 99, 0.25);
+}
+
+.dl-cta-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 16px 32px rgba(7, 55, 99, 0.28);
+}
+
+.dl-cta-button--ghost {
+    background: transparent;
+    color: var(--dl-color-primary);
+    border-color: currentColor;
+    box-shadow: none;
+}
+
+.dl-thumb {
+    border-radius: 16px;
+    width: 100%;
+    height: auto;
+    border: 1px solid rgba(7, 55, 99, 0.15);
+    box-shadow: 0 12px 28px rgba(7, 55, 99, 0.12);
+}
+
+.dl-seealso {
+    margin-top: 2rem;
+    border-top: 1px solid rgba(7, 55, 99, 0.12);
+    padding-top: 1rem;
+}
+
+.dl-seealso ul {
+    margin: 0.3rem 0 0;
+}
+
+.dl-seealso li {
+    list-style: none;
+    margin-bottom: 0.2rem;
+}
+
+@media (max-width: 720px) {
+    .dl-section {
+        padding: 1.4rem;
+    }
+
+    .dl-section__title {
+        font-size: 1.8rem;
+    }
+}

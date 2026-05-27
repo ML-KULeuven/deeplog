@@ -1,0 +1,8 @@
+sphinx
+sphinx-autoapi
+sphinx-multiversion
+pydata-sphinx-theme==0.16.1
+myst-nb
+sphinx-design==0.6.1
+sphinx-copybutton
+jupyter-sphinx
