@@ -12,7 +12,7 @@ namespaces = false
 
 [project]
 name = "pydeeplog"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
     "torch >=2.4,<3",
     "pysdd >=1.0,<2",

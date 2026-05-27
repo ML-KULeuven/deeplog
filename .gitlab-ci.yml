@@ -124,6 +124,8 @@ mirror_github_release:
         echo "Refusing to mirror: tag $CI_COMMIT_TAG is not at the tip of $CI_DEFAULT_BRANCH."
         exit 1
       fi
+    - git config user.email "gitlab-ci@kuleuven.be"
+    - git config user.name "GitLab CI"
     - git remote add github "https://x-access-token:${GITHUB_MIRROR_TOKEN}@github.com/${GITHUB_MIRROR_REPOSITORY}.git"
     # Fetch GitHub's current state so we can parent the squashed commit onto it.
     - git fetch github "$CI_DEFAULT_BRANCH" || true
@@ -187,12 +189,12 @@ deploy_static_site:
   variables:
     NB_EXECUTION_TIMEOUT: "600"
     DOCS_BASE_URL: "https://dtai.cs.kuleuven.be/deeplog"
-    SMV_TAG_WHITELIST: "^v3\\.0\\.1$"
+    SMV_TAG_WHITELIST: "^v3\\.0\\.2$"
     SMV_BRANCH_WHITELIST: "^$"
     SMV_REMOTE_WHITELIST: "^origin$"
     SMV_RELEASED_PATTERN: "^tags/.*$"
     SMV_OUTPUTDIR_FORMAT: "{ref.name}"
-    SMV_ROOT_REF: "v3.0.1"
+    SMV_ROOT_REF: "v3.0.2"
     SMV_PREFER_REMOTE_REFS: "true"
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+([-.].+)?$/'
