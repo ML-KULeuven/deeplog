@@ -46,7 +46,7 @@ Getting started
 
          .. code-block:: console
 
-            git clone https://gitlab.kuleuven.be/dtai/deeplog/deeplog.git
+            git clone https://github.com/ML-KULeuven/deeplog.git
             cd deeplog
             pip install -e ".[tests,examples]"
 

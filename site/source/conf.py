@@ -144,7 +144,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/ml-kuleuven/deeplog",
+            "url": "https://github.com/ML-KULeuven/deeplog",
             "icon": "fa-brands fa-github",
             "type": "fontawesome",
         },

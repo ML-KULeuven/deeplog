@@ -84,31 +84,12 @@ test_notebooks:
       - examples/$NOTEBOOK/
 
 
-deploy_package:
-  rules:
-    - if: '$CI_COMMIT_TAG'
-      when: on_success
-    - when: never
-  allow_failure: true
-  needs:
-    - job: test_code
-      optional: true
-  variables:
-    TWINE_USERNAME: gitlab-ci-token
-    TWINE_PASSWORD: $CI_JOB_TOKEN
-  script:
-    - python3 -m build
-    - python3 -m twine upload --repository-url ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi dist/*
-
-
 mirror_github_release:
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+([-.].+)?$/'
       when: on_success
     - when: never
   needs:
-    - job: deploy_package
-      optional: true
     - job: deploy_static_site
       optional: true
   script:

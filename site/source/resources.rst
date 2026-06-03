@@ -174,7 +174,7 @@ Engines & tooling
 
    - :doc:`getstarted` ‒ installation, extras, and a hello-world snippet.
    - :doc:`tutorial` ‒ guided notebooks that reference the resources above.
-   - `GitHub Discussions <https://github.com/ml-kuleuven/deeplog/discussions>`_ ‒ share papers or links that should be added to this page.
+   - `GitHub Discussions <https://github.com/ML-KULeuven/deeplog/discussions>`_ ‒ share papers or links that should be added to this page.
 
 .. toctree::
    :hidden:

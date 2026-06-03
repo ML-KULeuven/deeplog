@@ -2,6 +2,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/ML-KULeuven/deeplog?display_name=tag)](https://github.com/ML-KULeuven/deeplog/releases)
 [![PyPI version](https://img.shields.io/pypi/v/pydeeplog)](https://pypi.org/project/pydeeplog/)
 [![License](https://img.shields.io/github/license/ML-KULeuven/deeplog)](LICENSE)
+[![DOI](https://zenodo.org/badge/901879738.svg)](https://doi.org/10.5281/zenodo.20408413)
 
 DeepLog is an operational framework for building neurosymbolic (NeSy) systems. Instead of presenting a monolithic stack, DeepLog provides high-performance building blocks that plug directly into PyTorch-first workflows so you can compose differentiable learning and symbolic reasoning with predictable interfaces.
 
@@ -65,17 +66,18 @@ The same image definition is used in CI. For local validation, build it with the
 
 ```python
 import torch
-from deeplog import SymTensor, TransformationModule, parse_symbol
+from deeplog import SymTensor, WrappedModule, parse_symbol
 
-# Declare a symbolic batch of two digits and map real-valued logits to probabilities.
+# Wrap a plain PyTorch head with symbolic input/output shapes so DeepLog can
+# validate every tensor that flows through it.
 digits = SymTensor([parse_symbol("digit_a"), parse_symbol("digit_b")])
-sigmoid_head = TransformationModule(digits, "real", "probability")
+sigmoid_head = WrappedModule(torch.nn.Sigmoid(), digits, digits, name="sigmoid_head")
 
 print(sigmoid_head(torch.tensor([[1.0, -2.0]])))
 # tensor([[0.7311, 0.1192]])
 ```
 
-`TransformationModule` validates tensor shapes against the symbolic specification, so interface mismatches surface as Python errors instead of silent shape bugs when you wire modules into larger reasoning pipelines.
+`WrappedModule` validates tensor shapes against the symbolic specification, so interface mismatches surface as Python errors instead of silent shape bugs when you wire modules into larger reasoning pipelines.
 
 For a taste of the symbolic side, compile a logical formula straight into a differentiable module:
 
