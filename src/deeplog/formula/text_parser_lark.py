@@ -44,9 +44,15 @@ grouped: "(" deeplogfactory ")"
 transformation: grouped STRUCT_SUFFIX
 leaf: SYMBOL STRUCT_SUFFIX
 
-SYMBOL: /[^_()\s]+(\([^\)]+\))?/
+// SYMBOL/STRUCT_SUFFIX outrank the generic IDENT so a bare-atom leaf such as
+// `x2_fuzzy` is lexed as SYMBOL `x2` + STRUCT_SUFFIX `_fuzzy`, not as the single
+// operator IDENT `x2_fuzzy`. A leaf always ends in a `_<struct>` suffix and an
+// operator/aggregation/binder IDENT never does, so this only resolves the
+// genuinely-ambiguous leaf-vs-operator cases (previously the Earley dynamic
+// lexer could read a leaf in operator position -> "Unknown operator 'x2_fuzzy'").
+SYMBOL.2: /[^_()\s]+(\([^\)]+\))?/
+STRUCT_SUFFIX.2: /_[A-Za-z_][A-Za-z0-9_]*/
 IDENT: /[A-Za-z_][A-Za-z0-9_]*/
-STRUCT_SUFFIX: /_[A-Za-z_][A-Za-z0-9_]*/
 """
 
 _STRUCTURE_ALIASES = {

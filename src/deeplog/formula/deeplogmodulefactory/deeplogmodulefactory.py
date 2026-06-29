@@ -160,7 +160,12 @@ class DeepLogModuleFactory(DeepLogFormulaFactory[InternalNode]):
         predicate, arguments = self._decode_leaf(atom)
         builder = self._atom_builders.get(predicate)
         if builder is None:
-            return InputLeafNode(predicate, arguments)
+            # A bare leaf may turn out to be the whole formula; hand it the
+            # circuit builder for its structure so it can compile on its own
+            # (identity for a variable leaf, constant for a numeric symbol).
+            return InputLeafNode(
+                predicate, arguments, self._circuit_builders[predicate[2]]
+            )
         return BuilderLeafNode(predicate, arguments, builder)
 
     def build_modules_for_leaves(

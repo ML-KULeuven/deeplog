@@ -16,6 +16,7 @@ from functools import partial
 import torch
 
 from ...algebraic import HasStructure
+from ...circuit import Circuit
 from ...circuit import CircuitNode
 from ...module import DeepLogModule
 from ...module import SupportsToModule
@@ -24,8 +25,6 @@ from ...shape import Shape
 from ...shape import map_shape
 from ...symbol import Symbol
 from ...symbol import with_structure
-from ..distribution import build_leaf_mapping
-from ..distribution import factorize
 from .builder_protocols import AtomBuilder
 from .builder_protocols import InternalNode
 
@@ -59,14 +58,34 @@ class BuilderLeafNode(AtomLeafNode):
 
 @dataclass
 class InputLeafNode(AtomLeafNode):
-    """Atom leaf with no builder; its circuit leaf name becomes a module input."""
+    """Atom leaf with no builder; its circuit leaf name becomes a module input.
+
+    Holds the structure's circuit builder so a leaf that ends up being the
+    *whole* formula can still be compiled (see :meth:`to_module`).
+    """
+
+    circuit_builder: Callable[[], Circuit]
 
     def to_module(self) -> DeepLogModule:
-        """Raise: input leaves have no sub-module (their name is a module input)."""
-        raise RuntimeError(
-            f"{self.predicate} has no atom builder; it is a module input, "
-            f"not a sub-module."
+        """Compile a bare leaf-only formula by wrapping it in a one-node circuit.
+
+        When the leaf is combined with operators it is absorbed as a circuit
+        input instead (see ``_ensure_circuit_node``), so this path runs only
+        when the leaf is the entire formula. Building a single-node circuit and
+        compiling it reuses the standard backends and keeps the degenerate
+        cases on the circuit side: a variable leaf compiles to an identity
+        (pass-through) over its one symbol, while a numeric symbol (e.g.
+        ``0_fuzzy``) is resolved by the structure's ``constant_fn`` into a
+        constant node and compiles to a constant module.
+        """
+        circuit = self.circuit_builder()
+        leaf_symbol: Symbol = (
+            "_",
+            (self.predicate[0], *self.arguments),
+            (self.predicate[2],),
         )
+        node = circuit.get_leaf_node(leaf_symbol)
+        return circuit.to_module({node: leaf_symbol})
 
 
 @dataclass
@@ -144,10 +163,10 @@ def build_expectation(
 ) -> InternalNode:
     """Build an :class:`ExpectationNode` from a boolean circuit child.
 
-    With no params, leaves are tag-rewritten from boolean to probability via
-    :func:`with_structure`. With one probability-formula param, leaves are
-    matched by argument overlap via
-    :func:`~deeplog.formula.distribution.build_leaf_mapping`.
+    Leaves are tag-rewritten from boolean to probability via
+    :func:`with_structure`. The compile pipeline overrides this default mapping
+    with one derived from the engine's atom labels (see
+    :func:`~deeplog.formula.distribution.build_leaf_mapping`).
     """
     if (
         not isinstance(child, CompositeCircuitNode)
@@ -157,23 +176,13 @@ def build_expectation(
             "Expectation currently only supports boolean circuit children."
         )
 
-    if len(params) > 1:
+    if params:
         raise ValueError(
-            "Expectation accepts at most one probability formula parameter."
+            "Expectation does not accept probability-formula parameters; "
+            "the boolean-to-probability leaf mapping is built from atom labels."
         )
 
-    if not params:
-        leaf_mapping = partial(with_structure, structure="probability")
-    else:
-        prob_formula = params[0]
-        if not isinstance(prob_formula, CompositeCircuitNode):
-            raise ValueError("Probability parameter must be a probability circuit.")
-        probability_leaves = factorize(
-            prob_formula.root.circuit, prob_formula.root.node
-        )
-        boolean_leaves = list(child.root.circuit.leaf_nodes.keys())
-        leaf_mapping = build_leaf_mapping(boolean_leaves, probability_leaves)
-
+    leaf_mapping = partial(with_structure, structure="probability")
     return ExpectationNode(child, leaf_mapping)
 
 

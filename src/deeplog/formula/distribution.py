@@ -1,142 +1,67 @@
 #  Copyright (c) 2024-2026. KU Leuven
-"""Probability distribution helpers for DeepLog formulas.
+"""Leaf mapping from boolean atoms to their probability labels.
 
-This module builds factorized probability distributions from labeled atoms,
-verifies that probability circuits are fully factorized, and maps boolean
-leaves to matching probability leaves by argument overlap.
+DeepProbLog annotates logical atoms with probability labels (``p :: a`` or a
+neural ``nn(...) :: a``). When a boolean proof formula is lowered to the
+probability semiring, every boolean leaf must be rewritten to the probability
+atom that supplies its value. This module builds that rewrite directly from the
+engine's ``labels`` map, so atoms that happen to share arguments stay
+unambiguous.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
 
-from ..circuit.circuit import Circuit
+from ..algebraic import get_algebraic_structure
 from ..symbol import Symbol
-from ..symbol import get_args
-from ..symbol import unwrap_structure
-
-
-if TYPE_CHECKING:
-    from .deeplogmodulefactory import DeepLogModuleFactory
-    from .deeplogmodulefactory.builder_protocols import InternalNode
-
-
-def build_probability_distribution(
-    labels: Mapping[Symbol, Symbol],
-    factory: DeepLogModuleFactory,
-) -> InternalNode | None:
-    """Build a factorized probability circuit from atom labels.
-
-    Creates a probability atom for each unique labeled atom and combines
-    them with ``times`` (fully factorized distribution).
-
-    Args:
-        labels: Maps boolean atoms to their probability label atoms.
-        factory: The module factory used to create circuit nodes.
-
-    Returns:
-        A circuit node representing the factorized probability distribution,
-        or ``None`` if no labels are provided.
-    """
-    from .deeplogmodulefactory.nodes import CompositeCircuitNode
-
-    prob_atoms = set(labels.values())
-    if not prob_atoms:
-        return None
-
-    prob_nodes: list[InternalNode] = []
-    for atom in sorted(prob_atoms, key=str):
-        sym = ("_", atom, ("probability",))
-        prob_nodes.append(factory.create_atom(sym))
-
-    result = prob_nodes[0]
-    for node in prob_nodes[1:]:
-        result = factory.create_binary_node("times", result, node)
-
-    # Ensure the result is a circuit node even with a single atom, so that
-    # downstream consumers (e.g. _build_expectation) can access .circuit / .node.
-    if not isinstance(result, CompositeCircuitNode):
-        circuit = factory._get_circuit("probability")
-        result = factory._ensure_circuit_node(result, circuit)
-
-    return result
-
-
-def factorize(circuit: Circuit, root: int) -> list[Symbol]:
-    """Verify a probability circuit is fully factorized and return its leaf symbols.
-
-    A fully factorized distribution is a product of independent terms,
-    meaning every operator node in the circuit is ``times``.
-
-    Args:
-        circuit: The probability circuit to check.
-        root: The root node ID.
-
-    Returns:
-        A flat list of leaf symbols from the circuit.
-
-    Raises:
-        ValueError: If the circuit contains non-product operators.
-    """
-    for node_id in circuit.iter_topological([root]):
-        node = circuit.get_node(node_id)
-        if node.node_type in ("leaf", "zero", "one", "constant"):
-            continue
-        if node.node_type != "times":
-            raise ValueError(
-                f"Probability formula is not fully factorized: "
-                f"found operator '{node.node_type}' (expected only 'times')."
-            )
-    return list(circuit.leaf_nodes.keys())
+from ..symbol import is_structure_wrapped
+from ..symbol import with_structure
 
 
 def build_leaf_mapping(
-    boolean_leaves: list[Symbol],
-    probability_leaves: list[Symbol],
+    labels: Mapping[Symbol, Symbol],
 ) -> Callable[[Symbol], Symbol]:
-    """Build a leaf mapping from boolean to probability symbols by argument overlap.
+    """Build a boolean-to-probability leaf mapping directly from atom labels.
 
-    For each boolean leaf symbol, finds the probability leaf whose arguments
-    match. Boolean atoms with no match are mapped to the constant ``("1",)``
-    (deterministic, always true).
+    ``labels`` maps each labeled boolean atom (e.g. ``("a", ("x1",))``) to its
+    probability label atom (e.g. ``("nn1", ("x1",))``). The returned callable
+    rewrites a structure-wrapped boolean leaf to its matching probability leaf.
+    Leaves without an atom label are retagged to the probability structure
+    unchanged (they become probability inputs or builder-backed leaves);
+    symbols that are not structure-wrapped pass through untouched.
+
+    Constructing the mapping straight from ``labels`` keeps it unambiguous even
+    when distinct atoms share arguments — e.g. ``a(x1)`` and ``b(x1)`` labeled
+    by ``nn1(x1)`` and ``nn2(x1)`` — which a by-arguments heuristic cannot
+    resolve because both the boolean atoms and their labels collide on
+    arguments alone.
+
+    Numeric-constant labels (e.g. ``0.6 :: fact``) are skipped: they would fold
+    to a constant node, which the deterministic knowledge-compilation backend
+    cannot represent. Such leaves are carried into the probability structure as
+    inputs instead; baking numeric facts into the AC is handled separately by
+    the categorical/MV-SDD path.
 
     Args:
-        boolean_leaves: Structure-wrapped leaf symbols from the boolean circuit.
-        probability_leaves: Structure-wrapped leaf symbols from the factorized
-            probability circuit.
+        labels: Maps boolean atoms to their probability label atoms.
 
     Returns:
         A callable mapping boolean leaf symbols to probability leaf symbols.
-
-    Raises:
-        ValueError: If multiple probability atoms share the same arguments,
-            or if a leaf symbol is not structure-wrapped.
     """
-    # Index probability leaves by their arguments
-    args_to_prob: dict[tuple[Symbol, ...], Symbol] = {}
-    for sym in probability_leaves:
-        args = get_args(unwrap_structure(sym))
-        if not args:
-            continue
-        if args in args_to_prob:
-            raise ValueError(
-                f"Ambiguous probability mapping: multiple probability atoms "
-                f"share arguments {args}."
-            )
-        args_to_prob[args] = sym
-
-    # Build the mapping for boolean leaves
-    mapping: dict[Symbol, Symbol] = {}
-    for sym in boolean_leaves:
-        args = get_args(unwrap_structure(sym))
-        if args and args in args_to_prob:
-            mapping[sym] = args_to_prob[args]
-        else:
-            mapping[sym] = ("1",)
+    probability = get_algebraic_structure("probability")
+    mapping: dict[Symbol, Symbol] = {
+        with_structure(bool_atom, "boolean"): with_structure(prob_atom, "probability")
+        for bool_atom, prob_atom in labels.items()
+        if probability.get_constant_value(prob_atom) is None
+    }
 
     def leaf_mapping(sym: Symbol) -> Symbol:
-        return mapping.get(sym, sym)
+        if sym in mapping:
+            return mapping[sym]
+        if is_structure_wrapped(sym):
+            return with_structure(sym, "probability")
+        return sym
 
     return leaf_mapping

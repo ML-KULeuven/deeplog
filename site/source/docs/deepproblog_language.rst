@@ -182,8 +182,9 @@ compilation module turns it into a single differentiable
 :func:`~deeplog.systems.deepproblog.compile_to_module` performs the full
 pipeline in one call:
 
-1. Builds a factorized probability distribution from the engine's atom labels
-   internally.
+1. Builds a boolean-to-probability leaf mapping directly from the engine's
+   atom labels, so each proof leaf is rewritten to the probability atom that
+   supplies its value.
 2. Creates an ``expectation`` aggregation for each formula in the result, which
    transforms the boolean proof circuit to the probability semiring (see
    :doc:`../deeplog_circuits`).

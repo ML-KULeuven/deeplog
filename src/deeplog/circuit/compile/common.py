@@ -84,9 +84,24 @@ def walk_and_combine(
 
 
 def _is_klay_compatible(circuit: Circuit) -> bool:
-    """Return True if all operators in the circuit's structure are Klay-supported."""
+    """Return True if the circuit can be compiled by the Klay/semiring fast path.
+
+    The Klay backend evaluates ``and``/``or``/``not`` (and their semiring
+    aliases) via a fixed semiring; it does not consult the structure's
+    ``operator_fns``. So a plain :class:`AlgebraicStructure` carrying custom
+    operator functions (e.g. a fuzzy ``or`` of ``a + b - a*b``) must NOT take
+    this path — otherwise its ``operator_fns`` would be silently replaced by
+    the semiring sum/product. Only genuine :class:`Semiring`/:class:`Algebra`
+    structures (BOOLEAN/PROBABILITY/LOGPROBABILITY and friends), whose
+    semantics match the semiring the Klay backend implements, are eligible;
+    everything else falls through to :func:`compile_generic`, which honors the
+    custom ``operator_fns`` directly.
+    """
+    from ...algebraic import Semiring
+
     return (
-        circuit.algebraic_structure.operators.issubset(KLAY_OPS)
+        isinstance(circuit.algebraic_structure, Semiring)
+        and circuit.algebraic_structure.operators.issubset(KLAY_OPS)
         and not circuit.constant_values
     )
 

@@ -230,6 +230,74 @@ class TestGenericEvaluator:
         with pytest.raises(ValueError, match="structure_override is not supported"):
             circuit.to_module({impl: ("result",)}, structure_override="probability")
 
+    def test_klay_named_ops_on_bare_structure_use_generic(self):
+        """Item A: a plain AlgebraicStructure whose operators are named like the
+        klay/semiring ops (and/or/not) must still compile via the generic
+        per-operator evaluator so its custom operator_fns are honored — not
+        silently replaced by the semiring sum/product.
+        """
+        from deeplog.algebraic import AlgebraicStructure
+        from deeplog.circuit.generic import GenericCircuitModule
+
+        fuzzy = AlgebraicStructure(
+            name="fuzzy_named",
+            operator_fns={
+                "and": lambda a, b: a * b,
+                "or": lambda a, b: a + b - a * b,  # non-semiring fuzzy OR
+                "not": lambda x: 1.0 - x,
+            },
+        )
+        circuit = Circuit(fuzzy)
+        a = circuit.get_leaf_node(("a",))
+        b = circuit.get_leaf_node(("b",))
+        disj = circuit.get_operator("or")(a, b)
+        module = circuit.to_module({disj: ("result",)})
+
+        # Routed to the generic evaluator despite {and,or,not} ⊆ KLAY_OPS.
+        assert isinstance(module, GenericCircuitModule)
+        out = module(torch.tensor([[0.2, 0.7]]))
+        # fuzzy OR = a + b - a*b = 0.76, NOT the semiring sum a + b = 0.9.
+        torch.testing.assert_close(out[:, 0], torch.tensor([0.76]), atol=1e-6, rtol=0)
+
+    def test_single_leaf_root_is_pass_through(self):
+        """Item C: a circuit whose root is just a leaf compiles to an identity
+        — the degenerate case is handled on the circuit side, no special module.
+        """
+        circuit, _ = self._make_fuzzy_circuit()
+        leaf = circuit.get_leaf_node(("a",))
+        module = circuit.to_module({leaf: ("a",)})
+
+        x = torch.tensor([[0.3], [0.9]])
+        torch.testing.assert_close(module(x), x)
+
+    def test_constant_root_compiles_to_constant_module(self):
+        """Item C: a circuit whose root is a numeric constant compiles to a
+        constant module (empty input shape), which composes for a batched call
+        through construct_transformation just like any other generic module.
+        """
+        from deeplog import Sequential
+        from deeplog import construct_transformation
+        from deeplog.shape import SymTensor
+
+        circuit, _ = self._make_fuzzy_circuit()
+        # constant_fn resolves the numeric symbol to a constant node.
+        const = circuit.get_leaf_node(("1.0",))
+        assert circuit.get_node(const).node_type == "constant"
+        module = circuit.to_module({const: ("c",)})
+        assert module.get_input_shape() == SymTensor([])
+
+        # Directly callable with a (batch, 0) tensor.
+        torch.testing.assert_close(module(torch.zeros(3, 0)), torch.ones(3, 1))
+
+        # And composes for a batched input: construct_transformation maps the
+        # canonical variables onto the (empty) leaf order, batch flows through.
+        canonical = SymTensor([("a",), ("b",)])
+        composed = Sequential(
+            construct_transformation(canonical, module.get_input_shape()), module
+        )
+        out = composed(torch.tensor([[0.2, 0.7], [0.1, 0.9]]))
+        torch.testing.assert_close(out, torch.ones(2, 1))
+
 
 class TestDeterministicCircuit:
     """Test deterministic=True flag (PySDD backend)."""

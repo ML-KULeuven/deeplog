@@ -184,3 +184,82 @@ sum(Burglary, Earthquake):
     result = module()
 
     torch.testing.assert_close(result, torch.tensor([[3.0]], dtype=result.dtype))
+
+
+# --- Bare-atom leaves under a custom structure (Item B / C) ---
+
+
+def _fuzzy_factory(name: str = "ftest"):
+    """A factory with a single custom fuzzy AlgebraicStructure."""
+    from deeplog import AlgebraicStructure
+    from deeplog import DeepLogModuleFactory
+
+    structure = AlgebraicStructure(
+        name=name,
+        operator_fns={
+            "and": lambda a, b: a * b,
+            "or": lambda a, b: a + b - a * b,
+            "not": lambda x: 1.0 - x,
+        },
+    )
+    return DeepLogModuleFactory(structures={name: structure})
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "x0_ftest or x1_ftest",
+        "not x0_ftest and not x1_ftest and x2_ftest",
+        "(not x0_ftest and not x1_ftest and x2_ftest) or "
+        "(x0_ftest and x1_ftest and x2_ftest)",
+        "(x0_ftest or x1_ftest or x2_ftest) and "
+        "(not x0_ftest or not x1_ftest or x2_ftest)",
+        "(x0_ftest and not x1_ftest and not x2_ftest) or "
+        "(not x0_ftest and x1_ftest and not x2_ftest)",
+        "(x0_ftest or x1_ftest or x2_ftest) and (not x0_ftest or not x1_ftest) and "
+        "(not x1_ftest or not x2_ftest)",
+    ],
+)
+def test_parse_bare_atom_leaves_under_custom_structure(text):
+    """Bare-atom leaves (``name_struct``, no predicate args) parse correctly.
+
+    Previously the Lark grammar left the leaf-vs-operator reading ambiguous and
+    a bare leaf in operator position was mis-read as an operator IDENT
+    (``ValueError: Unknown operator 'x1_ftest'``).
+    """
+    module = parse_formula_to_module(text, _fuzzy_factory())
+    n_leaves = len(list(module.get_input_shape()))
+    out = module(torch.rand(4, n_leaves))
+    assert out.shape[0] == 4
+
+
+def test_custom_or_fn_honored_through_front_door():
+    """Item A end-to-end: a custom fuzzy OR (a + b - a*b) parsed via the text
+    front door must be honored, not replaced by the semiring sum a + b.
+    """
+    module = parse_formula_to_module("x0_fuzzy or x1_fuzzy", _fuzzy_factory("fuzzy"))
+    out = module(torch.tensor([[0.2, 0.7]]))
+    assert float(out) == pytest.approx(0.76)  # not 0.9
+
+
+def test_bare_input_leaf_compiles_to_identity():
+    """Item C: a formula that is a single bare input leaf compiles (via a
+    one-node circuit) to a pass-through identity module instead of raising.
+    """
+    module = parse_formula_to_module("x0_fuzzy", _fuzzy_factory("fuzzy"))
+    assert float(module(torch.tensor([[0.3]]))) == pytest.approx(0.3)
+    torch.testing.assert_close(
+        module(torch.tensor([[0.3], [0.9]])).reshape(-1),
+        torch.tensor([0.3, 0.9]),
+    )
+
+
+def test_bare_numeric_leaf_compiles_to_constant():
+    """Item C: a formula that is a single numeric symbol compiles (via the same
+    one-node circuit path) to a constant module, resolved by ``constant_fn``.
+    """
+    from deeplog import SymTensor
+
+    module = parse_formula_to_module("1.0_fuzzy", _fuzzy_factory("fuzzy"))
+    assert module.get_input_shape() == SymTensor([])
+    torch.testing.assert_close(module(torch.zeros(3, 0)), torch.ones(3, 1))

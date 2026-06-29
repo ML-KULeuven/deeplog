@@ -35,6 +35,27 @@ def test_compile_produces_module():
     assert len(output_symbols) == 1
 
 
+def test_multiple_atoms_share_arguments():
+    engine = SimpleEngine()
+
+    program = tuple(
+        str_to_rules("""
+        nn1(x1) :: a(x1).
+        nn2(x1) :: b(x1).
+        c(x1) :- a(x1), b(x1).
+        ?- c(x1).
+    """)
+    )
+
+    factory = DeepLogModuleFactory()
+    result = engine.get_query_result(program, factory)
+
+    try:
+        _ = compile_to_module(result, factory)
+    except ValueError as e:
+        pytest.fail(f"Problematic ValueError: {e}")
+
+
 def test_build_modules_for_leaves_ignores_non_wrapped_symbols():
     """Leaves whose shape isn't the ``("_", atom, (structure,))`` wrapper are skipped."""
     factory = DeepLogModuleFactory()

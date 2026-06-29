@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.5] - 2026-06-17
+
+### Fixed
+- `compile_to_module` no longer raises `ValueError: Ambiguous probability mapping` when distinct labeled atoms share arguments (e.g. `nn1(x1) :: a(x1).` and `nn2(x1) :: b(x1).`). The boolean-to-probability leaf mapping is now built directly from the engine's atom labels, which is unambiguous, instead of being reconstructed by an argument-overlap heuristic.
+
+### Changed
+- `deeplog.formula.distribution.build_leaf_mapping` now takes the engine `labels` map (boolean atom → probability label atom) and builds the leaf mapping directly. The argument-overlap heuristic, along with the internal `build_probability_distribution` and `factorize` helpers, has been removed. The `expectation` aggregation builder no longer accepts a probability-formula parameter.
+
+## [3.0.4] - 2026-06-04
+
+### Fixed
+- Plain (non-`Semiring`) `AlgebraicStructure`s with custom `operator_fns` now compile through the generic per-operator evaluator instead of the Klay semiring fast path, so a custom connective (e.g. a fuzzy `or` of `a + b - a*b`) is honored rather than silently replaced by the semiring sum/product.
+- `parse_formula_to_module` now parses formulas of bare-atom leaves (`name_struct`, no predicate arguments); previously such a leaf in operator position was mis-lexed as an operator (`Unknown operator '...'`).
+- A leaf-only formula now compiles to an identity (pass-through) module, and a numeric-constant leaf (e.g. `1.0_fuzzy`) to a constant module — both via a one-node circuit — instead of raising.
+
 ## [2.2.0] - 2026-04-08
 
 ### Added
