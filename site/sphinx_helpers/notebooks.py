@@ -17,7 +17,8 @@ _PATH_STEPS = {
         "01_aggregation_basics",
         "03_free_variables_and_batching",
         "formula_to_module",
-        "mnist_addition",
+        "problog",
+        "deepproblog",
     ],
 }
 

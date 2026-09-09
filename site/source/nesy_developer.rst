@@ -29,7 +29,8 @@ NeSy developer path
    paths/nesy/01_aggregation_basics
    paths/nesy/03_free_variables_and_batching
    paths/nesy/formula_to_module
-   paths/nesy/mnist_addition
+   paths/nesy/problog
+   paths/nesy/deepproblog
 
 .. container:: dl-section
 
@@ -74,7 +75,11 @@ NeSy developer path
 
       Compile formulas into :class:`~deeplog.module.deeplog_module.DeepLogModule` objects ready for composition.
 
-   #. :doc:`MNIST Addition with DeepProbLog <paths/nesy/mnist_addition>` (⏱️ 20–30 min)
+   #. :doc:`ProbLog programs <paths/nesy/problog>` (⏱️ 10–15 min)
+
+      Probabilistic facts, rules, queries, and conditioning on evidence.
+
+   #. :doc:`MNIST Addition with DeepProbLog <paths/nesy/deepproblog>` (⏱️ 20–30 min)
 
       Integrate perception, arithmetic, and logic in a full workflow.
 

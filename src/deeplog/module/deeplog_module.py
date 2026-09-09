@@ -46,10 +46,7 @@ class SupportsToModule(Protocol):
 
 class DeepLogModule(nn.Module, SupportsToModule):
     """
-    A class that extends Torch modules to include information about its input and output shape.
-    """
-
-    structure: str
+    A class that extends Torch modules to include information about its input and output shape."""
 
     def __init__(self, input_shape: Shape, output_shape: Shape):
         """Capture the symbolic input and output shapes for the module.

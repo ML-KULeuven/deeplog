@@ -9,6 +9,8 @@ from ..shape import Shape
 from ..shape import SymTensor
 from ..shape import map_shape
 from ..symbol import Symbol
+from ..symbol import retag
+from ..symbol import without_structure
 from ..util import broadcast_tensors
 from .deeplog_module import DeepLogModule
 
@@ -16,7 +18,7 @@ from .deeplog_module import DeepLogModule
 class AbstractAggregationModule(DeepLogModule, ABC):
     """Base class for modules that aggregate over bound variables and domains."""
 
-    structure: str
+    _aggregated_module: DeepLogModule
 
     @staticmethod
     def _validate_binders(variables: list[Symbol], domains: list[torch.Tensor]) -> None:
@@ -32,7 +34,10 @@ class AbstractAggregationModule(DeepLogModule, ABC):
     ) -> Shape:
         """Wrap child output shape with the aggregation binder symbol."""
         binder_symbol = ("binders", *variables)
-        return map_shape(lambda x: (name, binder_symbol, x), child_output_shape)
+        return map_shape(
+            lambda x: retag((name, binder_symbol, without_structure(x)), x),
+            child_output_shape,
+        )
 
     @staticmethod
     def _remaining_input_shape(
@@ -64,9 +69,3 @@ class AbstractAggregationModule(DeepLogModule, ABC):
         all_tensors = broadcast_tensors(*expanded_x, *expanded_domains)
         flat = tuple(t.view(-1, *t.shape[2:]) for t in all_tensors)
         return batch_size, flat
-
-    def get_structure(self) -> str:
-        """Return the structure assigned to this module."""
-        if not hasattr(self, "structure"):
-            raise AttributeError("Structure not set on aggregation module.")
-        return self.structure

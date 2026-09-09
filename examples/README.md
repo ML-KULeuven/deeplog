@@ -7,7 +7,7 @@ Executable notebooks that teach and exercise DeepLog. Every notebook here runs a
 The two curated reading paths on the docs site are the fastest way in; both pick a subset of the notebooks below and sequence them.
 
 - **ML path** — `shape` → `deeplogmodule` → `formula_to_module` → `semantic_loss`. For readers comfortable with PyTorch who want to understand what DeepLog adds.
-- **NeSy path** — `symbol` → `shape` → `predicates` → `01_aggregation_basics` → `03_free_variables_and_batching` → `formula_to_module` → `mnist_addition`. For readers comfortable with symbolic reasoning who want to see how the pieces compile to differentiable modules.
+- **NeSy path** — `symbol` → `shape` → `predicates` → `01_aggregation_basics` → `03_free_variables_and_batching` → `formula_to_module` → `problog` → `deepproblog`. For readers comfortable with symbolic reasoning who want to see how the pieces compile to differentiable modules.
 
 Outside the paths, the notebooks below are organised by concept — read the ones you need.
 
@@ -25,30 +25,31 @@ Outside the paths, the notebooks below are organised by concept — read the one
 | Notebook | What it teaches                                                                                     |
 |---|-----------------------------------------------------------------------------------------------------|
 | [`formula_to_module/`](formula_to_module/formula_to_module.ipynb) | Compiling a logical formula straight into a runnable `DeepLogModule` via `parse_formula_to_module`. |
+| [`ast_and_rewrites/`](ast_and_rewrites/ast_and_rewrites.ipynb) | The materialized formula AST, `fold`/`map_children`, and the `recognize_expectation`/`recognize_posterior` rewrite passes. |
 | [`predicates/`](predicates/predicates.ipynb) | Predicate modules: how symbolic atoms become executable tensor operations.                          |
 | [`01_aggregation_basics/`](01_aggregation_basics/01_aggregation_basics.ipynb) | Aggregation syntax, finite domains, and how DeepLog builds aggregation modules.                     |
 | [`03_free_variables_and_batching/`](03_free_variables_and_batching/03_free_variables_and_batching.ipynb) | Free variables are module inputs.                                                                   |
 | [`circuits/`](circuits/circuits.ipynb) | The `Circuit` DAG and `to_module()`.                                                                |
 | [`circuit_transformation/`](circuit_transformation/circuit_transformation.ipynb) | Transforming circuits between algebraic structures (boolean → probability, etc.).                   |
 | [`language/`](language/language.ipynb) | Tour of the textual DeepLog formula language and its parser.                                        |
-| [`dimacs/`](dimacs/dimacs_cnf.ipynb) | Parsing DIMACS CNF input into DeepLog formulas.                                                     |
 
 ## Applications
 
 | Notebook | What it teaches |
 |---|---|
+| [`problog/`](problog/problog.ipynb) | Running ProbLog programs: probabilistic facts, rules, queries, and conditioning on evidence with `:- ` integrity constraints (`P(q \| e)`). |
+| [`deepproblog/`](deepproblog/deepproblog.ipynb) | Neural predicates: a fact's probability comes from a network instead of a constant (an annotated disjunction compiled via the MV-SDD backend), building up to the classic MNIST-addition experiment. **Slow.** |
 | [`semantic_loss/`](semantic_loss/semantic_loss.ipynb) | A full ML training pipeline that uses a DeepLog formula as a differentiable loss term (semantic loss). **Slow.** |
-| [`mnist_addition/`](mnist_addition/mnist_addition.ipynb) | The classic NeSy experiment: classify pairs of MNIST digits by their sum. **Slow.** |
 | [`ltn/`](ltn/ltn.ipynb) | Reproducing a subset of the Logic Tensor Networks tutorial on top of DeepLog. |
 
 ## Running
 
-Most notebooks run in a few seconds. The two marked **Slow** download MNIST and train a model; they're gated behind `--slow` in the pytest runner:
+Most notebooks run in a few seconds. The two marked **Slow** download MNIST and train a model, so a full run takes minutes:
 
 ```bash
-pytest examples/                  # all fast notebooks (+ tests/)
-pytest examples/ --slow           # include semantic_loss and mnist_addition
-pytest examples/mnist_addition    # run one notebook only
+pytest examples/                        # every notebook
+pytest examples/deepproblog             # run one notebook only
+DEELOG_FAST_DEV_RUN=1 pytest examples/  # one batch per fit, the way CI runs them
 ```
 
 Needs the `deeplog[examples]` extra (`pip install -e ".[examples]"`).

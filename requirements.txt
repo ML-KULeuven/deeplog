@@ -6,6 +6,7 @@ torchvision
 pytorch-lightning
 pysdd
 klaycircuits
+mv-sdd
 lark
 pytest
 coverage

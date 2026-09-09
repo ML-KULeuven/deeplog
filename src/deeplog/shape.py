@@ -16,12 +16,15 @@ from numpy.typing import NDArray
 from .symbol import Symbol
 from .symbol import is_symbol
 from .symbol import parse_symbol
+from .symbol import structure_of
 from .symbol import symbol_to_pretty_string
 from .symbol import symbol_to_str
 
 
+#: Anything :class:`SymTensor` accepts as its symbols — a SymTensor, a symbol, a
+#: string parsed as one, a nested sequence of those, or a numpy object array.
 type SymTensorLike = (
-    "SymTensor" | Symbol | str | Sequence["SymTensorLike"] | NDArray[np.object_]
+    SymTensor | Symbol | str | Sequence[SymTensorLike] | NDArray[np.object_]
 )
 
 
@@ -146,6 +149,8 @@ class SymTensor:
         return np.array([SymTensor._symtensor_like_as_array(x) for x in seq])
 
 
+#: What a module declares it reads and writes — one :class:`SymTensor` naming a
+#: single tensor's symbols, or a tuple of them, one per tensor.
 type Shape = SymTensor | tuple[SymTensor, ...]
 
 
@@ -171,6 +176,37 @@ def get_only_symbol(shape: Shape | Iterable[Shape]) -> Symbol:
     return next(get_all_symbols(shape))
 
 
+def structures(shape: Shape | Iterable[Shape]) -> tuple[str | None, ...]:
+    """Return the algebraic structure of every symbol in ``shape``, in order.
+
+    The general read: one entry per symbol, ``None`` where the symbol is bare.
+    A module whose columns live in different algebras — a joint weighted model
+    count next to its evidence count, say — is described honestly here, where a
+    single per-module annotation could only pick one and lie about the rest.
+    """
+    return tuple(structure_of(symbol) for symbol in get_all_symbols(shape))
+
+
+def sole_structure(shape: Shape | Iterable[Shape]) -> str | None:
+    """Return the one algebraic structure shared by every symbol in ``shape``.
+
+    ``None`` when *every* symbol is bare — the module names no algebraic values
+    at all, which is what a raw-tensor module looks like outside the formula
+    layer. Raises ``ValueError`` when the shape mixes tags (bare with tagged
+    included), because the question then has no answer and reporting ``None``
+    would make a genuine inconsistency indistinguishable from an absent label.
+
+    Use :func:`structures` where a mixed shape is acceptable.
+    """
+    found = set(structures(shape))
+    if len(found) > 1:
+        raise ValueError(
+            "Shape mixes algebraic structures: "
+            f"{sorted(name or '<none>' for name in found)}."
+        )
+    return found.pop() if found else None
+
+
 def map_shape(func: Callable[[Symbol], Symbol], shape: Shape) -> Shape:
     """Apply ``func`` to all symbols present in ``shape``."""
     if isinstance(shape, tuple):
@@ -180,9 +216,7 @@ def map_shape(func: Callable[[Symbol], Symbol], shape: Shape) -> Shape:
 
 
 class ShapeMismatchException(Exception):
-    """
-    This exception is raised when a tensor does not match a Shape.
-    """
+    """Raised when tensors do not conform to the shape that named them."""
 
     def __init__(
         self,
@@ -190,7 +224,11 @@ class ShapeMismatchException(Exception):
         args: tuple[torch.Tensor],
         location: object = None,
     ):
-        """Describe the expected shape vs. received tensor shapes and optional location."""
+        """Build the message: what ``shape`` named, what ``args`` were, and where.
+
+        ``location`` is whatever identifies the site for a reader of the
+        message; a module reports ``(module, "input")`` or ``(module, "output")``.
+        """
         expected = shape if isinstance(shape, tuple) else (shape,)
         lines = ["Shape mismatch:"]
         if location is not None:
@@ -267,3 +305,56 @@ def correct_shape(args: tuple[torch.Tensor], shape: Shape) -> bool:
             for tensor, symtensor in zip(args, shape, strict=True)
         )
     return (len(args) == 1) and _validate_symtensor(args[0], shape)
+
+
+class SymbolDict(dict[Symbol, torch.Tensor]):
+    """A ``{Symbol: tensor}`` mapping that prints symbols and scalars compactly.
+
+    A plain ``dict`` in every other respect; :func:`to_dict` returns one so
+    interactive readouts (``print(to_dict(module(x), shape))``) stay legible.
+    """
+
+    def __repr__(self) -> str:
+        """Render entries as pretty symbols with compactly formatted scalars."""
+
+        def fmt(value: torch.Tensor) -> str:
+            if value.numel() == 1:
+                return format(value.item(), ".3g")
+            return str(value)
+
+        entries = ", ".join(
+            f"{symbol_to_pretty_string(key)}: {fmt(value)}"
+            for key, value in self.items()
+        )
+        return "{" + entries + "}"
+
+
+def to_dict(tensors: torch.Tensor | Sequence[torch.Tensor], shape: Shape) -> SymbolDict:
+    """Split result tensors into a per-symbol dict following ``shape``.
+
+    The read-out counterpart of shape validation: ``shape`` (typically a
+    module's ``get_output_shape()``) names every entry of ``tensors``, and each
+    symbol maps to its entry with the batch dimension preserved —
+    ``to_dict(module(x), module.get_output_shape())`` reads a module's output
+    by name. The result is a :class:`SymbolDict`, a plain dict that prints
+    readably.
+
+    Raises :class:`ShapeMismatchException` when the tensors do not conform to
+    ``shape`` and ``ValueError`` when ``shape`` names the same symbol twice.
+    """
+    args = (
+        (tensors,)
+        if isinstance(tensors, torch.Tensor)
+        else cast(tuple[torch.Tensor], tuple(tensors))
+    )
+    if not correct_shape(args, shape):
+        raise ShapeMismatchException(shape, args)
+    symtensors = (shape,) if isinstance(shape, SymTensor) else shape
+    result = SymbolDict()
+    for tensor, symtensor in zip(args, symtensors, strict=True):
+        for idx in np.ndindex(symtensor.sym_shape):
+            symbol = cast(Symbol, symtensor[idx])
+            if symbol in result:
+                raise ValueError(f"Shape names the symbol twice: {symbol}")
+            result[symbol] = tensor[(slice(None), *idx)]
+    return result

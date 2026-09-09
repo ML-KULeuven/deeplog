@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-from typing import Any
-from typing import cast
+from collections.abc import Callable
+from collections.abc import Sequence
 
 from lark import Lark
 from lark import Token
@@ -12,8 +12,17 @@ from lark import Tree
 
 from ..module import DeepLogModule
 from ..symbol import parse_symbol
+from .ast import Aggregation
+from .ast import Atom
+from .ast import BinaryOp
+from .ast import FormulaNode
+from .ast import Transformation
+from .ast import UnaryOp
+from .ast import fold
+from .ast import hash_cons
 from .deeplogformulafactory import DeepLogFormulaFactory
 from .deeplogmodulefactory import DeepLogModuleFactory
+from .passes import DEFAULT_PASSES
 
 
 _GRAMMAR = r"""
@@ -63,10 +72,21 @@ _STRUCTURE_ALIASES = {
 _LARK = Lark(_GRAMMAR, parser="earley", maybe_placeholders=False)
 
 
-def parse_formula[T](text: str, factory: DeepLogFormulaFactory[T]) -> T:
-    """Parse ``text`` using Lark and emit nodes via ``factory``."""
+def parse_formula_to_ast(text: str) -> FormulaNode:
+    """Parse ``text`` into the materialized formula AST (a canonical DAG).
+
+    Equal subformulas are interned to one object via :func:`hash_cons`, so the
+    AST is a value-keyed DAG rather than a tree. This is a transparent efficiency
+    move — ``fold`` re-walks the DAG identically to the tree, so behaviour (and
+    the compiled circuit) is unchanged.
+    """
     tree: Tree = _LARK.parse(text)
-    return cast(T, _evaluate_tree(tree, factory))
+    return hash_cons(_evaluate_tree(tree), {})
+
+
+def parse_formula[T](text: str, factory: DeepLogFormulaFactory[T]) -> T:
+    """Parse ``text`` and fold it through ``factory`` (the AST interpreter)."""
+    return fold(parse_formula_to_ast(text), factory)
 
 
 def _node_name(node):
@@ -85,11 +105,12 @@ def _structure_name(token: Token) -> str:
     return _STRUCTURE_ALIASES.get(name, name)
 
 
-def _evaluate_tree(node, factory: DeepLogFormulaFactory[Any]):
+def _evaluate_tree(node) -> FormulaNode:
+    """Build the formula AST from a Lark parse tree (the grammar→node mapping)."""
     name = _node_name(node)
     children = node.children
     if name == "start":
-        return _evaluate_tree(children[0], factory)
+        return _evaluate_tree(children[0])
     if name == "aggregation":
         op = children[0]
         binders_node = children[1]
@@ -99,57 +120,58 @@ def _evaluate_tree(node, factory: DeepLogFormulaFactory[Any]):
         else:
             params_node = children[2]
             child = children[3]
-        binders = [parse_symbol(_token_value(token)) for token in binders_node.children]
+        binders = tuple(
+            parse_symbol(_token_value(token)) for token in binders_node.children
+        )
         params = (
-            []
+            ()
             if params_node is None
-            else [_evaluate_tree(param, factory) for param in params_node.children]
+            else tuple(_evaluate_tree(param) for param in params_node.children)
         )
-        return factory.create_aggregation(
-            _token_value(op), binders, params, _evaluate_tree(child, factory)
-        )
+        return Aggregation(_token_value(op), binders, params, _evaluate_tree(child))
     if name == "binary":
         iter_children = iter(children)
-        result = _evaluate_tree(next(iter_children), factory)
+        result = _evaluate_tree(next(iter_children))
         for op, operand in zip(iter_children, iter_children, strict=True):
-            result = factory.create_binary_node(
-                _token_value(op), result, _evaluate_tree(operand, factory)
-            )
+            result = BinaryOp(_token_value(op), result, _evaluate_tree(operand))
         return result
     if name == "prefix":
         operator, operand = children
-        return factory.create_unary_node(
-            _token_value(operator), _evaluate_tree(operand, factory)
-        )
+        return UnaryOp(_token_value(operator), _evaluate_tree(operand))
     if name == "grouped":
-        return _evaluate_tree(children[0], factory)
+        return _evaluate_tree(children[0])
     if name == "transformation":
         child, structure = children
-        return factory.create_transformation(
-            _structure_name(structure), _evaluate_tree(child, factory)
-        )
+        return Transformation(_structure_name(structure), _evaluate_tree(child))
     if name == "leaf":
         symbol_token, structure = children
-        return factory.create_atom(
+        return Atom(
             (
                 "_",
                 parse_symbol(_token_value(symbol_token)),
                 (_structure_name(structure),),
             )
         )
-    if isinstance(node, Token):
-        return node
     raise ValueError(f"Unexpected node {name}")
 
 
 def parse_formula_to_module(
-    text: str, factory: DeepLogModuleFactory | None = None
+    text: str,
+    factory: DeepLogModuleFactory | None = None,
+    *,
+    passes: Sequence[Callable[[FormulaNode], FormulaNode]] | None = None,
 ) -> DeepLogModule:
     """
-    Parse ``text`` and immediately convert it into a :class:`DeepLogModule`.
+    Parse ``text`` and convert it into a :class:`DeepLogModule`.
 
-    When no ``factory`` is provided, an empty :class:`DeepLogModuleFactory`
-    is instantiated.
+    The pipeline is ``parse → AST → passes → fold(factory)``. ``passes`` defaults
+    to :data:`~deeplog.formula.passes.DEFAULT_PASSES` (currently conservative
+    expectation/WMC recognition); pass ``passes=()`` to fold the formula verbatim.
+    When no ``factory`` is provided, an empty
+    :class:`DeepLogModuleFactory` is instantiated.
     """
     factory = factory or DeepLogModuleFactory()
-    return parse_formula(text, factory).to_module()
+    ast = parse_formula_to_ast(text)
+    for rewrite in DEFAULT_PASSES if passes is None else passes:
+        ast = rewrite(ast)
+    return factory.compile(ast)

@@ -19,6 +19,9 @@ from .util import bracket_aware_split
 # nominal typing (Variable/Atom/Compound) and forces pyright ignores in the
 # runtime guards. Candidates: a frozen-dataclass hierarchy, NamedTuple, or
 # typed factory functions + TypeGuards over the existing tuple shape.
+#: A term as a nested tuple — a functor followed by its arguments, each a symbol
+#: in turn. ``("digit", ("i1",), ("3",))`` is ``digit(i1,3)``, and a bare
+#: ``("a",)`` is the constant ``a``.
 type Symbol = tuple[str, *tuple["Symbol", ...]]
 
 TrueSymbol = ("true",)
@@ -62,25 +65,37 @@ def is_structure_wrapped(symbol: Symbol) -> bool:
     return len(symbol) == 3 and symbol[0] == "_"
 
 
-def get_structure(atom: Symbol) -> Symbol:
-    """Return the structure tag of a wrapped atom (``atom[2]``).
+def structure_of(symbol: Symbol) -> str | None:
+    """Return the algebraic structure ``symbol`` is labelled with, or ``None``.
 
-    Raises ``ValueError`` if ``atom`` is not structure-wrapped.
+    The total read of the ``("_", inner, (structure,))`` tag: a bare symbol
+    names a value that lives in no algebra, which is a legitimate state outside
+    the formula layer, so absence is reported rather than raised. Counterpart
+    of :func:`with_structure`.
     """
-    if is_structure_wrapped(atom):
-        return atom[2]  # pyright: ignore[reportReturnType]
-    raise ValueError(f"Invalid atom: {atom}")
+    return symbol[2][0] if is_structure_wrapped(symbol) else None
 
 
 def unwrap_structure(atom: Symbol) -> Symbol:
     """Return the inner symbol of a structure-wrapped atom (``atom[1]``).
 
-    Counterpart of :func:`get_structure` (which returns the tag). Raises
-    ``ValueError`` if ``atom`` is not structure-wrapped.
+    The strict unwrap, used at the circuit boundary where a tag is required by
+    construction. Raises ``ValueError`` if ``atom`` is not structure-wrapped;
+    use :func:`without_structure` where a bare symbol is acceptable.
     """
     if is_structure_wrapped(atom):
         return atom[1]  # pyright: ignore[reportReturnType]
     raise ValueError(f"Invalid atom: {atom}")
+
+
+def without_structure(symbol: Symbol) -> Symbol:
+    """Return ``symbol`` with any structure tag removed.
+
+    The tolerant counterpart of :func:`unwrap_structure`: a bare symbol is
+    returned unchanged. Used when re-minting a name from a labelled one, so the
+    tag is re-applied to the *outside* rather than buried in the new symbol.
+    """
+    return symbol[1] if is_structure_wrapped(symbol) else symbol  # pyright: ignore[reportReturnType]
 
 
 def with_structure(atom: Symbol, structure: str) -> Symbol:
@@ -88,6 +103,17 @@ def with_structure(atom: Symbol, structure: str) -> Symbol:
     if is_structure_wrapped(atom):
         atom = atom[1]  # pyright: ignore[reportAssignmentType]
     return "_", atom, (structure,)
+
+
+def retag(new: Symbol, like: Symbol) -> Symbol:
+    """Return ``new`` carrying the structure tag of ``like``, bare if it has none.
+
+    What a module applies when it mints an output name for a value it did not
+    change the algebra of — an aggregation naming its reduction, an elementwise
+    operator naming its column.
+    """
+    structure = structure_of(like)
+    return with_structure(new, structure) if structure is not None else new
 
 
 def strip_literal_structure(symbol: Symbol, structure: str) -> Symbol:
@@ -267,18 +293,20 @@ def replace_in_symbol(
     return symbol[0], *(replace_in_symbol(s, func) for s in symbol[1:])
 
 
-def symbol_to_pretty_string(symbol: Symbol, force_no_parenthesis: bool = True) -> str:
-    """
-    A simple function for pretty formatting symbols. It infixes certain functors.
-    It is not compatible with the parse_symbol function.
+def symbol_to_pretty_string(symbol: Symbol) -> str:
+    """Format ``symbol`` for a human reader, infixing the functors that read better.
 
-    :param symbol: The given symbol.
-    :param force_no_parenthesis: Force removal of parentheses around the top-level symbol.
-        You typically only want the default ``True``. For example, when ``symbol`` is the whole
-        expression (e.g., ``a :- b``), we do not want parentheses around it or its immediate
-        children. When ``symbol`` has a subexpression (e.g., ``a , (b ; c)``) then we do want
-        parentheses around the subexpression (here ``(b ; c)``).
-    :return: A pretty string representation of the symbol.
+    Not the inverse of :func:`parse_symbol`; :func:`symbol_to_str` is the form
+    that parses back.
+    """
+    return _pretty_string(symbol, parenthesize=False)
+
+
+def _pretty_string(symbol: Symbol, *, parenthesize: bool) -> str:
+    """Format ``symbol``, bracketing a flattened infix chain when it is nested.
+
+    A chain needs no brackets as the whole expression (``a :- b``) and does need
+    them as a subexpression (``a , (b ; c)``).
     """
     if len(symbol) == 1:
         return symbol[0]
@@ -287,27 +315,24 @@ def symbol_to_pretty_string(symbol: Symbol, force_no_parenthesis: bool = True) -
         and (symbol[0] == ":-" or symbol[0] == "?-")
         and symbol[1] == FalseSymbol
     ):
-        return f"{symbol[0]} {symbol_to_pretty_string(symbol[2], force_no_parenthesis=True)}"
+        return f"{symbol[0]} {_pretty_string(symbol[2], parenthesize=False)}"
     if len(symbol) == 3 and symbol[0] in infix_functors:
         # :- infix without ( ) around head and body
         if symbol[0] in (":-", "::", "is"):
-            lhs = symbol_to_pretty_string(symbol[1], force_no_parenthesis=True)
-            rhs = symbol_to_pretty_string(symbol[2], force_no_parenthesis=True)
+            lhs = _pretty_string(symbol[1], parenthesize=False)
+            rhs = _pretty_string(symbol[2], parenthesize=False)
             return f"{lhs} {symbol[0]} {rhs}"
         # associative infix functors use flattening
         if symbol[0] in associative_infix_functors:
             result = f" {symbol[0]} ".join(
-                symbol_to_pretty_string(s, force_no_parenthesis=False)
-                for s in flatten_symbol(symbol)
+                _pretty_string(s, parenthesize=True) for s in flatten_symbol(symbol)
             )
-            return f"({result})" if not force_no_parenthesis else result
+            return f"({result})" if parenthesize else result
         # otherwise infix with ( ) around arguments
-        lhs = symbol_to_pretty_string(symbol[1], force_no_parenthesis=False)
-        rhs = symbol_to_pretty_string(symbol[2], force_no_parenthesis=False)
+        lhs = _pretty_string(symbol[1], parenthesize=True)
+        rhs = _pretty_string(symbol[2], parenthesize=True)
         return f"({lhs} {symbol[0]} {rhs})"
-    args = ",".join(
-        symbol_to_pretty_string(s, force_no_parenthesis=False) for s in symbol[1:]
-    )
+    args = ",".join(_pretty_string(s, parenthesize=True) for s in symbol[1:])
     return f"{symbol[0]}({args})"
 
 

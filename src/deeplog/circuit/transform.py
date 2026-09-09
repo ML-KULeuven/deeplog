@@ -1,14 +1,23 @@
 #  Copyright (c) 2024-2026. KU Leuven
 """Transform a circuit from one algebraic structure to another."""
 
-from collections.abc import Callable
+from __future__ import annotations
 
-from ..algebraic import Algebra
+from collections.abc import Callable
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
 from ..algebraic import AlgebraicStructure
-from ..algebraic import Semiring
 from ..algebraic import get_algebraic_structure
+from ..formula.deeplogformulafactory import DeepLogFormulaFactory
 from ..symbol import Symbol
+from ..symbol import is_structure_wrapped
+from ..symbol import unwrap_structure
 from .circuit import Circuit
+
+
+if TYPE_CHECKING:
+    from ..formula.ast import CircuitNode
 
 
 def _build_operator_mapping(
@@ -16,11 +25,14 @@ def _build_operator_mapping(
     target: AlgebraicStructure,
     explicit: dict[str, str] | None,
 ) -> dict[str, str]:
-    """Build the operator mapping from source to target structure.
+    """The target operator each of ``source``'s operators crosses as.
 
-    If explicit is provided, use it directly.
-    If both are Semiring, auto-infer from roles.
-    Otherwise, raise ValueError.
+    An operator crosses by the role it plays
+    (:attr:`~deeplog.algebraic.AlgebraicStructure.roles`), so the roles both
+    structures declare map and nothing else does. A source operator the target
+    has no counterpart for is simply absent here: whether that matters is a
+    question about the graph, not about the pair of structures, and it is
+    answered at the node that uses it.
     """
     if explicit is not None:
         for target_op in explicit.values():
@@ -31,28 +43,32 @@ def _build_operator_mapping(
                 )
         return explicit
 
-    if not (isinstance(source, Semiring) and isinstance(target, Semiring)):
-        raise ValueError(
-            f"Cannot auto-map operators between '{source.name}' and "
-            f"'{target.name}': both must be Semiring (or Algebra). "
-            f"Provide an explicit operator_mapping."
-        )
-
-    mapping: dict[str, str] = {
-        source.product: target.product,
-        source.sum: target.sum,
+    target_roles = target.roles
+    return {
+        name: target_roles[role]
+        for role, name in source.roles.items()
+        if role in target_roles
     }
 
-    if isinstance(source, Algebra):
-        if not isinstance(target, Algebra):
-            raise ValueError(
-                f"Source '{source.name}' has negation ('{source.negation}') "
-                f"but target '{target.name}' is not an Algebra. "
-                f"Provide an explicit operator_mapping."
-            )
-        mapping[source.negation] = target.negation
 
-    return mapping
+def _build_constant_mapping(
+    source: AlgebraicStructure, target: AlgebraicStructure
+) -> dict[Symbol, Symbol]:
+    """The target symbol each of ``source``'s named constants crosses as.
+
+    A named constant crosses by the role it plays
+    (:attr:`~deeplog.algebraic.AlgebraicStructure.identities`), not by its
+    value: the additive identity is ``("0",)`` in probability and ``("-inf",)``
+    in log space, so carrying it over as a number would change which element it
+    is. An identity the target does not name is left out, and crosses as the
+    value it is.
+    """
+    target_identities = target.identities
+    return {
+        symbol: target_identities[role]
+        for role, symbol in source.identities.items()
+        if role in target_identities
+    }
 
 
 def transform_circuit(
@@ -62,24 +78,34 @@ def transform_circuit(
     *,
     operator_mapping: dict[str, str] | None = None,
     leaf_mapping: Callable[[Symbol], Symbol] | None = None,
-    deterministic: bool | None = None,
+    into: tuple[Circuit, dict[int, int]] | None = None,
 ) -> tuple[Circuit, dict[int, int]]:
     """Transform a circuit to a different algebraic structure.
 
     Creates a new circuit with the target structure by traversing the source
     circuit and rebuilding each node with mapped operators, leaves, and constants.
 
+    The map is exact only insofar as the source's operators mean in the target
+    what they meant at home. Reading a *logical* circuit's ``or`` as a semiring
+    sum requires the source to be deterministic and decomposable, which is what
+    :func:`~deeplog.circuit.knowledge_compile.knowledge_compile` produces.
+
     Args:
         source: The circuit to transform_circuit.
         target_structure: The target algebraic structure (name or instance).
         roots: Root node IDs defining the subgraph to transform_circuit.
         operator_mapping: Explicit mapping from source operator names to target
-            operator names. If None and both structures are Semiring/Algebra,
-            mapping is auto-inferred from roles (product→product, sum→sum,
-            negation→negation).
+            operator names, replacing the inferred one. If None, the mapping is
+            inferred from the roles both structures declare (product→product,
+            sum→sum, negation→negation, division→division); an operator the
+            target has no role for raises when a node uses it.
         leaf_mapping: Optional callable to remap leaf symbols.
-        deterministic: Deterministic flag for the new circuit. If None,
-            inherits from the source circuit.
+        into: An existing ``(target_circuit, node_map)`` to continue transforming
+            into, instead of allocating a fresh target. Source nodes already in
+            ``node_map`` are skipped, so repeated calls sharing one target
+            accumulate and deduplicate exactly as a single multi-root call
+            would. The ``node_map`` is mutated in place and returned. Its target
+            structure must match ``target_structure``.
 
     Returns:
         A tuple of (new_circuit, node_map) where node_map maps source node IDs
@@ -90,68 +116,136 @@ def transform_circuit(
     else:
         target_struct = target_structure
 
-    source_struct = source.algebraic_structure
+    source_struct = source.structure
 
     op_mapping = _build_operator_mapping(source_struct, target_struct, operator_mapping)
 
-    target_circuit = Circuit(
-        target_struct,
-        deterministic=deterministic
-        if deterministic is not None
-        else not target_struct.idempotent,
-    )
-
-    target_role_to_symbol = target_struct.named_constants
-
-    # Collect source constant role names for identification during traversal
-    source_constant_roles = set(source_struct.named_constants)
-
-    source_constant_values = source.constant_values
-
-    node_map: dict[int, int] = {}
-
-    for source_id in source.iter_topological(roots):
-        node = source.get_node(source_id)
-
-        if node.node_type == "leaf":
-            name = source.get_leaf_name(source_id)
-            if name is None:
-                raise ValueError(f"Leaf node {source_id} has no symbol name.")
-            mapped_name = leaf_mapping(name) if leaf_mapping else name
-            node_map[source_id] = target_circuit.get_leaf_node(mapped_name)
-
-        elif node.node_type in source_constant_roles:
-            # Constant role node (e.g., "zero", "one")
-            role = node.node_type
-            if role in target_role_to_symbol:
-                node_map[source_id] = target_circuit.get_leaf_node(
-                    target_role_to_symbol[role]
-                )
-            else:
-                raise ValueError(
-                    f"Constant role '{role}' from source structure "
-                    f"'{source_struct.name}' has no equivalent in target "
-                    f"structure '{target_struct.name}'."
-                )
-
-        elif node.node_type == "constant":
-            # Arbitrary numeric constant
-            value = source_constant_values[source_id]
-            value_symbol: Symbol = (str(value),)
-            node_map[source_id] = target_circuit.get_leaf_node(value_symbol)
-
-        elif node.node_type in op_mapping:
-            target_op = op_mapping[node.node_type]
-            mapped_children = tuple(node_map[c] for c in node.children)
-            apply_op = target_circuit.get_operator(target_op)
-            node_map[source_id] = apply_op(*mapped_children)
-
-        else:
+    if into is not None:
+        target_circuit, node_map = into
+        if target_circuit.structure.name != target_struct.name:
             raise ValueError(
-                f"Cannot map node type '{node.node_type}' from "
-                f"'{source_struct.name}' to '{target_struct.name}'. "
-                f"Provide an explicit operator_mapping that includes "
-                f"'{node.node_type}'."
+                f"Cannot continue a transform into a circuit with structure "
+                f"'{target_circuit.structure.name}' using target "
+                f"structure '{target_struct.name}'."
             )
+    else:
+        target_circuit = Circuit(target_struct)
+        node_map = {}
 
+    algebra = CircuitAlgebra(
+        target_circuit,
+        source_struct,
+        operator_mapping=op_mapping,
+        leaf_mapping=leaf_mapping,
+    )
+    source.fold(roots, algebra, memo=node_map)
     return target_circuit, node_map
+
+
+class CircuitAlgebra(DeepLogFormulaFactory[int]):
+    """Build a formula's nodes in ``target``, mapping operators and atoms.
+
+    A formula algebra whose carrier is a node id of one given circuit, so
+    anything the algebra drives -- a circuit fold
+    (:func:`~deeplog.circuit.fold.fold_circuit`), an AST fold
+    (:func:`~deeplog.formula.ast.fold`), or a walk that calls the eliminators
+    itself -- writes into that circuit. It names operators in the *source's*
+    spelling and maps them to the target's, so a caller says ``and`` whether the
+    target calls it ``and`` or ``times``.
+
+    An atom is a leaf or a constant: a named constant crosses by *role*, so the
+    target spells its own; a numeric constant crosses by value, unmapped, since
+    it is not one of the source's names; anything else is a leaf and goes
+    through ``leaf_mapping``, which sees the leaf's *bare* identity.
+    """
+
+    def __init__(
+        self,
+        target: Circuit,
+        source_structure: AlgebraicStructure,
+        *,
+        operator_mapping: dict[str, str] | None = None,
+        leaf_mapping: Callable[[Symbol], Symbol] | None = None,
+    ) -> None:
+        """Build into ``target``, renaming from ``source_structure``'s spelling."""
+        self._target = target
+        self._source_structure = source_structure
+        self._target_structure = target.structure
+        self._operator_mapping = _build_operator_mapping(
+            source_structure, target.structure, operator_mapping
+        )
+        self._constant_mapping = _build_constant_mapping(
+            source_structure, target.structure
+        )
+        self._leaf_mapping = leaf_mapping
+
+    def create_atom(self, atom: Symbol) -> int:
+        """The target node for the source leaf or constant ``atom`` names."""
+        name = unwrap_structure(atom) if is_structure_wrapped(atom) else atom
+        target_symbol = self._constant_mapping.get(name)
+        if target_symbol is not None:
+            return self._target.get_leaf_node(target_symbol)
+        if self._source_structure.get_constant_value(name) is not None:
+            # A value, not a name: it crosses as itself, unmapped.
+            return self._target.get_leaf_node(name)
+        return self._target.get_leaf_node(
+            self._leaf_mapping(name) if self._leaf_mapping else name
+        )
+
+    def create_unary_node(self, operator: str, operand: int) -> int:
+        """Apply ``operator``'s target counterpart to ``operand``."""
+        return self._target.get_operator(self._mapped(operator))(operand)
+
+    def create_binary_node(self, operator: str, lhs: int, rhs: int) -> int:
+        """Apply ``operator``'s target counterpart to ``lhs`` and ``rhs``."""
+        return self._target.get_operator(self._mapped(operator))(lhs, rhs)
+
+    def _mapped(self, operator: str) -> str:
+        """The target's name for ``operator``, or raise saying what is missing."""
+        target_op = self._operator_mapping.get(operator)
+        if target_op is not None:
+            return target_op
+        role = next(
+            (r for r, name in self._source_structure.roles.items() if name == operator),
+            None,
+        )
+        missing = (
+            f"'{self._target_structure.name}' declares no {role}"
+            if role is not None
+            else f"'{operator}' plays no role in '{self._source_structure.name}'"
+        )
+        raise ValueError(
+            f"Cannot map node type '{operator}' from "
+            f"'{self._source_structure.name}' to "
+            f"'{self._target_structure.name}': {missing}. "
+            f"Provide an explicit operator_mapping that includes '{operator}'."
+        )
+
+    # A circuit has no node for the three eliminators below.
+
+    def create_transformation(self, structure: str, child: int) -> int:
+        """Unreachable: a circuit holds no cross-structure boundary."""
+        raise NotImplementedError(
+            f"{type(self).__name__} folds circuit nodes; a circuit has no "
+            f"transformation, only the structure it was built in."
+        )
+
+    def create_aggregation(
+        self,
+        operation: str,
+        binders: list[Symbol],
+        params: Sequence[int],
+        child: int,
+    ) -> int:
+        """Unreachable: a circuit holds no aggregation."""
+        raise NotImplementedError(
+            f"{type(self).__name__} folds circuit nodes; a circuit has no "
+            f"aggregation, only the ground formula one was expanded into."
+        )
+
+    def embed_circuit(self, node: CircuitNode, children: tuple[int, ...] = ()) -> int:
+        """Unreachable: the fold is already inside a circuit."""
+        raise NotImplementedError(
+            f"{type(self).__name__} folds circuit nodes; it is already inside "
+            f"the circuit a lump would embed."
+        )

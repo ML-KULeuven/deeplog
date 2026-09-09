@@ -1,4 +1,5 @@
 #  Copyright (c) 2024-2026. KU Leuven
+import pytest
 import torch
 
 from deeplog import Predicate
@@ -12,7 +13,7 @@ class IgnoringPredicate(Predicate[torch.Tensor]):
 
     def __init__(self, all_arguments):
         self.resolve_argument_calls: list[int] = []
-        super().__init__(all_arguments, ignore_argument=(1,))
+        super().__init__(all_arguments, ignore_arguments=(1,))
 
     def _resolve_argument(self, symbol, index, /):
         self.resolve_argument_calls.append(index)
@@ -66,3 +67,70 @@ def test_predicate_treats_returned_symbol_as_variable():
         SymTensor([("x",)]),
         SymTensor([("redirect",)]),
     )
+
+
+class AddingPredicate(Predicate[torch.Tensor, torch.Tensor]):
+    functor = "adding"
+    arity = 2
+    structure = "boolean"
+
+    def forward_predicate(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
+        return lhs + rhs
+
+
+class NumericFirstArgument(Predicate[torch.Tensor, torch.Tensor]):
+    functor = "numeric"
+    arity = 2
+    structure = "boolean"
+    distinct_arguments = (0,)
+
+    def _resolve_argument(self, symbol, index, /):
+        return float(symbol[0]) if index == 0 else symbol
+
+    def forward_predicate(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
+        return lhs + rhs
+
+
+def test_predicate_asks_for_each_distinct_symbol_once():
+    predicate = AddingPredicate([(("x",), ("a",)), (("x",), ("b",)), (("y",), ("a",))])
+
+    assert predicate.get_input_shape() == (
+        SymTensor([("x",), ("y",)]),
+        SymTensor([("a",), ("b",)]),
+    )
+
+
+def test_predicate_expands_distinct_inputs_over_evaluations():
+    predicate = AddingPredicate([(("x",), ("a",)), (("x",), ("b",)), (("y",), ("a",))])
+
+    left = torch.tensor([[1.0, 10.0]])  # x, y
+    right = torch.tensor([[100.0, 200.0]])  # a, b
+
+    result = predicate(left, right)
+
+    # (x + a), (x + b), (y + a)
+    torch.testing.assert_close(result, torch.tensor([[101.0, 201.0, 110.0]]))
+
+
+def test_predicate_expands_repeated_symbols_alongside_constants():
+    class HalfConstant(AddingPredicate):
+        functor = "half_constant"
+
+        def _resolve_argument(self, symbol, index, /):
+            if index == 1 and symbol == ("two",):
+                return 2.0
+            return symbol
+
+    predicate = HalfConstant([(("x",), ("two",)), (("x",), ("a",))])
+
+    assert predicate.get_input_shape() == (SymTensor([("x",)]), SymTensor([("a",)]))
+
+    result = predicate(torch.tensor([[3.0]]), torch.tensor([[5.0]]))
+
+    # x + 2 (constant row), then x + a
+    torch.testing.assert_close(result, torch.tensor([[5.0, 8.0]]))
+
+
+def test_predicate_rejects_unexpanded_position_carrying_constants():
+    with pytest.raises(ValueError, match="distinct_arguments"):
+        NumericFirstArgument([(("0.5",), ("a",))])

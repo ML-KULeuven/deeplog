@@ -6,6 +6,7 @@ import torch
 from deeplog import LogProbabilityPredicate
 from deeplog import ProbabilityPredicate
 from deeplog import SymTensor
+from deeplog import parse_formula_to_module
 from deeplog import reshape
 
 
@@ -65,11 +66,6 @@ def test_logprobability_predicate_log_constants():
             ),
         ]
     )
-
-    # TODO allow to reshape away empty input tensor
-    # print(module)
-    # module = reshape_input(module, SymTensor(inputs))
-    # print(module)
 
     result = module(torch.tensor([[0.0, 0.0], [1.0, 1.0]]), torch.empty(2, 0))
     expected = torch.tensor([[log(0.6), 0.0], [log(0.4), float("-inf")]])
@@ -144,3 +140,29 @@ def test_logprobability_predicate_converts_probability_labels_for_log_outputs():
 
     expected = torch.tensor([[log(value)], [log(1 - value)]])
     torch.testing.assert_close(output, expected)
+
+
+def test_the_language_reaches_both_label_predicates():
+    """``p`` and ``logp`` are builders of the language, each in its own space.
+
+    A labelled fact weighs an assignment: the label where the atom is true, its
+    complement where the atom is false. The two predicates say the same thing in
+    probability and in log-probability space.
+    """
+    atoms = SymTensor([("a",), ("b",)])
+    probability = reshape(
+        parse_formula_to_module("p(a,0.8)_probability times p(b,0.3)_probability"),
+        atoms,
+    )
+    logprobability = reshape(
+        parse_formula_to_module(
+            "logp(a,0.8)_logprobability times logp(b,0.3)_logprobability"
+        ),
+        atoms,
+    )
+
+    assignments = torch.tensor([[1.0, 1.0], [1.0, 0.0], [0.0, 0.0]])
+    weights = torch.tensor([0.8 * 0.3, 0.8 * 0.7, 0.2 * 0.7])
+
+    torch.testing.assert_close(probability(assignments).flatten(), weights)
+    torch.testing.assert_close(logprobability(assignments).flatten(), weights.log())

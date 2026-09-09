@@ -140,9 +140,9 @@ def test_reject_trailing_characters():
 # --- Module construction ---
 
 
-def test_parse_formula_with_constant_zero():
-    """Constant 0 in a formula is recognized as the additive identity, not as an input."""
-    text = "=(X,true)_boolean and 0_boolean"
+def test_parse_formula_with_the_additive_identity():
+    """``false`` in a formula is the additive identity, not an input."""
+    text = "=(X,true)_boolean and false_boolean"
     module = parse_formula_to_module(text)
 
     # X AND false = false for any X
@@ -151,9 +151,9 @@ def test_parse_formula_with_constant_zero():
         torch.testing.assert_close(result, torch.tensor([[0.0]], dtype=result.dtype))
 
 
-def test_parse_formula_with_constant_one():
-    """Constant 1 in a formula is recognized as the multiplicative identity, not as an input."""
-    text = "=(X,true)_boolean and 1_boolean"
+def test_parse_formula_with_the_multiplicative_identity():
+    """``true`` in a formula is the multiplicative identity, not an input."""
+    text = "=(X,true)_boolean and true_boolean"
     module = parse_formula_to_module(text)
 
     # X AND true = X

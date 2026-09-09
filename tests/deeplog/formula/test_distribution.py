@@ -11,12 +11,12 @@ class TestBuildLeafMapping:
             ("digit", ("i1",), ("1",)): ("classifier", ("i1",), ("1",)),
         }
         mapping = build_leaf_mapping(labels)
-        assert mapping(("_", ("digit", ("i1",), ("0",)), ("boolean",))) == (
+        assert mapping(("digit", ("i1",), ("0",))) == (
             "_",
             ("classifier", ("i1",), ("0",)),
             ("probability",),
         )
-        assert mapping(("_", ("digit", ("i1",), ("1",)), ("boolean",))) == (
+        assert mapping(("digit", ("i1",), ("1",))) == (
             "_",
             ("classifier", ("i1",), ("1",)),
             ("probability",),
@@ -33,12 +33,12 @@ class TestBuildLeafMapping:
             ("b", ("x1",)): ("nn2", ("x1",)),
         }
         mapping = build_leaf_mapping(labels)
-        assert mapping(("_", ("a", ("x1",)), ("boolean",))) == (
+        assert mapping(("a", ("x1",))) == (
             "_",
             ("nn1", ("x1",)),
             ("probability",),
         )
-        assert mapping(("_", ("b", ("x1",)), ("boolean",))) == (
+        assert mapping(("b", ("x1",))) == (
             "_",
             ("nn2", ("x1",)),
             ("probability",),
@@ -47,7 +47,7 @@ class TestBuildLeafMapping:
     def test_unlabeled_leaf_is_retagged_to_probability(self):
         mapping = build_leaf_mapping({("a", ("x1",)): ("nn1", ("x1",))})
         # An unlabeled boolean leaf keeps its atom, retagged as probability.
-        assert mapping(("_", ("fact", ("y",)), ("boolean",))) == (
+        assert mapping(("fact", ("y",))) == (
             "_",
             ("fact", ("y",)),
             ("probability",),
@@ -55,9 +55,4 @@ class TestBuildLeafMapping:
 
     def test_empty_labels_retag_everything(self):
         mapping = build_leaf_mapping({})
-        assert mapping(("_", ("a",), ("boolean",))) == ("_", ("a",), ("probability",))
-
-    def test_unwrapped_symbol_passes_through(self):
-        mapping = build_leaf_mapping({})
-        unknown = ("unknown",)
-        assert mapping(unknown) == unknown
+        assert mapping(("a",)) == ("_", ("a",), ("probability",))

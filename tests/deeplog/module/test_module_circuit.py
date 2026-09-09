@@ -38,6 +38,28 @@ class TestModuleCircuit:
         result = circuit(torch.FloatTensor([[2.0]]))
         assert pytest.approx(10.0) == float(result)
 
+    def test_no_external_inputs_evaluates_single_row(self):
+        """A circuit whose leaves are all baked has no inputs; it yields one row.
+
+        With no runtime tensor to read the batch size from, ModuleCircuit must
+        evaluate a single constant row rather than an empty (batch-0) output —
+        the shape a baked-constant DeepProbLog program compiles to.
+        """
+        const_b = DummyModule(
+            SymTensor([]), SymTensor("b"), lambda e: torch.full((e.shape[0], 1), 0.6)
+        )
+        const_c = DummyModule(
+            SymTensor([]), SymTensor("c"), lambda e: torch.full((e.shape[0], 1), 0.3)
+        )
+        circuit = ModuleCircuit([const_b, const_c], (SymTensor("b"), SymTensor("c")))
+        assert circuit.get_input_shape() == ()  # no external inputs
+        out = circuit()  # called with no runtime tensors
+        assert [tensor.shape for tensor in out] == [
+            (1, 1),
+            (1, 1),
+        ]  # one row, not empty
+        assert pytest.approx([0.6, 0.3]) == [float(tensor) for tensor in out]
+
     def test_output_shape_needs_transformation(self):
         """ModuleCircuit inserts a transformation when the circuit's output_shape
         is not directly produced by any submodule."""

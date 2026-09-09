@@ -68,11 +68,18 @@ Getting started
    .. jupyter-execute::
 
       import torch
-      from deeplog import parse_formula_to_module
+      from deeplog import SymTensor, parse_formula_to_module, reshape, with_structure
 
       # Compute the expected value of an implication (A → B ≡ ¬A ∨ B).
       # E[A → B] where A and B are independent boolean random variables.
       module = parse_formula_to_module("expectation(A, B): not A_boolean or B_boolean")
+
+      # A module names its inputs, so declare the layout of your data and
+      # reshape the module onto it instead of matching its input order.
+      layout = SymTensor(
+          [with_structure(("A",), "probability"), with_structure(("B",), "probability")]
+      )
+      module = reshape(module, layout)
 
       # Each row: [P(A=true), P(B=true)]
       probs = torch.tensor(

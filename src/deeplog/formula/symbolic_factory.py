@@ -6,13 +6,20 @@
 representation and the text representation are the same artefact.
 """
 
-from collections.abc import Sequence
+from __future__ import annotations
 
-from ..algebraic import Algebra
-from ..algebraic import structure_registry
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
 from ..symbol import Symbol
+from ..symbol import structure_of
 from ..symbol import symbol_to_str
+from ..symbol import without_structure
 from .deeplogformulafactory import DeepLogFormulaFactory
+
+
+if TYPE_CHECKING:
+    from .ast import CircuitNode
 
 
 def _needs_wrap(s: str) -> bool:
@@ -38,6 +45,9 @@ class SymbolicFormulaFactory(DeepLogFormulaFactory[str]):
     Every method returns a string that is valid input for
     :func:`~deeplog.formula.text_parser_lark.parse_formula`, so the
     symbolic representation and the text representation are one and the same.
+    That is also why it rejects a compiled lump: a handle onto a circuit parses
+    as an atom, not as the formula the lump stands for. Rendering one is what
+    ``str`` on an AST node does, through a subclass of this factory.
     """
 
     def create_aggregation(
@@ -57,25 +67,7 @@ class SymbolicFormulaFactory(DeepLogFormulaFactory[str]):
         return f"({child})_{structure}"
 
     def create_binary_node(self, operator: str, lhs: str, rhs: str) -> str:
-        """Return ``lhs operator rhs``, parenthesising operands that need it.
-
-        Neutral elements (additive zero, multiplicative one) are simplified
-        away eagerly so that downstream code never sees redundant terms.
-        """
-        for struct_name, algebra in structure_registry.items():
-            if isinstance(algebra, Algebra):
-                zero = f"{symbol_to_str(algebra.zero)}_{struct_name}"
-                one = f"{symbol_to_str(algebra.one)}_{struct_name}"
-                if operator == algebra.sum:
-                    if lhs == zero:
-                        return rhs
-                    if rhs == zero:
-                        return lhs
-                if operator == algebra.product:
-                    if lhs == one:
-                        return rhs
-                    if rhs == one:
-                        return lhs
+        """Return ``lhs operator rhs``, parenthesising operands that need it."""
         lhs = f"({lhs})" if _needs_wrap(lhs) else lhs
         rhs = f"({rhs})" if _needs_wrap(rhs) else rhs
         return f"{lhs} {operator} {rhs}"
@@ -85,6 +77,18 @@ class SymbolicFormulaFactory(DeepLogFormulaFactory[str]):
         return f"{operator} {operand}"
 
     def create_atom(self, atom: Symbol) -> str:
-        """Render a leaf atom as ``symbol_text_structure``."""
-        _, symbol, (structure,) = atom
-        return f"{symbol_to_str(symbol)}_{structure}"
+        """Render a leaf atom as ``symbol_text_structure``, or bare if untagged."""
+        structure = structure_of(atom)
+        if structure is None:
+            return symbol_to_str(atom)
+        return f"{symbol_to_str(without_structure(atom))}_{structure}"
+
+    def embed_circuit(self, node: CircuitNode, children: tuple[str, ...] = ()) -> str:
+        """Reject a compiled lump — it has no surface syntax to render.
+
+        Lumps are emitted only on the compute path (the DeepProbLog engine) and
+        never reach the text interpreter, so this never fires in practice.
+        """
+        raise NotImplementedError(
+            "a compiled CircuitNode lump cannot be rendered as formula text"
+        )

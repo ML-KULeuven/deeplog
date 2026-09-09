@@ -5,7 +5,6 @@ from collections.abc import Callable
 
 import torch
 
-from ..algebraic import HasStructure
 from ..shape import Shape
 from ..shape import SymTensor
 from ..shape import get_all_symbols
@@ -33,7 +32,7 @@ class AggregationModule(AbstractAggregationModule):
     """
 
     #: Built-in reductions keyed by ``name``. Used as the fallback when ``op``
-    #: is not provided to :meth:`__init__`. Each value is a callable that
+    #: is not provided to the constructor. Each value is a callable that
     #: reduces along dim 1 (the stacked-assignments dim).
     aggregation_operations = {"sum": lambda x: x.sum(dim=1)}
 
@@ -63,11 +62,6 @@ class AggregationModule(AbstractAggregationModule):
             ValueError: If any of ``variables`` isn't an input symbol of
                 ``aggregated_module``, or if ``len(variables) != len(domains)``.
         """
-        child_structure = (
-            aggregated_module.get_structure()
-            if isinstance(aggregated_module, HasStructure)
-            else None
-        )
         aggregated_module = aggregated_module.to_module()
         self._validate_binders(variables, domains)
         input_symbols = list(
@@ -105,8 +99,6 @@ class AggregationModule(AbstractAggregationModule):
             aggregated_module.get_input_shape(),
         )
         self._aggregated_module = aggregated_module
-        if child_structure is not None:
-            self.structure = child_structure
 
     def forward(self, *x: torch.Tensor) -> torch.Tensor:
         """Evaluate the inner module across the joint variable domain and reduce.

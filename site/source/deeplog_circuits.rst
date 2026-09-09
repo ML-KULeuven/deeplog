@@ -42,26 +42,22 @@ automatically, but the low-level API is available when you need full control.
    module = circuit.to_module({or_node: ("or_root",), and_node: ("and_root",)})
 
 ``to_module`` converts the circuit into a
-:class:`~deeplog.module.deeplog_module.DeepLogModule`. For deterministic
-probability circuits (using PySDD), pass ``deterministic=True`` to the
-``Circuit`` constructor:
-
-.. code-block:: python
-
-   circuit = Circuit("probability", deterministic=True)
+:class:`~deeplog.module.deeplog_module.DeepLogModule`. A circuit is evaluated as
+written — its operators mean what the structure's ``operator_fns`` say they
+mean.
 
 CircuitNode
 ~~~~~~~~~~~
 
-:class:`~deeplog.circuit.CircuitNode` wraps a node ID together with its
-circuit. It is returned by factory methods and provides convenience helpers:
+:class:`~deeplog.formula.CircuitNode` wraps a node ID together with its circuit.
+Use the companion free functions to compile or transform one or more nodes:
 
 .. code-block:: python
 
-   from deeplog.circuit import CircuitNode, to_module
+   from deeplog.formula import CircuitNode, to_module
 
    node = CircuitNode(circuit, or_node)
-   module = node.to_module(name=("or_root",))
+   module = to_module(node, names=(("or_root",),))
 
    # Convert multiple nodes at once
    module = to_module(node_a, node_b, names=(("a",), ("b",)))
@@ -81,7 +77,8 @@ Basic usage
 
 .. code-block:: python
 
-   from deeplog.circuit import Circuit, CircuitNode, transform_circuit
+   from deeplog.circuit import Circuit, transform_circuit
+   from deeplog.formula import CircuitNode
 
    # Build a boolean circuit
    bool_circuit = Circuit("boolean")
@@ -99,15 +96,18 @@ Basic usage
 Automatic operator mapping
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When both the source and target structures are
-:class:`~deeplog.algebraic.Semiring` (or :class:`~deeplog.algebraic.Algebra`),
-operator mapping is inferred automatically from the structure roles:
+Operator mapping is inferred from the roles both structures declare
+(:attr:`~deeplog.algebraic.AlgebraicStructure.roles`):
 
 * **product** maps to **product** (e.g. ``and`` |rarr| ``times``)
 * **sum** maps to **sum** (e.g. ``or`` |rarr| ``plus``)
 * **negation** maps to **negation** (e.g. ``not`` |rarr| ``negate``, Algebra only)
+* **division** maps to **division** (``divide``, Semifield only)
 
-For custom or non-semiring structures, provide an explicit mapping:
+A role the target does not declare is left unmapped rather than refused: whether
+that matters depends on the nodes being transformed, so it raises only when one
+uses that operator. A structure that declares no roles at all — or an operator
+that plays none — needs an explicit mapping:
 
 .. code-block:: python
 
@@ -117,6 +117,16 @@ For custom or non-semiring structures, provide an explicit mapping:
        roots=[root],
        operator_mapping={"and": "times", "or": "plus"},
    )
+
+Named constants
+~~~~~~~~~~~~~~~
+
+An identity crosses the same way — by the role it plays
+(:attr:`~deeplog.algebraic.AlgebraicStructure.identities`), never by its value.
+The additive identity is ``("0",)`` in ``probability`` and ``("-inf",)`` in
+``logprobability``, where ``("0",)`` is the *multiplicative* one, so carrying a
+constant over as a number would change which element it is. A numeric constant
+names no identity and does cross as itself.
 
 Leaf remapping
 ~~~~~~~~~~~~~~
@@ -137,13 +147,13 @@ distinguish boolean atoms from their probability counterparts:
 Batch transformation with transform_nodes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-:func:`~deeplog.circuit.transform_nodes` transforms multiple
-:class:`~deeplog.circuit.CircuitNode` objects from the same circuit in a single
+:func:`~deeplog.formula.transform_nodes` transforms multiple
+:class:`~deeplog.formula.CircuitNode` objects from the same circuit in a single
 pass:
 
 .. code-block:: python
 
-   from deeplog.circuit import CircuitNode, transform_nodes
+   from deeplog.formula import CircuitNode, transform_nodes
 
    node_a = CircuitNode(bool_circuit, root_a)
    node_b = CircuitNode(bool_circuit, root_b)
@@ -160,13 +170,13 @@ shared subgraph is only traversed once.
 Per-node transformation
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Individual :class:`~deeplog.circuit.CircuitNode` objects expose a
-``transform_circuit()`` method for convenience:
+Transforming one :class:`~deeplog.formula.CircuitNode` is the one-argument case
+of :func:`~deeplog.formula.transform_nodes`:
 
 .. code-block:: python
 
-   prob_node = bool_node.transform_circuit("probability")
-   module = prob_node.to_module()
+   (prob_node,) = transform_nodes(bool_node, target_structure="probability")
+   module = to_module(prob_node, names=(("result",),))
 
 .. seealso::
 

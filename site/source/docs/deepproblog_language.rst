@@ -9,19 +9,20 @@ DeepProbLog language
 
    .. rst-class:: dl-section__title
 
-      Logic accepted by the DeepProbLog engines
+      Logic accepted by the DeepProbLog solver
 
    .. rst-class:: dl-section__lead
 
-      The engines under :mod:`deeplog.systems.deepproblog.engine` interpret a compact DeepProbLog-like language.
+      The DeepProbLog :class:`~deeplog.systems.deepproblog.solver.Solver`, driving a plain-Prolog grounder
+      from :mod:`deeplog.grounding`, interprets a compact DeepProbLog-like language.
       This page spells out its syntax, lexical rules, and the operational semantics that ultimately produce
       differentiable formulas through :class:`deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory`.
 
 Syntactic categories
 --------------------
 
-Programs are sequences of clauses emitted by :func:`deeplog.systems.deepproblog.program.program.str_to_rules`
-or built manually through the helper constructors in :mod:`deeplog.systems.deepproblog.program.program`.
+Programs are sequences of clauses emitted by :func:`deeplog.grounding.prolog.parser.str_to_rules`
+or built manually through the helper constructors in :mod:`deeplog.grounding.prolog.program`.
 Clauses are always terminated with a ``.`` and belong to one of four forms:
 
 * **Rules** – ``H :- B.`` where ``H`` is a disjunction of one or more atoms and ``B`` is a (possibly empty)
@@ -43,7 +44,7 @@ Lexical conventions mirror Prolog:
 Grammar
 -------
 
-The parser in :func:`deeplog.systems.deepproblog.program.program.str_to_rule` accepts the following grammar
+The parser in :func:`deeplog.grounding.prolog.parser.str_to_rule` accepts the following grammar
 (``{x}`` means zero or more occurrences and ``[x]`` means optional):
 
 .. code-block:: text
@@ -77,7 +78,7 @@ Parser limitations
 ------------------
 
 The lightweight parser keeps parity with the helper utilities in :mod:`deeplog.symbol` and
-:mod:`deeplog.systems.deepproblog.program.program`, not the full ISO Prolog grammar. Known limitations:
+:mod:`deeplog.grounding.prolog.program`, not the full ISO Prolog grammar. Known limitations:
 
 * Only ``#``-prefixed full-line comments are ignored. Inline ``%`` or ``/* */`` comments are treated as atoms.
 * Operator declarations are not recognised. Besides the fixed connectives ``:-``, ``?-``, ``::``, ``','``, ``';'``, and
@@ -108,8 +109,8 @@ in rule heads or bodies without extra boilerplate.
 Operational semantics
 ---------------------
 
-Inference follows memoised SLD-resolution as implemented in :class:`deeplog.systems.deepproblog.engine.simple_engine.SimpleEngine`.
-For a goal ``G`` the engine:
+Inference follows memoised SLD-resolution as implemented in :class:`deeplog.grounding.prolog.simple.SimpleGrounder`.
+For a goal ``G`` the grounder:
 
 1. Chooses the predicate at the root of ``G``.
 2. Dispatches special connectives ``','/2``, ``';'/2``, ``not/1`` and ``true/0`` directly.
@@ -123,29 +124,31 @@ layer collapses duplicate substitutions by disjoining their formulas.
 Boolean proof formulas
 ----------------------
 
-Engines compile proof trees through
-:class:`~deeplog.systems.deepproblog.engine.engine.EngineFactory`, a thin
-wrapper around a :class:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory`
+Grounders build proof trees through a
+:class:`~deeplog.grounding.builder.ProofBuilder`, a thin, semantics-free wrapper
+around a :class:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory`
 that always builds **boolean** formulas:
 
-* ``engine_factory.get_true()`` / ``get_false()`` create boolean constant atoms.
-* ``engine_factory.conjoin()`` / ``disjoin()`` build ``and`` / ``or`` nodes via the
+* ``builder.get_true()`` / ``get_false()`` create boolean constant atoms.
+* ``builder.conjoin()`` / ``disjoin()`` build ``and`` / ``or`` nodes via the
   underlying factory's ``create_binary_node``.
-* ``engine_factory.negate()`` builds a ``not`` node via ``create_unary_node``.
-* Labeled facts ``label :: atom.`` call ``engine_factory.get_boolean(goal, label)``,
-  which creates a boolean leaf for the goal atom and records the label in a
-  separate mapping.
+* ``builder.negate()`` builds a ``not`` node via ``create_unary_node``.
+* An *open*-predicate fact is emitted as a leaf via ``builder.leaf(atom)``; every
+  other (closed) fact collapses to ``true``. The grounder attaches no meaning to
+  those leaves.
 
-The result is always a boolean proof circuit. Compilation to a probabilistic
-semiring happens in a later step via the circuit transformation API (see
-`Compilation pipeline`_ below and :doc:`../deeplog_circuits`).
+The result is always a boolean proof circuit. Probabilistic labels are reattached
+afterwards by the DeepProbLog :class:`~deeplog.systems.deepproblog.solver.Solver`
+(matching each ground leaf to its ``label :: atom`` declaration), and compilation
+to a probabilistic semiring happens in a later step via the circuit transformation
+API (see `Compilation pipeline`_ below and :doc:`../deeplog_circuits`).
 
 Built-in predicates
 -------------------
 
-The default engine ships with a small built-in predicate library. See
+The default grounder ships with a small built-in predicate library. See
 :doc:`deepproblog_builtins` for the full list and semantics. Additional
-predicates can be registered by calling :meth:`deeplog.systems.deepproblog.engine.engine.Engine.add_builtin`.
+predicates can be registered by calling :meth:`deeplog.grounding.prolog.grounder.PrologGrounder.add_builtin`.
 
 Example
 -------
@@ -174,8 +177,8 @@ Compilation pipeline
 
 .. versionadded:: 2.2.0
 
-After the engine produces an
-:class:`~deeplog.systems.deepproblog.engine.engine.EngineResult`, the
+After the solver produces an
+:class:`~deeplog.systems.deepproblog.solver.EngineResult`, the
 compilation module turns it into a single differentiable
 :class:`~deeplog.module.deeplog_module.DeepLogModule`.
 
@@ -189,16 +192,16 @@ pipeline in one call:
    transforms the boolean proof circuit to the probability semiring (see
    :doc:`../deeplog_circuits`).
 3. Batch-transforms shared boolean circuits in a single pass via
-   :func:`~deeplog.circuit.transform_nodes`.
+   :func:`~deeplog.formula.transform_nodes`.
 4. Composes the circuit module with batched predicate modules (e.g. neural
    network predicates) to produce the final module.
 
 .. code-block:: python
 
-   from deeplog.systems.deepproblog import compile_to_module
-   from deeplog.systems.deepproblog.engine import SimpleEngine
+   from deeplog.grounding import SimpleGrounder
+   from deeplog.systems.deepproblog import Solver, compile_to_module
 
-   result = SimpleEngine().get_query_result(program, factory)
+   result = Solver(SimpleGrounder()).get_query_result(program, factory)
    module = compile_to_module(result, factory)
 
    # module accepts input tensors and returns query probabilities
@@ -221,6 +224,6 @@ For lower-level control, you can also work with the engine result directly:
 
 .. seealso::
 
-   - :mod:`deeplog.systems.deepproblog.engine.simple_engine` for the pure Python interpreter.
-   - :mod:`deeplog.systems.deepproblog.engine.janus_engine` for the Janus/SWI-Prolog backend that accepts the same language.
+   - :mod:`deeplog.grounding.prolog.simple` for the pure Python interpreter.
+   - :mod:`deeplog.grounding.prolog.janus` for the Janus/SWI-Prolog backend that accepts the same language.
    - :doc:`../deeplog_circuits` for the circuit transformation API used internally.

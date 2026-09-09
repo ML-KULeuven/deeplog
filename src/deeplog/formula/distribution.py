@@ -14,9 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from collections.abc import Mapping
 
-from ..algebraic import get_algebraic_structure
 from ..symbol import Symbol
-from ..symbol import is_structure_wrapped
 from ..symbol import with_structure
 
 
@@ -27,22 +25,18 @@ def build_leaf_mapping(
 
     ``labels`` maps each labeled boolean atom (e.g. ``("a", ("x1",))``) to its
     probability label atom (e.g. ``("nn1", ("x1",))``). The returned callable
-    rewrites a structure-wrapped boolean leaf to its matching probability leaf.
-    Leaves without an atom label are retagged to the probability structure
-    unchanged (they become probability inputs or builder-backed leaves);
-    symbols that are not structure-wrapped pass through untouched.
+    rewrites a *bare* boolean leaf (the canonical identity a circuit exposes via
+    :meth:`~deeplog.circuit.circuit.Circuit.get_leaf_name`) to its matching
+    probability leaf. Leaves without an atom label are retagged to the
+    probability structure unchanged (they become probability inputs or
+    builder-backed leaves).
 
-    Constructing the mapping straight from ``labels`` keeps it unambiguous even
-    when distinct atoms share arguments — e.g. ``a(x1)`` and ``b(x1)`` labeled
-    by ``nn1(x1)`` and ``nn2(x1)`` — which a by-arguments heuristic cannot
-    resolve because both the boolean atoms and their labels collide on
-    arguments alone.
+    Building the mapping straight from ``labels`` keeps it unambiguous when
+    distinct atoms share arguments — ``a(x1)`` and ``b(x1)`` labeled by
+    ``nn1(x1)`` and ``nn2(x1)`` — which arguments alone cannot resolve.
 
-    Numeric-constant labels (e.g. ``0.6 :: fact``) are skipped: they would fold
-    to a constant node, which the deterministic knowledge-compilation backend
-    cannot represent. Such leaves are carried into the probability structure as
-    inputs instead; baking numeric facts into the AC is handled separately by
-    the categorical/MV-SDD path.
+    A numeric label (e.g. ``0.6 :: fact``) maps to its constant symbol like any
+    other, and the target circuit folds it to a constant node.
 
     Args:
         labels: Maps boolean atoms to their probability label atoms.
@@ -50,18 +44,14 @@ def build_leaf_mapping(
     Returns:
         A callable mapping boolean leaf symbols to probability leaf symbols.
     """
-    probability = get_algebraic_structure("probability")
     mapping: dict[Symbol, Symbol] = {
-        with_structure(bool_atom, "boolean"): with_structure(prob_atom, "probability")
+        bool_atom: with_structure(prob_atom, "probability")
         for bool_atom, prob_atom in labels.items()
-        if probability.get_constant_value(prob_atom) is None
     }
 
     def leaf_mapping(sym: Symbol) -> Symbol:
-        if sym in mapping:
-            return mapping[sym]
-        if is_structure_wrapped(sym):
-            return with_structure(sym, "probability")
-        return sym
+        # ``sym`` is a bare boolean leaf; map it to its label or carry it into
+        # the probability structure unchanged.
+        return mapping.get(sym) or with_structure(sym, "probability")
 
     return leaf_mapping

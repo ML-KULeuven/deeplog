@@ -110,23 +110,31 @@ Structure classes
 ~~~~~~~~~~~~~~~~~
 
 All structures are instances of :class:`~deeplog.algebraic.AlgebraicStructure`.
-The built-in structures use two specialised subclasses that enable automatic
-operator mapping during :doc:`circuit transformation <deeplog_circuits>`:
+The built-in structures use specialised subclasses, each naming the axiom it
+adds and the operator that carries it:
 
 * :class:`~deeplog.algebraic.Semiring` — adds named ``product`` and ``sum``
-  roles (with constants ``zero`` and ``one``). When both the source and target
-  of a circuit transformation are semirings, operators are mapped automatically
-  (product |rarr| product, sum |rarr| sum).
+  roles (with constants ``zero`` and ``one``). A :doc:`circuit transformation
+  <deeplog_circuits>` maps operators by role, so a source's product becomes the
+  target's product whatever the two call it.
 * :class:`~deeplog.algebraic.Algebra` — extends ``Semiring`` with a
   ``negation`` role, which is also mapped automatically.
+* :class:`~deeplog.algebraic.Semifield` — a ``Semiring`` whose product is
+  invertible. Declaring that axiom is what defines division: the class registers
+  a ``division`` operator (``divide``, computed by ``division_fn``), so a
+  formula divides where the structure is a semifield and nowhere else. It is
+  independent of ``Algebra`` — an invertible product says nothing about a
+  complement — so a structure can be either, both, or neither.
 
-All three built-in structures (``BOOLEAN``, ``PROBABILITY``,
-``LOGPROBABILITY``) are ``Algebra`` instances. Custom structures can use any of
-the three classes depending on which roles they provide.
+``BOOLEAN`` is an ``Algebra``. ``PROBABILITY`` and ``LOGPROBABILITY`` are both
+``Algebra`` and ``Semifield``, which is what makes a conditional probability
+``E[q and e] divide E[e]`` an ordinary formula rather than a special construct;
+``LOGPROBABILITY`` divides by subtracting, because that is what division is in
+log space. Custom structures use whichever classes provide the roles they have.
 
 .. code-block:: python
 
-   from deeplog import Algebra, Semiring, AlgebraicStructure
+   from deeplog import Algebra, AlgebraicStructure, Semifield, Semiring
 
    # Minimal: free-form operator names
    fuzzy = AlgebraicStructure(
@@ -145,6 +153,12 @@ the three classes depending on which roles they provide.
    my_algebra = Algebra(
        name="myalgebra",
        product="times", sum="plus", negation="negate",
+   )
+
+   # Semifield: an invertible product, so `divide` is an operator as well
+   ratio = Semifield(
+       name="ratio",
+       product="times", sum="plus",
    )
 
 .. |rarr| unicode:: U+2192

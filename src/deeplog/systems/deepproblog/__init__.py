@@ -1,29 +1,59 @@
 #  Copyright (c) 2024-2026. KU Leuven
-"""DeepProbLog system integration for DeepLog."""
+"""DeepProbLog system integration for DeepLog.
+
+DeepProbLog layers probabilistic (and neural) semantics on top of a plain-Prolog
+grounder (:mod:`deeplog.grounding`). A :class:`Solver` wraps a grounder
+(:class:`~deeplog.grounding.SimpleGrounder` / :class:`~deeplog.grounding.JanusGrounder`)
+and produces an :class:`EngineResult`; :class:`KBestJanusGrounder` is the
+probability-guided variant used directly. :func:`compile_to_module` turns a result
+into a differentiable module.
+"""
+
+from deeplog.grounding import JANUS_AVAILABLE
+from deeplog.grounding import Builtin
+from deeplog.grounding import JanusGrounder
+from deeplog.grounding import Program
+from deeplog.grounding import PrologGrounder
+from deeplog.grounding import RuleType
+from deeplog.grounding import SimpleGrounder
+from deeplog.grounding import UnknownPredicateException
+from deeplog.grounding.prolog import create_fact
+from deeplog.grounding.prolog import create_query
+from deeplog.grounding.prolog import create_rule
+from deeplog.grounding.prolog import get_constraint_body
+from deeplog.grounding.prolog import is_constraint
+from deeplog.grounding.prolog import is_query
 
 from .compile import compile_to_module
-from .engine import Engine
-from .engine import EngineResult
-from .engine import JanusEngine
-from .engine import KBestJanusEngine
-from .engine import SimpleEngine
-from .engine import UnknownPredicateException
-from .program import Program
-from .program import RuleType
-from .program import str_to_rule
-from .program import str_to_rules
+from .kbest import KBestJanusGrounder
+from .kbest import NeuralPredicateEvaluator
+from .parser import create_labeled_fact
+from .solver import EngineResult
+from .solver import Solver
 
 
 __all__ = [
-    "compile_to_module",
-    "Engine",
+    # Solving
+    "Solver",
     "EngineResult",
-    "SimpleEngine",
-    "JanusEngine",
-    "KBestJanusEngine",
+    "compile_to_module",
+    # Grounders (re-exported for convenience)
+    "PrologGrounder",
+    "SimpleGrounder",
+    "JanusGrounder",
+    "KBestJanusGrounder",
+    "NeuralPredicateEvaluator",
+    "Builtin",
     "UnknownPredicateException",
+    "JANUS_AVAILABLE",
+    # Program: types and construction
     "Program",
     "RuleType",
-    "str_to_rule",
-    "str_to_rules",
+    "create_rule",
+    "create_query",
+    "create_fact",
+    "create_labeled_fact",
+    "is_query",
+    "is_constraint",
+    "get_constraint_body",
 ]

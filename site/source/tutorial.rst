@@ -111,12 +111,6 @@ How DeepLog formulas map to tensors and executable modules.
 
     Learn how DeepLog predicates connect symbolic atoms to executable tensor operations, enabling the evaluation of logical formulas within DeepLog.
 
-.. card:: DIMACS CNF parsing
-    :link: examples/dimacs_cnf
-    :link-type: doc
-
-    Parse DIMACS CNF text into DeepLog formulas and modules, choosing boolean or probabilistic structures.
-
 .. card:: Aggregation basics
     :link: examples/01_aggregation_basics
     :link-type: doc
@@ -135,6 +129,12 @@ How DeepLog formulas map to tensors and executable modules.
     :link-type: doc
 
     Learn how symbolic formulas are compiled into DeepLog modules and how the resulting modules plug into differentiable pipelines.
+
+.. card:: The Formula AST and its Rewrites
+    :link: examples/ast_and_rewrites
+    :link-type: doc
+
+    Look inside the parse-to-module pipeline: the materialized AST and how to read it, building one with ``AstFactory``, and the ``recognize_expectation`` pass that turns a hand-written weighted model count into an expectation.
 
 
 Extending DeepLog
@@ -164,11 +164,11 @@ End-to-end tutorials showing DeepLog in applied settings.
 
     This tutorial shows how to include DeepLog in a normal ML pipeline by implementing the Semantic Loss framework in DeepLog with an exactly-one constraint.
 
-.. card:: MNIST Addition
-    :link: examples/mnist_addition
+.. card:: DeepProbLog
+    :link: examples/deepproblog
     :link-type: doc
 
-    Follow a full DeepProbLog workflow where two MNIST digits are jointly classified and summed using DeepLog modules for arithmetic reasoning. This is an end-to-end example intended to show the DeepLog workflow for neurosymbolic developers.
+    Neural predicates: a fact's probability comes from a network instead of a constant. Builds up from a tiny example to a full DeepProbLog workflow where two MNIST digits are jointly classified and summed — an end-to-end neurosymbolic example.
 
 
 .. seealso::
@@ -191,15 +191,15 @@ End-to-end tutorials showing DeepLog in applied settings.
    examples/deeplogmodule
    examples/composition
    examples/formula_to_module
+   examples/ast_and_rewrites
    examples/semantic_loss
    examples/symbol
    examples/predicates
-   examples/mnist_addition
+   examples/problog
+   examples/deepproblog
    examples/circuits
    examples/language
    examples/01_aggregation_basics
-   examples/aggregation
    examples/03_free_variables_and_batching
-   examples/dimacs_cnf
    examples/circuit_transformation
    examples/ltn

@@ -5,9 +5,9 @@ import pytest
 from deeplog.symbol import parse_symbol
 from deeplog.symbol import symbol_to_pretty_string
 from deeplog.symbol import symbol_to_str
-from deeplog.systems.deepproblog.program import create_fact
-from deeplog.systems.deepproblog.program import create_query
-from deeplog.systems.deepproblog.program import create_rule
+from deeplog.systems.deepproblog import create_labeled_fact
+from deeplog.systems.deepproblog import create_query
+from deeplog.systems.deepproblog import create_rule
 
 
 symbol_examples = [
@@ -83,7 +83,7 @@ rule_examples = [
         "addition(X,Y,Z) :- digit(X,N1) , digit(Y,N2) , Z is N1+N2",
     ),
     (
-        create_fact(("digit", ("X",), ("Y",)), ("nn", ("X",), ("Y",))),
+        create_labeled_fact(("digit", ("X",), ("Y",)), ("nn", ("X",), ("Y",))),
         "nn(X,Y) :: digit(X,Y) :- true",
     ),
     (create_query([("addition", ("a",), ("b",), ("c",))]), "?- addition(a,b,c)"),
@@ -108,25 +108,45 @@ a, b, c = ((x,) for x in "abc")
 # --- Structure-wrapping helpers ---
 
 
-def test_get_structure_returns_structure_tuple():
-    from deeplog.symbol import get_structure
+def test_structure_of_returns_the_structure_name():
+    from deeplog.symbol import structure_of
 
-    atom = ("_", ("v1",), ("boolean",))
-    assert get_structure(atom) == ("boolean",)
+    assert structure_of(("_", ("v1",), ("boolean",))) == "boolean"
 
 
-def test_get_structure_rejects_unwrapped_atom():
-    from deeplog.symbol import get_structure
+def test_structure_of_reports_an_unwrapped_atom_as_unlabelled():
+    from deeplog.symbol import structure_of
 
+    assert structure_of(("v1",)) is None
+
+
+def test_structure_of_reports_a_non_underscore_head_as_unlabelled():
+    from deeplog.symbol import structure_of
+
+    assert structure_of(("=", ("v1",), ("true",))) is None
+
+
+def test_without_structure_is_the_tolerant_unwrap():
+    from deeplog.symbol import unwrap_structure
+    from deeplog.symbol import without_structure
+
+    assert without_structure(("_", ("v1",), ("boolean",))) == ("v1",)
+    assert without_structure(("v1",)) == ("v1",)
     with pytest.raises(ValueError):
-        get_structure(("v1",))
+        unwrap_structure(("v1",))
 
 
-def test_get_structure_rejects_non_underscore_head():
-    from deeplog.symbol import get_structure
+def test_retag_carries_the_label_of_the_symbol_it_renames():
+    from deeplog.symbol import retag
 
-    with pytest.raises(ValueError):
-        get_structure(("=", ("v1",), ("true",)))
+    labelled = ("_", ("v1",), ("boolean",))
+    assert retag(("sum", ("v1",)), labelled) == (
+        "_",
+        ("sum", ("v1",)),
+        ("boolean",),
+    )
+    # A bare source leaves the new name bare — nothing is invented.
+    assert retag(("sum", ("v1",)), ("v1",)) == ("sum", ("v1",))
 
 
 def test_with_structure_wraps_unwrapped_atom():

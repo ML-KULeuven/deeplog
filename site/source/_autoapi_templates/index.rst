@@ -2,7 +2,8 @@ API Reference
 =============
 
 Browse the DeepLog API. Start with a curated set of high-level modules,
-or view the full API in the sidebar.
+or view the full API in the sidebar. Every exported name also appears together,
+with its signature and docstring, on the :doc:`one-page public API </public_api>`.
 
 {# Configure which modules appear in the quick-jump table #}
 {% set quickjump_ids = [
@@ -34,6 +35,7 @@ or view the full API in the sidebar.
    :hidden:
    :titlesonly:
 
+   /public_api
    {% for page in pages|selectattr("is_top_level_object") %}
    {{ page.include_path }}
    {% endfor %}

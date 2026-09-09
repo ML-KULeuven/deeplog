@@ -11,8 +11,13 @@ variables:
   PYTHONPATH: "$CI_PROJECT_DIR/src"
   GITHUB_MIRROR_REPOSITORY: "ML-KULeuven/deeplog"
 
+update_env:
+  script:
+    - uv pip install -r requirements.txt
 
 lint:
+  needs:
+    - job: update_env
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
@@ -64,7 +69,16 @@ test_notebooks:
     - job: lint
   parallel:
     matrix:
-      - NOTEBOOK: [symbol, shape, deeplogmodule, composition, language, formula_to_module, semantic_loss, mnist_addition, predicates, dimacs, circuits, aggregation, "01_aggregation_basics", "03_free_variables_and_batching", ltn, circuit_transformation]
+      - NOTEBOOK: [symbol, shape, deeplogmodule, composition, language, formula_to_module, semantic_loss, problog, deepproblog, predicates, circuits, "01_aggregation_basics", "03_free_variables_and_batching", ltn, circuit_transformation]
+  # Concurrent matrix jobs sharing a host race for ZMQ ports, so kernel startup
+  # occasionally fails with "Address already in use" / "Kernel didn't respond".
+  # The failure is transient, so retry the job rather than fail the pipeline.
+  retry:
+    max: 2
+    when:
+      - script_failure
+      - stuck_or_timeout_failure
+      - runner_system_failure
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
@@ -170,18 +184,17 @@ deploy_static_site:
   variables:
     NB_EXECUTION_TIMEOUT: "600"
     DOCS_BASE_URL: "https://dtai.cs.kuleuven.be/deeplog"
-    SMV_TAG_WHITELIST: "^v3\\.0\\.2$"
+    STATIC_SITE_DIR: "/static_site"
+    SMV_TAG_WHITELIST: "^${CI_COMMIT_TAG}$"
     SMV_BRANCH_WHITELIST: "^$"
     SMV_REMOTE_WHITELIST: "^origin$"
     SMV_RELEASED_PATTERN: "^tags/.*$"
     SMV_OUTPUTDIR_FORMAT: "{ref.name}"
-    SMV_ROOT_REF: "v3.0.2"
+    SMV_ROOT_REF: "${CI_COMMIT_TAG}"
     SMV_PREFER_REMOTE_REFS: "true"
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+([-.].+)?$/'
       when: on_success
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      when: manual
     - when: never
   cache:
     key: "docs-$CI_COMMIT_REF_SLUG"
@@ -190,22 +203,29 @@ deploy_static_site:
       - site/build
   script:
     - |
-      if [ ! -d /static_site ]; then
-        echo "Expected mounted static site directory at /static_site, but it does not exist."
+      if [ ! -d "$STATIC_SITE_DIR" ]; then
+        echo "Expected mounted static site directory at $STATIC_SITE_DIR, but it does not exist."
         exit 1
       fi
     - rm -rf site/build/html
     - DOCS_BASE_URL="${DOCS_BASE_URL:-}" make -C site multiversion
     - |
-      if [ ! -d "site/build/html/${SMV_ROOT_REF}" ]; then
-        echo "Expected multiversion root ref output at site/build/html/${SMV_ROOT_REF}, but it does not exist."
+      if [ ! -d "site/build/html/${CI_COMMIT_TAG}" ]; then
+        echo "Expected the docs of ${CI_COMMIT_TAG} at site/build/html/${CI_COMMIT_TAG}, but they were not built."
         exit 1
       fi
+    # Build state, regenerable and half the output's size, is not published.
+    - rm -rf "site/build/html/${CI_COMMIT_TAG}/.doctrees"
+    # Only this release's docs can be built: sphinx-multiversion builds every
+    # version's sources against the one installed package. So the site keeps the
+    # directory each release published and this job adds its own, replacing only
+    # the copy of the newest release that the root serves.
+    - rm -rf "${STATIC_SITE_DIR:?}/${CI_COMMIT_TAG}"
+    - cp -a "site/build/html/${CI_COMMIT_TAG}" "${STATIC_SITE_DIR}/${CI_COMMIT_TAG}"
+    - find "$STATIC_SITE_DIR" -mindepth 1 -maxdepth 1 ! -name 'v[0-9]*' -exec rm -rf {} +
+    - cp -a "site/build/html/${CI_COMMIT_TAG}/." "$STATIC_SITE_DIR/"
     - python site/rewrite_switcher.py
-    - find /static_site -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-    - cp -a site/build/html/. /static_site/
-    - cp -a "site/build/html/${SMV_ROOT_REF}/." /static_site/
-    - test -f /static_site/index.html
+    - test -f "$STATIC_SITE_DIR/index.html"
 
 pages:
   needs:

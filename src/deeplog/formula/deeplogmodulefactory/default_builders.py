@@ -8,13 +8,13 @@ from functools import partial
 from ...circuit.circuit import Circuit
 from ...module import AggregationModule
 from ..predicates import EqualityPredicate
+from ..predicates.builtin_predicates import LogProbabilityPredicate
 from ..predicates.builtin_predicates import ProbabilityPredicate
-from .nodes import build_expectation
-from .nodes import build_transform
 from .registry import register_aggregation_builder
 from .registry import register_atom_builder
 from .registry import register_circuit_builder
 from .registry import register_transformation_builder
+from .transform_cast import build_transform
 
 
 def register_defaults() -> None:
@@ -28,8 +28,11 @@ def register_defaults() -> None:
         partial(EqualityPredicate, domain=[("false",), ("true",)]),
     )
     register_atom_builder(*ProbabilityPredicate.get_predicate(), ProbabilityPredicate)
+    register_atom_builder(
+        *LogProbabilityPredicate.get_predicate(), LogProbabilityPredicate
+    )
 
-    register_circuit_builder("boolean", lambda: Circuit("boolean", deterministic=True))
+    register_circuit_builder("boolean", lambda: Circuit("boolean"))
     register_circuit_builder("probability", lambda: Circuit("probability"))
     register_circuit_builder("logprobability", lambda: Circuit("logprobability"))
 
@@ -39,10 +42,14 @@ def register_defaults() -> None:
             child, variables, domains, name="sum", op=lambda x: x.sum(dim=1)
         ),
     )
-    register_aggregation_builder("expectation", build_expectation)
 
-    register_transformation_builder(
-        "boolean",
-        "probability",
-        partial(build_transform, from_structure="boolean", to_structure="probability"),
-    )
+    for source, target in (
+        ("boolean", "probability"),
+        ("probability", "logprobability"),
+        ("logprobability", "probability"),
+    ):
+        register_transformation_builder(
+            source,
+            target,
+            partial(build_transform, from_structure=source, to_structure=target),
+        )

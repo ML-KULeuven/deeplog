@@ -91,7 +91,7 @@ module = parse_formula_to_module(
 print(int(module()))  # 3
 ```
 
-See `examples/` for end-to-end notebooks (MNIST addition, semantic loss, DIMACS CNF, LTN, …) and the full API reference on the docs site.
+See `examples/` for end-to-end notebooks (MNIST addition, semantic loss, LTN, …) and the full API reference on the docs site.
 
 ## Documentation & tutorials
 

@@ -104,3 +104,26 @@ def test_simplified_repr_uses_original_name():
     repr_str = repr(simplified)
     assert "Sequential" in repr_str or repr_str
     assert "()" in repr_str
+
+
+def test_simplify_empty_channel_with_subtensor_inputs():
+    # The kept input carries subtensor dims (each symbol is a feature vector).
+    # The reintroduced empty channel must be the canonical (batch, 0) — a
+    # gather with zero indices would drag the feature dims along instead.
+    i1, i2 = ("i1",), ("i2",)
+    full = SymTensor([i1, i1, i2])
+    empty = SymTensor([])
+    captured = {}
+
+    def forward(x, e):
+        captured["shapes"] = (x.shape, e.shape)
+        return x.sum(dim=(1, 2)).unsqueeze(1)
+
+    module = DummyModule((full, empty), SymTensor([("out",)]), forward)
+    simplified = simplify_module(module)
+
+    assert simplified.get_input_shape() == SymTensor([i1, i2])
+
+    out = simplified(torch.ones(5, 2, 4))
+    assert out.shape == torch.Size([5, 1])
+    assert captured["shapes"] == (torch.Size([5, 3, 4]), torch.Size([5, 0]))

@@ -184,13 +184,13 @@ pyrightconfig.json
 *.sdd
 *.ckpt
 *.dot
-/examples/deepproblog/mnist_addition/_data/
 /public/
 .DS_Store
 .vscode/*
 
 site/source/examples
 site/source/autoapi
+site/source/public_api.rst
 *.gv
 *.pdf
 site/source/paths/

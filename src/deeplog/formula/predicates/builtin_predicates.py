@@ -31,7 +31,7 @@ class SumsPredicate(Predicate[torch.Tensor, torch.Tensor, torch.Tensor]):
         self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor
     ) -> torch.Tensor:
         """Return 1.0 where ``x + y == z`` and 0.0 otherwise."""
-        return (x + y == z).to(z.dtype)
+        return (x + y == z).to(torch.get_default_dtype())
 
 
 class EqualityPredicate(Predicate[torch.Tensor, torch.Tensor]):
@@ -56,7 +56,7 @@ class EqualityPredicate(Predicate[torch.Tensor, torch.Tensor]):
 
     def forward_predicate(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
         """Return a tensor of equality results between the two arguments."""
-        return torch.eq(lhs, rhs)
+        return torch.eq(lhs, rhs).to(torch.get_default_dtype())
 
 
 class _LabelProbabilityPredicate(Predicate[torch.Tensor, torch.Tensor]):
@@ -121,7 +121,7 @@ class LogProbabilityPredicate(_LabelProbabilityPredicate):
 
     def _convert_label(self, p: float, label_structure: str) -> float:
         if label_structure == "probability":
-            if p < 1e-12:
+            if p <= 0.0:
                 return float("-inf")
             return math.log(p)
         return p
@@ -130,13 +130,22 @@ class LogProbabilityPredicate(_LabelProbabilityPredicate):
         return torch.log1p(-torch.exp(p))
 
 
-class _NetworkPredicate(Predicate[torch.Tensor, torch.Tensor]):
+class NetworkPredicate(Predicate[torch.Tensor, torch.Tensor]):
     """Predicate that delegates evaluation to a provided ``torch.nn.Module``.
 
     Always binary: the first argument is fed to the module and the second
     selects a row from its output. The ``arity`` constructor parameter is
     therefore expected to be ``2``.
+
+    Ground atoms sharing a first argument — ``digit(i1,0) … digit(i1,9)``, the
+    usual "one classifier, N mutually exclusive values" pattern — are distinct
+    evaluations over the *same* image. The first argument is therefore taken
+    unexpanded (see :attr:`~deeplog.formula.predicates.predicate.Predicate.distinct_arguments`): the module runs once
+    per distinct image, and :meth:`forward_predicate` selects each evaluation's
+    row from that result.
     """
+
+    distinct_arguments = (0,)
 
     def __init__(
         self,
@@ -146,6 +155,7 @@ class _NetworkPredicate(Predicate[torch.Tensor, torch.Tensor]):
         module: torch.nn.Module,
         all_arguments: Iterable[tuple[Symbol, ...]],
     ):
+        """Evaluate ``functor``/``arity`` atoms in ``structure`` through ``module``."""
         # functor/arity/structure must exist before ``super().__init__`` —
         # the base reads ``self.arity`` during argument validation.
         self.functor = functor
@@ -165,17 +175,27 @@ class _NetworkPredicate(Predicate[torch.Tensor, torch.Tensor]):
     def forward_predicate(
         self, inputs: torch.Tensor, indices: torch.Tensor
     ) -> torch.Tensor:
-        """Run ``inputs`` through the wrapped module and gather rows by ``indices``."""
+        """Run ``inputs`` through the wrapped module and gather rows by ``indices``.
+
+        ``inputs`` holds one row per (batch item, *distinct* first argument);
+        ``indices`` one per (batch item, evaluation). The module therefore runs
+        once per distinct image, and its output is expanded over the
+        evaluations that share it before the row selection.
+        """
         output = self._module(inputs)
+        slots = self.evaluation_slots(0).to(output.device)
+        batch_size = indices.shape[0] // self._nr_evaluations
+        output = output.view(batch_size, -1, *output.shape[1:])[:, slots]
+        output = output.reshape(batch_size * self._nr_evaluations, *output.shape[2:])
         return output[torch.arange(output.shape[0]), indices.to(torch.long)]
 
 
 def get_network_predicate(
     functor: str, arity: int, structure: str, module: torch.nn.Module
-) -> Callable[[Iterable[tuple[Symbol, ...]]], _NetworkPredicate]:
-    """Curry :class:`_NetworkPredicate` with ``(functor, arity, structure, module)``.
+) -> Callable[[Iterable[tuple[Symbol, ...]]], NetworkPredicate]:
+    """Curry :class:`NetworkPredicate` with ``(functor, arity, structure, module)``.
 
     The returned callable accepts ``all_arguments`` and yields a configured
     predicate — suitable as an entry in an ``atom_builders`` mapping.
     """
-    return functools.partial(_NetworkPredicate, functor, arity, structure, module)
+    return functools.partial(NetworkPredicate, functor, arity, structure, module)

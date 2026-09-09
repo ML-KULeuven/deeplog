@@ -6,7 +6,6 @@ from typing import cast
 
 import torch.nn
 
-from ..algebraic import HasStructure
 from ..graph_backend import ensure_graph
 from ..util import as_tuple
 from .deeplog_module import DeepLogModule
@@ -71,8 +70,3 @@ class Sequential(DeepLogModule):
     def __repr__(self):
         """Represent the sequence by chaining contained module reprs with arrows."""
         return " -> ".join(repr(m) for m in self._iter_submodules())
-
-    def get_structure(self) -> str:
-        """Return the structure of the final module in the chain."""
-        last = cast(HasStructure, self.submodules[-1])
-        return last.get_structure()

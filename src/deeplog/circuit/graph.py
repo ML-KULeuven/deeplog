@@ -22,8 +22,8 @@ class Graph:
     """Efficient graph structure for circuit building with integer node IDs.
 
     Supports n-ary nodes with configurable node types (AND, OR, NOT, LEAF, etc.).
-    Designed for efficient iteration and construction before conversion to
-    klay or PySDD backends.
+    Designed for efficient iteration and construction before a backend walk or a
+    knowledge-compilation pass consumes it.
     """
 
     node_types: frozenset[str]
@@ -101,11 +101,17 @@ class Graph:
         """Check if a node ID exists in the graph."""
         return node_id in self._nodes
 
-    def iter_topological(self, roots: list[int]) -> Iterator[int]:
+    def iter_topological(
+        self, roots: list[int], frontier: frozenset[int] = frozenset()
+    ) -> Iterator[int]:
         """Iterate over nodes in topological order (leaves first).
 
         Args:
             roots: List of root node IDs to start traversal from.
+            frontier: Node IDs to treat as sinks — yielded, but not descended
+                into, so nothing below them is visited. This is how a compile
+                bounds itself at nodes whose value comes from elsewhere
+                (:mod:`deeplog.circuit.split`).
 
         Yields node IDs such that all children are yielded before their parents.
         """
@@ -121,6 +127,8 @@ class Graph:
                 continue
             visited.add(node_id)
             stack.append((node_id, True))
+            if node_id in frontier:
+                continue
             node = self._nodes[node_id]
             for child in reversed(node.children):
                 if child not in visited:
@@ -140,6 +148,7 @@ class Graph:
         self,
         roots: list[int],
         chain_groups: list[tuple[frozenset[str], frozenset[int]]],
+        frontier: frozenset[int] = frozenset(),
     ) -> tuple[set[int], dict[int, list[int]]]:
         """Collapse chains of same-type nodes for each ``(types, absorb)`` group.
 
@@ -154,6 +163,7 @@ class Graph:
             chain_groups: Each pair declares one set of mutually-flattening
                 node types and the ids to drop while flattening them. Pass
                 e.g. ``[({"and", "times"}, {one_id}), ({"or", "plus"}, {zero_id})]``.
+            frontier: Nodes the traversal stops at, as in :meth:`iter_topological`.
 
         Returns:
             ``(absorbed, flat_children)`` where ``absorbed`` is the set of
@@ -166,7 +176,7 @@ class Graph:
         # > 1 is shared and must remain a real intermediate rather than being
         # inlined into a parent chain.
         parents: dict[int, int] = {}
-        for node_id in self.iter_topological(roots):
+        for node_id in self.iter_topological(roots, frontier):
             for child in self._nodes[node_id].children:
                 parents[child] = parents.get(child, 0) + 1
         for root_id in roots:
@@ -178,7 +188,7 @@ class Graph:
                 type_to_group[t] = (types, absorb)
 
         absorbed: set[int] = set()
-        for node_id in self.iter_topological(roots):
+        for node_id in self.iter_topological(roots, frontier):
             node = self._nodes[node_id]
             group = type_to_group.get(node.node_type)
             if group is None:
@@ -193,7 +203,7 @@ class Graph:
                     absorbed.add(child)
 
         flat_children: dict[int, list[int]] = {}
-        for node_id in self.iter_topological(roots):
+        for node_id in self.iter_topological(roots, frontier):
             if node_id in absorbed:
                 continue
             node = self._nodes[node_id]

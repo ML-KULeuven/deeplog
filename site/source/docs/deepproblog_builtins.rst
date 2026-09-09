@@ -19,8 +19,8 @@ DeepProbLog built-in predicates
 Built-ins
 ---------
 
-The default DeepProbLog-style engine exposes the following predicates (defined in
-``src/deeplog/systems/deepproblog/engine/builtins.py``):
+The default plain-Prolog grounder exposes the following predicates (defined in
+``src/deeplog/grounding/prolog/builtins.py``):
 
 ==================  ======  ============================================
 Predicate           Arity   Meaning
@@ -33,7 +33,7 @@ Predicate           Arity   Meaning
 ==================  ======  ============================================
 
 Additional predicates can be registered by calling
-:meth:`deeplog.systems.deepproblog.engine.engine.Engine.add_builtin`.
+:meth:`deeplog.grounding.prolog.grounder.PrologGrounder.add_builtin`.
 
 .. seealso::
 

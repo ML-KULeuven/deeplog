@@ -86,6 +86,7 @@ class _IndexingTransform(DeepLogModule):
         for i, out in enumerate(outputs):
             arr = _gather_indices(labels, out, raise_on=(input_shape, output_shape))
             self.register_buffer(f"_indices_{i}", torch.from_numpy(arr))
+        self._empty_outputs = tuple(out.is_empty() for out in outputs)
         self._n_outputs = len(outputs)
         self._is_tuple_output = isinstance(output_shape, tuple)
         self._input_ndim = input_shape.array.ndim
@@ -97,13 +98,27 @@ class _IndexingTransform(DeepLogModule):
         else:
             flat = torch.flatten(input_tensor, start_dim=1, end_dim=self._input_ndim)
         gathered = tuple(
-            flat[:, getattr(self, f"_indices_{i}")] for i in range(self._n_outputs)
+            # An empty output channel is canonically (batch, 0); a gather with
+            # zero indices would instead drag the input's subtensor dims along.
+            flat.new_zeros(flat.shape[0], 0)
+            if self._empty_outputs[i]
+            else flat[:, getattr(self, f"_indices_{i}")]
+            for i in range(self._n_outputs)
         )
         return gathered if self._is_tuple_output else gathered[0]
 
 
 class _TupleIndexingTransform(DeepLogModule):
-    """Select+flatten+concat a tuple input once, then gather one or more output SymTensors."""
+    """Select+flatten+concat a tuple input once, then gather one or more output SymTensors.
+
+    The concat packs every selected input into one ``(batch, n_symbols, *features)``
+    tensor, which requires the inputs to agree on their trailing feature shape. They
+    do not always: a module may mix a network predicate's data argument (one feature
+    *vector* per symbol, e.g. an image) with plain scalar atom probabilities. When the
+    selected inputs disagree, the packing is skipped and each output is gathered
+    column-by-column straight from its source input instead — see
+    :attr:`_route_src` / :attr:`_route_off`.
+    """
 
     _input_shape: tuple[SymTensor, ...]
     _output_shape: Shape
@@ -134,10 +149,21 @@ class _TupleIndexingTransform(DeepLogModule):
         )
         labels = {label: index for index, label in enumerate(flat_symbols)}
 
+        # Column count each selected input contributes to the packed tensor; the
+        # running total turns a packed index into a (source, offset) pair for the
+        # unpacked path below.
+        bounds = np.cumsum([0] + [int(s.array.size) for s in relevant])
+
         for i, out in enumerate(outputs):
             arr = _gather_indices(labels, out, raise_on=(input_shapes, output_shape))
             self.register_buffer(f"_indices_{i}", torch.from_numpy(arr))
+            source = np.atleast_1d(np.searchsorted(bounds, arr, side="right") - 1)
+            offset = np.atleast_1d(arr) - bounds[source]
+            self.register_buffer(f"_route_src_{i}", torch.from_numpy(source.ravel()))
+            self.register_buffer(f"_route_off_{i}", torch.from_numpy(offset.ravel()))
 
+        self._symbol_shapes = tuple(out.array.shape for out in outputs)
+        self._empty_outputs = tuple(out.is_empty() for out in outputs)
         self._selected = tuple(selected)
         self._end_dims = tuple(s.array.ndim for s in relevant)
         self._n_outputs = len(outputs)
@@ -158,11 +184,44 @@ class _TupleIndexingTransform(DeepLogModule):
             else x[i].unsqueeze(1)
             for i, end_dim in zip(self._selected, self._end_dims, strict=True)
         ]
+        if any(t.shape[2:] != flat[0].shape[2:] for t in flat[1:]):
+            return self._gather_unpacked(flat)
+
         concat = flat[0] if len(flat) == 1 else torch.cat(flat, dim=1)
         gathered = tuple(
-            concat[:, getattr(self, f"_indices_{i}")] for i in range(self._n_outputs)
+            # An empty output channel is canonically (batch, 0); a gather with
+            # zero indices would instead drag the input's subtensor dims along.
+            concat.new_zeros(concat.shape[0], 0)
+            if self._empty_outputs[i]
+            else concat[:, getattr(self, f"_indices_{i}")]
+            for i in range(self._n_outputs)
         )
         return gathered if self._is_tuple_output else gathered[0]
+
+    def _gather_unpacked(self, flat):
+        """Gather each output straight from its sources, without packing them first.
+
+        The path for inputs whose feature shapes disagree, so ``torch.cat`` cannot
+        pack them. Each output column is read from the input that carries it; an
+        output must therefore still be internally homogeneous, which it is
+        whenever it feeds a single consumer (a predicate argument, a circuit's
+        atom channel).
+        """
+        batch = flat[0].shape[0]
+        gathered = []
+        for i in range(self._n_outputs):
+            if self._empty_outputs[i]:
+                gathered.append(flat[0].new_zeros(batch, 0))
+                continue
+            source = getattr(self, f"_route_src_{i}").tolist()
+            offset = getattr(self, f"_route_off_{i}").tolist()
+            columns = [flat[s][:, o] for s, o in zip(source, offset, strict=True)]
+            stacked = torch.stack(columns, dim=1)
+            # Restore the output's symbol dimensions, which ravelling flattened.
+            gathered.append(
+                stacked.reshape(batch, *self._symbol_shapes[i], *stacked.shape[2:])
+            )
+        return tuple(gathered) if self._is_tuple_output else gathered[0]
 
 
 def simplify_module(module: DeepLogModule) -> DeepLogModule:

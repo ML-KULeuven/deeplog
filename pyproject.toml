@@ -12,7 +12,7 @@ namespaces = false
 
 [project]
 name = "pydeeplog"
-version = "3.0.5"
+version = "4.0.0"
 dependencies = [
     "torch >=2.4,<3",
     "pysdd >=1.0,<2",
@@ -62,6 +62,7 @@ examples = [
     "pytorch-lightning",
     "torchvision",
     "torchmetrics",
+    "mv-sdd",
     "notebook",
     "graphviz",
 ]
@@ -75,6 +76,7 @@ tests = [
     "pytorch-lightning",
     "torchvision",
     "torchmetrics",
+    "mv-sdd",
     "graphviz",
 ]
 site = [
@@ -89,6 +91,7 @@ site = [
     "pytorch-lightning",
     "torchvision",
     "torchmetrics",
+    "mv-sdd",
     "graphviz",
 ]
 dev = [
@@ -148,7 +151,7 @@ strict = [
     "src/deeplog/symbol.py",
     "src/deeplog/circuit/__init__.py",
     "src/deeplog/circuit/circuit.py",
-    # circuit/generic.py was previously strict but constructs torch tensors,
+    # circuit/lower/generic.py was previously strict but constructs torch tensors,
     # so strict mode re-enables reportPrivateImportUsage and trips on
     # torch.zeros/torch.ones/torch.float32/… (torch's stubs don't re-export
     # those at the top level). Demoted back to basic. Same applies to

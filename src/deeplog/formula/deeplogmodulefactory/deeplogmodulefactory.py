@@ -1,254 +1,348 @@
 #  Copyright (c) 2024-2026. KU Leuven
-"""Factories that lower symbolic formulas to DeepLogModule graphs backed by circuits."""
+"""Factory that lowers a *materialized* formula AST to a DeepLogModule.
+
+The second half of lowering: this fold runs over an AST whose
+circuit-representable regions the construction fold has already compiled to
+:class:`~deeplog.formula.ast.CircuitNode` lumps, so the only symbolic nodes it
+still sees are the aggregations that fold could not absorb, standing between
+lumps.
+
+A lump is *transparent* to the fold
+(:attr:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory.lowers_circuit_children`
+is set): its boundary is folded through the ordinary eliminators while its
+interior stays compiled, and ``embed_circuit`` composes the two. Every
+eliminator returns a :class:`~deeplog.module.DeepLogModule`.
+
+Callers holding raw co-resident lumps — the DeepProbLog engine, the DIMACS
+parser — use :func:`~deeplog.formula.deeplogmodulefactory.lower_circuit_nodes`.
+"""
 
 from __future__ import annotations
 
-from collections import defaultdict
-from collections.abc import Iterable
 from collections.abc import Mapping
 from collections.abc import Sequence
-from functools import partial
-from typing import cast
 
-import torch
-
+from ...algebraic import BOOLEAN
 from ...algebraic import AlgebraicStructure
-from ...algebraic import HasStructure
-from ...circuit import Circuit
-from ...circuit import CircuitNode
+from ...algebraic import get_algebraic_structure
 from ...module import DeepLogModule
+from ...module import ElementwiseModule
 from ...module import Sequential
-from ...module import SupportsToModule
 from ...module import compose_modules
-from ...shape import get_only_symbol
+from ...shape import SymTensor
+from ...shape import get_all_symbols
+from ...shape import sole_structure
 from ...symbol import Symbol
-from ...symbol import strip_literal_structure
+from ...symbol import get_args
+from ...symbol import get_predicate
+from ...symbol import structure_of
+from ...symbol import unwrap_structure
+from ...variable import Domain
+from ..ast import CircuitNode
+from ..ast import FormulaNode
+from ..ast import fold
+from ..circuit_node import lump_name
 from ..deeplogformulafactory import DeepLogFormulaFactory
 from .builder_protocols import AggregationBuilder
 from .builder_protocols import AtomBuilder
-from .builder_protocols import InternalNode
 from .builder_protocols import TransformationBuilder
-from .nodes import AtomLeafNode
-from .nodes import BuilderLeafNode
-from .nodes import CompositeCircuitNode
-from .nodes import InputLeafNode
+from .lower import _compose_circuit_core
+from .lower import batched_lowering
+from .lower import lower_circuit_nodes
 from .registry import default_aggregation_builders
 from .registry import default_atom_builders
-from .registry import default_circuit_builders
 from .registry import default_transformation_builders
 
 
-class DeepLogModuleFactory(DeepLogFormulaFactory[InternalNode]):
-    """Factory that lowers symbolic formulas into DeepLogModule graphs backed by circuits."""
+def _distinct(names: tuple[Symbol, ...]) -> tuple[Symbol, ...]:
+    """Return ``names``, or raise naming the column two roots would collide on.
+
+    Two roots naming one column is not a draw: a shape-keyed composition keeps
+    whichever producer ran last, so a column would be silently dropped.
+    """
+    seen: set[Symbol] = set()
+    for name in names:
+        if name in seen:
+            raise ValueError(
+                f"Two formulas compile to the same output column {name}; "
+                f"compile them separately, or relabel one."
+            )
+        seen.add(name)
+    return names
+
+
+def _compose_roots(lowered: Sequence[DeepLogModule]) -> DeepLogModule:
+    """Compose one module per root into one module with their columns side by side.
+
+    Roots that lowered to the same module — the fold memo is shared, so two that
+    are the same node do — are composed once, and the result carries every root's
+    output symbols in root order.
+    """
+    outputs = _distinct(
+        tuple(
+            symbol
+            for module in lowered
+            for symbol in get_all_symbols(module.get_output_shape())
+        )
+    )
+    fed = list({id(module): module for module in lowered}.values())
+    return compose_modules(fed, SymTensor(list(outputs)))
+
+
+def _required_structure(operand: DeepLogModule, action: str) -> str:
+    """Return the algebra ``operand``'s outputs are labelled with, or raise.
+
+    An unlabelled output is refused rather than defaulted: guessing an algebra
+    here would return plausible wrong numbers.
+    """
+    structure = sole_structure(operand.get_output_shape())
+    if structure is None:
+        raise NotImplementedError(
+            f"cannot {action} {operand!r}: its outputs carry no algebraic "
+            "structure. Every module in a formula must label its output "
+            "symbols, e.g. with_structure(symbol, 'probability')."
+        )
+    return structure
+
+
+class DeepLogModuleFactory(DeepLogFormulaFactory[DeepLogModule]):
+    """Lower a *materialized* formula AST into a DeepLogModule."""
+
+    lowers_circuit_children = True
 
     def __init__(
         self,
-        variables: Mapping[Symbol, torch.Tensor] | None = None,
+        variables: Mapping[Symbol, Domain] | None = None,
+        reification: AlgebraicStructure = BOOLEAN,
         structures: Mapping[str, AlgebraicStructure] | None = None,
         aggregators: Mapping[str, AggregationBuilder] | None = None,
         atom_builders: Mapping[tuple[str, int, str], AtomBuilder] | None = None,
+        transformations: Mapping[tuple[str, str], TransformationBuilder] | None = None,
     ) -> None:
         """Configure the module factory with available domains and default builders."""
-        self.variables = defaultdict(lambda: torch.tensor([False, True]))
-        self.variables.update(variables or {})
+        self.variables: dict[Symbol, Domain] = dict(variables or {})
+        self.reification = reification
 
         self._atom_builders = dict(atom_builders or {})
         self._atom_builders.update(default_atom_builders)
 
-        self._circuit_builders = dict(default_circuit_builders)
-
+        #: Custom algebraic structures, handed to the ``CircuitFactory`` the
+        #: construction fold runs over (see :meth:`compile`).
         self._structures = dict(structures or {})
-        for name, structure in self._structures.items():
-            self._circuit_builders[name] = partial(Circuit, structure=structure)
 
         self._aggregation_builders: dict[str, AggregationBuilder] = dict(
             default_aggregation_builders
         )
         self._aggregation_builders.update(aggregators or {})
 
-        self._transformation_builders: dict[tuple[str, str], TransformationBuilder] = {}
-        self._transformation_builders.update(default_transformation_builders)
+        #: Casts between algebras, keyed ``(from, to)``. A module that wants the
+        #: ``real -> probability`` cast declares ``real`` on its output symbols;
+        #: the source structure is never inferred from an absent label.
+        self._transformation_builders: dict[tuple[str, str], TransformationBuilder] = (
+            dict(default_transformation_builders)
+        )
+        self._transformation_builders.update(transformations or {})
 
-        self._circuits: dict[str, Circuit] = {}
+    # -- The eliminators (fold calls these bottom-up) -----------------------
+
+    def embed_circuit(
+        self, node: CircuitNode, children: tuple[DeepLogModule | None, ...] = ()
+    ) -> DeepLogModule:
+        """Lower a lump: compose its compiled interior with its folded boundary.
+
+        ``children`` are the fold results of
+        :attr:`~deeplog.formula.ast.CircuitNode.children`: a predicate module per
+        leaf (``None`` where the leaf has no builder, or is a baked constant) and
+        a cast spine per cross-structure boundary.
+
+        The lump's output is named by node id (``<circuit>_n<node>``), the
+        ``child_name`` a cross-structure cast embeds in its ``transform`` leaf,
+        so two sub-roots of one shared circuit get distinct boundary names.
+        """
+        name: Symbol = lump_name(node)
+        return _compose_circuit_core([node], children, names=(name,))
+
+    def create_atom(self, atom: Symbol) -> DeepLogModule | None:
+        """Lower a single circuit-leaf to its predicate module, or ``None``.
+
+        The real atom handler. A leaf ``("_", literal, (structure,))`` with a
+        registered builder becomes that predicate's module for this one
+        arg-tuple. A leaf with no builder is ``None`` and stays an external
+        input of the composed lump — a baked constant among them, since no
+        predicate is registered for a numeral.
+
+        Raises:
+            ValueError: If ``atom`` carries no structure label.
+        """
+        structure = structure_of(atom)
+        if structure is None:
+            raise ValueError(f"Invalid atom: {atom}")
+        literal = unwrap_structure(atom)
+        functor, arity = get_predicate(literal)
+        builder = self._atom_builders.get((functor, arity, structure))
+        if builder is None:
+            return None
+        return builder([get_args(literal)]).to_module()
+
+    def _structure_of(self, operand: DeepLogModule) -> AlgebraicStructure:
+        """Resolve an operand's structure to the object carrying its operator functions.
+
+        Read off the operand's *output symbols*, so an operand that labels none
+        of them, or labels them inconsistently, is rejected rather than defaulted.
+        """
+        return self._resolve(_required_structure(operand, "lower an operator over"))
+
+    def _resolve(self, name: str) -> AlgebraicStructure:
+        """Resolve a structure *name* to the object carrying its operator functions.
+
+        This factory's own ``_structures`` wins over the global registry, since a
+        custom structure handed to the constructor (the LTN fuzzy algebra) is
+        deliberately not registered globally.
+        """
+        if name in self._structures:
+            return self._structures[name]
+        return get_algebraic_structure(name)
+
+    def _elementwise(self, operator: str, *operands: DeepLogModule) -> DeepLogModule:
+        """Combine already-lowered operands with the structure's operator function.
+
+        An operator survives symbolically this far only when an operand could not
+        be circuit-represented, so its operands are already reduced to numbers
+        and it becomes a tensor operation over them, with the algebra supplying
+        which one (:mod:`deeplog.module.elementwise`).
+        """
+        structure = self._structure_of(operands[0])
+        operator_fn = structure.get_operator_fn(operator)
+        if operator_fn is None:
+            raise NotImplementedError(
+                f"structure {structure.name!r} has no operator {operator!r}; "
+                f"available: {sorted(structure.operators)}."
+            )
+        return ElementwiseModule(operator_fn, *operands, name=operator)
+
+    def create_unary_node(self, operator: str, operand: DeepLogModule) -> DeepLogModule:
+        """Apply a symbolic unary operator elementwise to its lowered operand."""
+        return self._elementwise(operator, operand)
+
+    def create_binary_node(
+        self, operator: str, lhs: DeepLogModule, rhs: DeepLogModule
+    ) -> DeepLogModule:
+        """Apply a symbolic binary operator elementwise to its lowered operands.
+
+        ``divide`` is not special here: a :class:`~deeplog.algebraic.Semifield`
+        defines it like any other operator.
+        """
+        return self._elementwise(operator, lhs, rhs)
+
+    def create_transformation(
+        self, structure: str, child: DeepLogModule
+    ) -> DeepLogModule:
+        """Cast a *module* ``child`` into ``structure`` with an elementwise spine.
+
+        Every cast reaches here as an already-lowered module: a cast *inside* a
+        circuit is a boundary child whose source lump the fold lowered first. The
+        registered ``from -> structure`` builder is chained onto it.
+        """
+        from_structure = _required_structure(child, "cast")
+        try:
+            builder = self._transformation_builders[(from_structure, structure)]
+        except KeyError:
+            raise NotImplementedError(
+                f"no cast from {from_structure!r} to {structure!r}; registered: "
+                f"{sorted(self._transformation_builders)}."
+            ) from None
+        return Sequential(child, builder(child.get_output_shape()).to_module())
 
     def create_aggregation(
         self,
         operation: str,
         binders: list[Symbol],
-        params: Sequence[InternalNode],
-        child: InternalNode,
-    ) -> InternalNode:
-        """Wrap ``child`` with an aggregation over ``binders`` using ``operation``."""
-        domains = [self.variables[var] for var in binders]
-        builder = self._aggregation_builders[operation]
-        return builder(child, binders, params, domains)
+        params: Sequence[DeepLogModule],
+        child: DeepLogModule,
+    ) -> DeepLogModule:
+        """Lower an aggregation by enumerating ``child`` over ``binders``.
 
-    def create_transformation(
-        self, structure: str, child: InternalNode
-    ) -> InternalNode:
-        """Insert a transformation module to convert ``child`` into ``structure``."""
-        child_module = cast(HasStructure, child.to_module())
-        key = (child_module.get_structure(), structure)
-        builder = self._transformation_builders[key]
-        transform_module = Sequential(
-            cast(DeepLogModule, child_module),
-            builder(cast(DeepLogModule, child_module).get_output_shape()).to_module(),
-        )
-        transform_module.structure = structure
-        return transform_module
-
-    def _get_circuit(self, structure: str) -> Circuit:
-        """Get or create the shared circuit for a structure."""
-        if structure not in self._circuits:
-            self._circuits[structure] = self._circuit_builders[structure]()
-        return self._circuits[structure]
-
-    def _ensure_circuit_node(
-        self, node: InternalNode, circuit: Circuit
-    ) -> CompositeCircuitNode:
-        """Wrap ``node`` as a leaf in ``circuit`` if it isn't already part of it."""
-        if isinstance(node, CompositeCircuitNode) and node.root.circuit is circuit:
-            return node
-        children: list[SupportsToModule]
-        if isinstance(node, CompositeCircuitNode):
-            children = node.children
-        elif isinstance(node, InputLeafNode):
-            children = []
-        else:
-            children = [node.to_module()]
-        if isinstance(node, AtomLeafNode):
-            name = ("_", (node.predicate[0], *node.arguments), (node.predicate[2],))
-        elif isinstance(node, CompositeCircuitNode):
-            name = node.root.circuit.get_leaf_name(node.root.node)
-            if name is None:
-                name = get_only_symbol(node.to_module().get_output_shape())
-        else:
-            name = get_only_symbol(node.to_module().get_output_shape())
-        root = CircuitNode(circuit, circuit.get_leaf_node(name))
-        return CompositeCircuitNode(root, children)
-
-    def create_binary_node(
-        self, operator: str, lhs: InternalNode, rhs: InternalNode
-    ) -> InternalNode:
-        """Combine two sub-formulas with a binary operator, returning a circuit node."""
-        structure = lhs.get_structure()
-        circuit = self._get_circuit(structure)
-        lhs = self._ensure_circuit_node(lhs, circuit)
-        rhs = self._ensure_circuit_node(rhs, circuit)
-        new_node = circuit.get_operator(operator)(lhs.root.node, rhs.root.node)
-        return CompositeCircuitNode(
-            CircuitNode(circuit, new_node), lhs.children + rhs.children
-        )
-
-    def create_unary_node(self, operator: str, operand: InternalNode) -> InternalNode:
-        """Apply a unary circuit operator to a sub-formula."""
-        structure = operand.get_structure()
-        circuit = self._get_circuit(structure)
-        operand = self._ensure_circuit_node(operand, circuit)
-        new_node = circuit.get_operator(operator)(operand.root.node)
-        return CompositeCircuitNode(CircuitNode(circuit, new_node), operand.children)
-
-    def create_atom(self, atom: Symbol) -> InternalNode:
-        """Create a leaf literal node.
-
-        If a builder is registered for the predicate, the leaf produces a
-        sub-module. Otherwise it is an input leaf: its circuit leaf name
-        becomes an external input to the composed module.
+        ``expectation`` is absorbed by the construction fold and never reaches
+        this factory; the aggregations with no circuit form do. The child is
+        already a closed module, so the binder variables are its free inputs and
+        the registered builder enumerates over them.
         """
-        if len(atom) != 3 or atom[0] != "_":
-            raise ValueError(f"Invalid atom: {atom}")
-        predicate, arguments = self._decode_leaf(atom)
-        builder = self._atom_builders.get(predicate)
-        if builder is None:
-            # A bare leaf may turn out to be the whole formula; hand it the
-            # circuit builder for its structure so it can compile on its own
-            # (identity for a variable leaf, constant for a numeric symbol).
-            return InputLeafNode(
-                predicate, arguments, self._circuit_builders[predicate[2]]
+        if operation == "expectation":
+            raise NotImplementedError(
+                "expectation is absorbed into a probability circuit by the "
+                "construction fold before lowering; the lowering factory only "
+                "enumerates aggregations such as 'sum'."
             )
-        return BuilderLeafNode(predicate, arguments, builder)
+        _required_structure(child, f"aggregate with {operation!r} over")
+        domains = [self._binder_domain(binder) for binder in binders]
+        builder = self._aggregation_builders[operation]
+        return builder(
+            child, binders, params, [domain.as_tensor() for domain in domains]
+        ).to_module()
 
-    def build_modules_for_leaves(
-        self, leaf_symbols: Iterable[Symbol]
-    ) -> list[DeepLogModule]:
-        """Build sub-modules in batch for a set of circuit-leaf symbols.
+    def _binder_domain(self, binder: Symbol) -> Domain:
+        """The domain ``binder`` ranges over.
 
-        Groups leaves by predicate and invokes each predicate's registered
-        atom builder once on the full list of arg-tuples, returning one
-        module per predicate. Leaves without a registered builder or with
-        a non-standard shape are skipped — they become external inputs at
-        composition time.
+        A binder the model declares in :attr:`variables` uses that domain.
+        Any other binder is a reification variable, and inherits the values of
+        :attr:`reification` as its domain.
+
+        Raises:
+            ValueError: If the binder is undeclared and :attr:`reification`
+                declares no enumerable values.
         """
-        args_by_pred: dict[tuple[str, int, str], list[tuple]] = defaultdict(list)
-        for sym in leaf_symbols:
-            if len(sym) != 3 or sym[0] != "_":
-                continue
-            predicate, arguments = self._decode_leaf(sym)
-            args_by_pred[predicate].append(arguments)
+        declared = self.variables.get(binder)
+        if declared is not None:
+            return declared
+        try:
+            return Domain.of_structure(self.reification)
+        except ValueError as error:
+            raise ValueError(f"No domain for binder {binder}: {error}") from None
 
-        modules: list[DeepLogModule] = []
-        for predicate, args_list in args_by_pred.items():
-            builder = self._atom_builders.get(predicate)
-            if builder is None:
-                continue
-            modules.append(builder(args_list).to_module())
-        return modules
+    # -- Terminal ----------------------------------------------------------
 
-    @staticmethod
-    def _decode_leaf(atom: Symbol) -> tuple[tuple[str, int, str], tuple[Symbol, ...]]:
-        """Split a leaf atom into its ``(functor, arity, structure)`` key and args."""
-        structure_tag = cast(Symbol, atom[2])
-        structure = structure_tag[0]
-        literal = strip_literal_structure(cast(Symbol, atom[1]), structure)
-        return (literal[0], len(literal) - 1, structure), literal[1:]
+    def compile(self, *nodes: FormulaNode) -> DeepLogModule:
+        """Lower formula ASTs to one module in two folds: construct, then lower.
 
+        The first fold runs each ``node`` through a
+        :class:`~deeplog.formula.circuit_factory.CircuitFactory` configured with
+        this factory's custom ``_structures``; the second runs the results through
+        this factory, lowering each lump and enumeration to a module. The fold is
+        the whole lowering — there is no separate closing step.
 
-def to_module(
-    *nodes: CompositeCircuitNode,
-    names: Iterable[Symbol] | None = None,
-    structure_override: str | None = None,
-) -> DeepLogModule:
-    """Convert one or more CompositeCircuitNodes into a DeepLogModule.
+        Every root becomes one output column, in the order given. Both folds run
+        over all of them under one memo, so a subformula they share *as an object*
+        is built once, the atoms they share are one circuit leaf, and counts over
+        one boolean circuit take one knowledge compilation. Roots that all
+        constructed to lumps of a single circuit are lowered together, so their
+        boundary is folded once and each predicate module is evaluated once; any
+        other mix is lowered root by root and composed column-wise, where a shared
+        sub-module is built once but still evaluated once per root that encloses
+        it.
 
-    All nodes must be from the same circuit. Each node's children modules are
-    collected and composed with the circuit module.
+        Raises:
+            ValueError: If no formula is given, or if two roots would name the
+                same output column.
+        """
+        from ..circuit_factory import CircuitFactory
 
-    Args:
-        *nodes: One or more CompositeCircuitNodes to use as roots.
-        names: Optional output names for each root. If not provided,
-               names are auto-generated from the circuit name.
+        if not nodes:
+            raise ValueError("At least one formula is required.")
 
-    Returns:
-        A DeepLogModule with the specified roots.
-    """
-    if not nodes:
-        raise ValueError("At least one CompositeCircuitNode is required")
+        circuits = CircuitFactory(self._structures)
+        built: dict[int, FormulaNode] = {}
+        constructed = [fold(node, circuits, memo=built) for node in nodes]
 
-    circuit = nodes[0].root.circuit
-    for n in nodes[1:]:
-        if n.root.circuit is not circuit:
-            raise ValueError("All CompositeCircuitNodes must be from the same circuit")
+        lumps = [node for node in constructed if isinstance(node, CircuitNode)]
+        if len(lumps) == len(constructed) and all(
+            lump.circuit is lumps[0].circuit for lump in lumps
+        ):
+            return lower_circuit_nodes(
+                self, *lumps, names=_distinct(tuple(lump_name(lump) for lump in lumps))
+            )
 
-    names_list: list[Symbol]
-    if names is None:
-        names_list = [(f"{circuit.name}_{i}",) for i in range(len(nodes))]
-    else:
-        names_list = list(names)
-        if len(names_list) != len(nodes):
-            raise ValueError(f"Expected {len(nodes)} names, got {len(names_list)}")
-
-    # Collect all child modules from all nodes
-    all_children: list[SupportsToModule] = []
-    for node in nodes:
-        all_children.extend(node.children)
-
-    # Build root spec
-    root_spec = {n.root.node: name for n, name in zip(nodes, names_list, strict=True)}
-    circuit_module = circuit.to_module(root_spec, structure_override=structure_override)
-
-    all_modules = [circuit_module] + [child.to_module() for child in all_children]
-    return compose_modules(
-        all_modules,
-        circuit_module.get_output_shape(),
-        nodes[0].get_structure(),
-    )
+        # Weighted model counts are gathered before the fold so that counts over
+        # one boolean circuit share a single knowledge compilation; the fold
+        # itself is unchanged, it just finds them already lowered.
+        memo = batched_lowering(self, *constructed)
+        return _compose_roots([fold(node, self, memo=memo) for node in constructed])
