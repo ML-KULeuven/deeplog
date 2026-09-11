@@ -52,4 +52,12 @@ pytest examples/deepproblog             # run one notebook only
 DEELOG_FAST_DEV_RUN=1 pytest examples/  # one batch per fit, the way CI runs them
 ```
 
-Needs the `deeplog[examples]` extra (`pip install -e ".[examples]"`).
+Needs the `pydeeplog[examples]` extra (`pip install -e ".[examples]"`).
+
+No cell may be tagged `raises-exception`: nbmake would pass it whatever it raised. A cell that demonstrates an error catches that exception itself. `tests/test_examples.py` refuses the tag.
+
+## In the browser
+
+Every notebook has an **Open in Colab** badge under its title. It opens the notebook as released at the version in `pyproject.toml`, from that tag on the GitHub mirror, and the notebook's first code cell installs the same version (`pydeeplog[examples]==<version>`) when DeepLog is not importable. Where DeepLog is installed the cell does nothing, and the docs site hides it.
+
+A new notebook needs both: the badge, pointing at its own path, and the install cell before its first code cell. Bumping the version in `pyproject.toml` means bumping it in every badge and install cell. `tests/test_examples.py` checks the badge, the cell and the version, and fails until they agree. The badge of a notebook added since the last release opens only once the next release is out.

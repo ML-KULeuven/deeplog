@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.1] - 2026-09-11
+
+### Added
+- Every example notebook opens in Google Colab from an **Open in Colab** badge under its title. Both the badge and the notebook's first code cell are pinned to the version in `pyproject.toml`: the badge opens the notebook at that release's tag on the GitHub mirror, and the cell installs `pydeeplog[examples]==<version>` when DeepLog is not importable. The cell does nothing where DeepLog is installed, and is hidden on the docs site. The docs of every release therefore open that release's notebook and run it against that release. `tests/test_examples.py` checks that each badge points at its own notebook at that version and that each notebook starts with the install cell, so a version bump fails the suite until the notebooks follow.
+
+### Changed
+- The numpy floor drops from 2.4.0 to 2.0.2, the version Colab and Kaggle ship. Nothing in DeepLog needs a newer numpy — the full suite and every notebook pass on 2.0.2 — and the higher floor made installing into those runtimes upgrade a numpy they had already imported, which Colab answers by asking for a session restart.
+
+### Fixed
+- The LTN notebook's quantifier cells run again. 4.0.0 made `DeepLogModuleFactory(variables=...)` take `Domain`s, but the notebook still passed raw tensors, so `Forall` and `Exists` raised `AttributeError: 'Tensor' object has no attribute 'as_tensor'`. Nothing noticed, because those four cells had been tagged `raises-exception` since the notebook was written, though they never raised until then. nbmake passes such a cell whatever it raises, and the docs build does not fail on notebook errors, so the published 4.0.0 page showed four tracebacks. The domains are now `Domain.of_tensor(...)`, the tags are gone, and `tests/test_examples.py` refuses the tag in any example notebook.
+
 ## [4.0.0] - 2026-09-09
 
 ### Added
