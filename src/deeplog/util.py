@@ -71,6 +71,10 @@ def broadcast_tensors(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
 
 
 def fast_dev_run_enabled() -> bool:
-    """Return whether notebooks should use Lightning's fast_dev_run mode."""
-    value = os.getenv("DEELOG_FAST_DEV_RUN", "")
+    """Return whether notebooks should use Lightning's fast_dev_run mode.
+
+    Reads ``DEEPLOG_FAST_DEV_RUN``, or, while it is unset, its old misspelling
+    ``DEELOG_FAST_DEV_RUN``.
+    """
+    value = os.getenv("DEEPLOG_FAST_DEV_RUN", os.getenv("DEELOG_FAST_DEV_RUN", ""))
     return value.lower() in {"1", "true", "yes", "on"}

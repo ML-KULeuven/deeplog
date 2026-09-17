@@ -106,6 +106,16 @@ def _try_render_prolog_list(symbol: Symbol) -> str | None:
     return f"[{','.join(elements)}|{tail}]"
 
 
+def _module_of(engine: str) -> str:
+    """The module the engine file ``engine`` declares, or ``user`` if it declares none."""
+    declared = janus.query_once(
+        "setup_call_cleanup(open(File, read, _Stream), read_term(_Stream, _Term, []), "
+        "close(_Stream)), _Term = (:- module(Module, _))",
+        {"File": engine},
+    )
+    return declared["Module"] if declared["truth"] else "user"
+
+
 class JanusNotAvailableException(Exception):
     """Raised when a Janus grounder is instantiated but janus_swi is unavailable."""
 
@@ -139,6 +149,7 @@ class JanusGrounder(PrologGrounder):
         self._id = f"{type(self)._id_prefix}_{JanusGrounder.engine_counter}"
         JanusGrounder.engine_counter += 1
         self._builtins: dict[tuple[str, int], Builtin] = {}
+        janus.query_once("dynamic(EngineID:extern_builtin/2)", {"EngineID": self._id})
 
     @classmethod
     def _ensure_code_loaded(cls):
@@ -155,7 +166,14 @@ class JanusGrounder(PrologGrounder):
             )
             JanusGrounder._shared_prolog_dir_registered = True
         if not cls.__dict__.get("code_loaded", False):
-            janus.consult(str(cls._engine_code_path.absolute()))
+            # An engine that is a module is loaded without importing it into
+            # ``user``, and called through its module, so two engines defining
+            # the same predicate do not replace each other's.
+            engine = str(cls._engine_code_path.absolute())
+            janus.query_once(
+                "load_files(File, [if(not_loaded), imports([])])", {"File": engine}
+            )
+            cls._engine_module = _module_of(engine)
             cls.code_loaded = True
 
     def ground(
@@ -167,14 +185,13 @@ class JanusGrounder(PrologGrounder):
     ) -> dict[Symbol, T]:
         """Prove ``goal`` in ``program`` to one proof formula per ground answer."""
         builder = ProofBuilder.wrapping(factory)
-        variables = {
-            "ProgramID": self._assert_program(program, open_predicates),
-            "Query": goal,
-            "Factory": builder,
-        }
+        program_id = self._assert_program(program, open_predicates)
+        self._bind_engine(program_id)
+        variables = {"ProgramID": program_id, "Query": goal, "Factory": builder}
         try:
             results = janus.query(
-                "prove_query(ProgramID,Query,Factory,GroundQuery,Formula)", variables
+                "Engine:prove_query(ProgramID,Query,Factory,GroundQuery,Formula)",
+                {**variables, "Engine": self._engine_module},
             )
             return {result["GroundQuery"]: result["Formula"] for result in results}
         except PrologError as err:
@@ -203,8 +220,8 @@ class JanusGrounder(PrologGrounder):
         """Consult ``program`` into its own Prolog module once, and return its id.
 
         Subclasses that render a different dialect of the program override
-        :meth:`_rules_to_janus_code` rather than this method, so the caching and
-        ``engine_id`` bookkeeping lives in one place.
+        :meth:`_rules_to_janus_code` rather than this method, so the caching
+        lives in one place.
         """
         key = (program, frozenset(open_predicates))
         try:
@@ -217,23 +234,31 @@ class JanusGrounder(PrologGrounder):
             )
             janus.consult(identifier, data=program_text, module=identifier)
             self.program_identifiers[key] = identifier
-            janus.query_once(
-                "assertz(ProgramID:engine_id(Engine,ID))",
-                {"ProgramID": identifier, "Engine": self, "ID": self._id},
-            )
 
         return identifier
+
+    def _bind_engine(self, program_id: str) -> None:
+        """Make this grounder the engine whose builtins a query of ``program_id`` calls.
+
+        Grounders proving one program share its module, so each binds itself to
+        the module before its own query rather than once when the module is
+        loaded.
+        """
+        janus.query_once(
+            "retractall(ProgramID:engine_id(_,_)), assertz(ProgramID:engine_id(Engine,ID))",
+            {"ProgramID": program_id, "Engine": self, "ID": self._id},
+        )
 
     def _rules_to_janus_code(
         self, program: Iterable[RuleType], open_predicates: OpenPredicates
     ) -> Iterable[str]:
         """Render ``program`` as the Prolog source this prover's engine expects."""
         # The directive sorts before any fact (":" < letters), so it survives
-        # the sorted() in _assert_program; it keeps open_predicate/2 callable
-        # even when no declarations follow.
-        yield ":- dynamic open_predicate/2."
+        # the sorted() in _assert_program; it keeps the predicates the engine
+        # reads callable even when the program has no clauses for them.
+        yield ":- dynamic open_predicate/2, rule/2, leaf/1, engine_id/2."
         for name, arity in open_predicates:
-            yield f"open_predicate({name},{arity})."
+            yield f"open_predicate({symbol_to_prolog_str((name,))},{arity})."
         for rule in program:
             if is_query(rule) or is_constraint(rule):
                 continue

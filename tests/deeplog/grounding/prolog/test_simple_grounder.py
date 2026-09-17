@@ -11,6 +11,8 @@ The factory is :class:`~deeplog.formula.ast_factory.AstFactory`, so each proof
 is asserted as the formula the grounder built rather than as its rendering.
 """
 
+from pathlib import Path
+
 import pytest
 
 from deeplog.algebraic import BOOLEAN
@@ -172,6 +174,33 @@ def test_open_rule_nonground_head_raises(grounder):
         )
 
 
+@pytest.mark.parametrize(
+    "grounder_type",
+    [SimpleGrounder, JanusGrounder]
+    if JanusGrounder.is_available()
+    else [SimpleGrounder],
+)
+def test_a_builtin_belongs_to_the_grounder_that_added_it(grounder_type):
+    """Grounders proving one program each use only the builtins added to them."""
+
+    def square(lhs, rhs):
+        yield {rhs: (str(int(lhs[0]) ** 2),)}
+
+    program = tuple(str_to_rules("q(Y) :- square(3, Y)."))
+    goal = parse_symbol("q(Y)")
+    without = grounder_type()
+    with_square = grounder_type()
+    with_square.add_builtin("square", 2, square)
+
+    with pytest.raises(UnknownPredicateException):
+        without.ground(program, goal, AstFactory())
+    assert set(with_square.ground(program, goal, AstFactory())) == {
+        parse_symbol("q(9)")
+    }
+    with pytest.raises(UnknownPredicateException):
+        without.ground(program, goal, AstFactory())
+
+
 @pytest.mark.skipif(not JanusGrounder.is_available(), reason="janus_swi not installed")
 def test_query_ignores_a_builder_an_earlier_query_left_behind():
     """A query that ended early must not steer the next query's aggregation.
@@ -185,7 +214,7 @@ def test_query_ignores_a_builder_an_earlier_query_left_behind():
     """
     import janus_swi as janus
 
-    janus.query_once("retractall(factory(_))")
+    janus.query_once("retractall(deeplog_janus_grounder:factory(_))")
     grounder = JanusGrounder()
     with pytest.raises(UnknownPredicateException):
         grounder.ground(
@@ -201,3 +230,52 @@ def test_query_ignores_a_builder_an_earlier_query_left_behind():
     )
 
     assert set(result[("s",)].split(" or ")) == {"m_boolean", "n_boolean"}
+
+
+@pytest.mark.skipif(not JanusGrounder.is_available(), reason="janus_swi not installed")
+def test_an_engine_of_its_own_leaves_the_janus_engine_alone():
+    """A grounder whose engine defines the Janus engine's predicates replaces none of them."""
+
+    class ToyGrounder(JanusGrounder):
+        _engine_code_path = Path(__file__).parent / "toy_engine.pl"
+
+    program = tuple(str_to_rules("q.\n?- q."))
+    goal = parse_symbol("q")
+
+    assert ToyGrounder().ground(program, goal, AstFactory()) == {"toy": "toy"}
+    assert set(JanusGrounder().ground(program, goal, AstFactory())) == {("q",)}
+
+
+def test_a_goal_that_calls_itself_says_so():
+    """Left recursion: proving the goal needs the goal, so resolution cannot."""
+    program = tuple(
+        str_to_rules(
+            """
+            edge(a,b).
+            edge(X,Y) :- edge(X,Z), edge(Z,Y).
+            """
+        )
+    )
+    with pytest.raises(RecursionError, match="which is the same call"):
+        SimpleGrounder().ground(program, parse_symbol("edge(a,c)"), AstFactory())
+
+
+def test_a_rule_that_calls_itself_says_so():
+    program = tuple(str_to_rules("p :- p."))
+    with pytest.raises(RecursionError, match="Proving p calls p"):
+        SimpleGrounder().ground(program, parse_symbol("p"), AstFactory())
+
+
+def test_a_call_that_grows_its_term_is_proved():
+    """Recursion that is not a variant of its caller terminates and is left alone."""
+    program = tuple(str_to_rules("nat(0).\nnat(s(X)) :- nat(X)."))
+    result = SimpleGrounder().ground(
+        program, parse_symbol("nat(s(s(0)))"), AstFactory()
+    )
+    assert set(result) == {("nat", ("s", ("s", ("0",))))}
+
+
+def test_a_call_under_negation_is_checked_too():
+    program = tuple(str_to_rules("q :- not(p).\np :- p."))
+    with pytest.raises(RecursionError, match="Proving p calls p"):
+        SimpleGrounder().ground(program, parse_symbol("q"), AstFactory())

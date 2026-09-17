@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
 def lower_circuit_nodes(
     factory: DeepLogModuleFactory,
-    *nodes: CircuitNode,
+    *nodes: FormulaNode,
     names: tuple[Symbol, ...] | None = None,
     leaf_mapping: Callable[[Symbol], Symbol] | None = None,
     variables: VariableAtoms | None = None,
@@ -66,15 +66,19 @@ def lower_circuit_nodes(
     where each multi-valued variable occurs. Both default to the general reading
     -- retag the leaf, no declared variables -- which is what a formula written
     in the textual language means.
+
+    Raises:
+        ValueError: If no root is given.
+        TypeError: If a root is not a :class:`~deeplog.formula.ast.CircuitNode`.
     """
     if not nodes:
         raise ValueError("At least one circuit-node root is required.")
-    if not all(isinstance(n, CircuitNode) for n in nodes):
+    roots = [node for node in nodes if isinstance(node, CircuitNode)]
+    if len(roots) != len(nodes):
         raise TypeError(
             "lower_circuit_nodes lowers raw circuit-node roots; lower a formula "
             "AST with factory.compile()."
         )
-    roots = list(nodes)
 
     # The raw roots were never folded, so fold their boundary here. The union of
     # the roots' reachable leaves / casts — deduped by symbol across roots (a

@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.2] - 2026-09-17
+
+### Changed
+- `lower_circuit_nodes` takes its roots as `FormulaNode`, the type `CircuitFactory`'s eliminators return, and raises `TypeError` for a root that is not a `CircuitNode`, as it already did. It was typed to take only `CircuitNode`, so a caller holding the lump that an `expectation` over a boolean lump always gives had to cast it first.
+
+### Deprecated
+- `DEELOG_FAST_DEV_RUN`, a misspelling. The variable that makes the example notebooks fit a single batch is now `DEEPLOG_FAST_DEV_RUN`; the misspelling still works while that is unset.
+
+### Fixed
+- `SimpleGrounder` says why it cannot prove a program whose goal calls itself, like `e(X,Y) :- e(X,Z), e(Z,Y).`. It recursed until Python's limit and raised a bare `RecursionError` a thousand frames deep. A call that is a variant of one it descends from now raises `RecursionError` naming both calls and pointing at `JanusGrounder`, which tables its calls and proves such a program. Tabling `SimpleGrounder` too is #140.
+- A composed module gives the modules that read no input their empty input on the device of its own inputs, instead of on the CPU. A predicate with constants in such a position moved them to the CPU and back on every batch, and on Apple's MPS torch 2.9 overwrites an int64 tensor it casts to a CPU float, so from the second batch on the predicate read corrupted constants. A value of a named domain is such a constant.
+- A formula over the values of a variable no proof reaches compiles. MV-SDD compilation read those values back as the negation of the reached ones, which Klay cannot lower, so `not(a), not(b)` over a variable with values `a`, `b` and `c` raised `ValueError`. The values have atoms whether reached or not, so they are now read back as those atoms, and the leaf mapping names them like any other. A leaf that no variable declares is still negated as itself.
+- Every `_` in a clause is a variable of its own, as in Prolog. `str_to_rules` read them all as the one variable `_`, so `SimpleGrounder` could not prove `p(a, b)` from `p(_, _).` while `JanusGrounder` could. The parser now names them `_1`, `_2`, …, skipping names the clause already uses.
+- An atom builder passed to `DeepLogModuleFactory` is used instead of a default one for the same predicate. The defaults were applied after the caller's builders, so a caller's own `=/2` or `probability` predicate was silently replaced by DeepLog's, while `aggregators` and `transformations` already let the caller's entries win.
+- `JanusGrounder` reads an open predicate whose name Prolog must quote, like `'an output'`. It wrote the name into Prolog unquoted, so the program failed to load that declaration, printing only a syntax error, and the predicate's rules proved their heads without making them leaves.
+- A Janus grounder, k-best's included, uses the builtins added to it. Janus grounders shared a module per program, and the module recorded which grounder, and so which builtins, only when the first grounder loaded it. A second grounder proving the same program then raised `UnknownPredicateException` for a builtin added to it, or answered through one added only to the first. Each query now records the grounder that runs it.
+- Two Janus engines no longer overwrite each other's predicates. Every engine loaded into Prolog's `user` module, where an engine defining a predicate another already had, such as that of a `JanusGrounder` subclass with an engine of its own, replaced it with only a warning. The Janus and k-best engines are now modules of their own, and an engine is loaded without importing its module into `user` and called through it.
+- A network predicate can read its rows through the domain of its values. `get_network_predicate(functor, arity, structure, module, domain=None)` and `NetworkPredicate` take an optional `domain`, listing the values of the network's output rows in row order, and an atom reads the row at its value's position in it: a written value resolves to its position among a domain's names, or to the number in a tensor domain, and a variable is given values of the domain. Without a domain, a value is its row, counting from 0, as before, which is only right for values counting from 0: over `nn(m, [X], Y, [1,2,3])`, `die(i1,2)` reads the third row unless the predicate is given `Domain.of(range(1, 4))`. A value that reads no row now raises `ValueError`: without a domain, a name, which became an input of the model, a fraction or a negative number, which read another row, and a number past the last row; with one, a value outside it. A domain whose values are not distinct scalars, and a network without a row per value of its domain, raise `ValueError` too.
+
 ## [4.0.1] - 2026-09-11
 
 ### Added

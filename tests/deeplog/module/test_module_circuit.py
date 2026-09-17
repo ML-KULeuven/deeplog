@@ -60,6 +60,28 @@ class TestModuleCircuit:
         ]  # one row, not empty
         assert pytest.approx([0.6, 0.3]) == [float(tensor) for tensor in out]
 
+    def test_a_module_reading_no_input_is_given_its_empty_row_on_the_inputs_device(
+        self,
+    ):
+        """The empty input stands in for the batch, so it sits where the batch does."""
+        devices = []
+
+        def constant(empty):
+            devices.append(empty.device)
+            return empty.new_ones(empty.shape[0], 1)
+
+        modules = [
+            DummyModule(SymTensor([]), SymTensor("b"), constant),
+            DummyModule(
+                (SymTensor("a"), SymTensor("b")), SymTensor("c"), lambda a, b: a + b
+            ),
+        ]
+        circuit = ModuleCircuit(modules, SymTensor("c"))
+
+        circuit(torch.zeros(2, 1, device="meta"))
+
+        assert devices == [torch.device("meta")]
+
     def test_output_shape_needs_transformation(self):
         """ModuleCircuit inserts a transformation when the circuit's output_shape
         is not directly produced by any submodule."""

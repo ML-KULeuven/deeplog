@@ -284,3 +284,12 @@ def test_deferred_lump_reads_back_only_what_absorption_minted():
 
     assert deferred_lump(feeder) is lump
     assert deferred_lump(_expectation([BURGLARY], Atom(BURGLARY_BOOL_SYM))) is None
+
+
+def test_lower_circuit_nodes_rejects_a_root_that_is_not_a_lump():
+    """A symbolic node, like an aggregation no circuit holds, is lowered with ``compile``."""
+    symbolic = Aggregation(
+        "sum", (BURGLARY,), (), Atom(("_", BURGLARY_ATOM, ("boolean",)))
+    )
+    with pytest.raises(TypeError, match="lowers raw circuit-node roots"):
+        lower_circuit_nodes(DeepLogModuleFactory(), symbolic)

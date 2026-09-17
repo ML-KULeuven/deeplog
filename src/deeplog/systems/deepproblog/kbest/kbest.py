@@ -221,6 +221,7 @@ class KBestJanusGrounder(JanusGrounder):
         return evidence
 
     def _kbest_ground(self, program_id, goal, factory: ProbabilisticFactory):
+        self._bind_engine(program_id)
         variables = {
             "ProgramID": program_id,
             "Query": goal,
@@ -230,9 +231,9 @@ class KBestJanusGrounder(JanusGrounder):
         }
         try:
             rows = janus.query(
-                "kbest_prove_query(ProgramID,Query,Factory,K,Heuristic,"
+                "Engine:kbest_prove_query(ProgramID,Query,Factory,K,Heuristic,"
                 "GroundQuery,Formula)",
-                variables,
+                {**variables, "Engine": self._engine_module},
             )
             per_goal: dict = defaultdict(list)
             for row in rows:
@@ -250,11 +251,12 @@ class KBestJanusGrounder(JanusGrounder):
         The base grounder emits ``leaf/1`` for the facts of its open predicates
         and knows nothing of labels; k-best instead keeps the ``::`` labels, so
         its engine can rank partial proofs by probability, and has no use for
-        ``open_predicates``. Only the rendering differs — the caching and
-        ``engine_id`` bookkeeping is inherited from
+        ``open_predicates``. Only the rendering differs — the caching is
+        inherited from
         :meth:`~deeplog.grounding.prolog.JanusGrounder._assert_program`.
         """
         program = remove_labeled_rules(expand_annotated_disjunctions(program))
+        yield ":- dynamic fact/2, rule/2, engine_id/2."
         for rule in program:
             if is_query(rule) or is_constraint(rule):
                 continue

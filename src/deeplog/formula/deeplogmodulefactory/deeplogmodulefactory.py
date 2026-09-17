@@ -123,8 +123,8 @@ class DeepLogModuleFactory(DeepLogFormulaFactory[DeepLogModule]):
         self.variables: dict[Symbol, Domain] = dict(variables or {})
         self.reification = reification
 
-        self._atom_builders = dict(atom_builders or {})
-        self._atom_builders.update(default_atom_builders)
+        self._atom_builders = dict(default_atom_builders)
+        self._atom_builders.update(atom_builders or {})
 
         #: Custom algebraic structures, handed to the ``CircuitFactory`` the
         #: construction fold runs over (see :meth:`compile`).

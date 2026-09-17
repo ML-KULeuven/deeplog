@@ -20,7 +20,7 @@ from sphinx_helpers.switcher import configure_version_switcher
 project = "DeepLog"
 copyright = "2026, KU Leuven"
 author = "KU Leuven"
-release = "4.0.1"
+release = "4.0.2"
 
 # -- General configuration ---------------------------------------------------
 

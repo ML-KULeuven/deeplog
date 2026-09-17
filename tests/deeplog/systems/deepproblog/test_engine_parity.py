@@ -22,6 +22,7 @@ from deeplog.grounding import Builtin
 from deeplog.grounding import JanusGrounder
 from deeplog.grounding import SimpleGrounder
 from deeplog.grounding import str_to_rules
+from deeplog.grounding.prolog import is_query
 from deeplog.symbol import is_variable
 from deeplog.systems.deepproblog import Solver
 
@@ -194,6 +195,33 @@ def test_substitution():
 
 
 # -- Recursion --
+
+
+def test_anonymous_variables():
+    """Each ``_`` is a variable of its own, in facts, rule bodies and a query."""
+    assert_engine_parity(
+        "p(_, _).\nr(a, b).\nr(c, a).\nq(X) :- r(X, _), r(_, X).\n"
+        "?- p(a, b).\n?- q(a).\n?- r(_, _)."
+    )
+
+
+def test_anonymous_variables_in_a_probabilistic_fact():
+    assert_engine_parity("0.5::p(a, _).\n?- p(a, b).")
+
+
+def test_an_open_predicate_whose_name_prolog_must_quote():
+    """Both grounders make the heads an open predicate's rules prove leaves."""
+    program = tuple(
+        str_to_rules("'an output'(X) :- between(0,1,X).\n?- 'an output'(Y).")
+    )
+    (query,) = filter(is_query, program)
+    open_predicates = {("'an output'", 1)}
+    factory = AstFactory()
+
+    simple = SimpleGrounder().ground(program, query[2], factory, open_predicates)
+    janus = JanusGrounder().ground(program, query[2], factory, open_predicates)
+
+    _assert_results_match(simple, janus)
 
 
 def test_recursive_reasoning():

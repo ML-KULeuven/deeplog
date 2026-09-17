@@ -66,9 +66,11 @@ Details
   ``false``, numeric values) with symbolic atoms; use ``_probability`` or
   ``_logprobability`` to select semiring.
 * **NetworkPredicate** (via ``get_network_predicate``): user-defined functor and
-  arity; delegates evaluation to a provided ``torch.nn.Module``. Indexing
-  functionality is built in: the predicate passes the first argument through the
-  module and uses subsequent integer arguments as indices into the output.
+  arity; delegates evaluation to a provided ``torch.nn.Module``. The predicate
+  passes the first argument through the module, and the second argument reads a
+  row of its output. Given a domain, which lists the values of the module's
+  output rows in row order, an atom reads the row at its value's position;
+  without one, a value is its row, counting from 0.
 
 .. seealso::
 

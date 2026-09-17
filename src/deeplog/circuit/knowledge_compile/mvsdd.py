@@ -11,8 +11,8 @@ asserting atoms themselves.
 A leaf asserting no known variable's value is a two-valued variable of its own,
 built here rather than tracked separately: its ``true`` value is the leaf and its
 ``false`` value is a value no atom asserts, which is read back as the complement.
-That is the same rule an annotated disjunction's residual outcome follows, so
-both are one case.
+A declared variable's values all have atoms, so the values no reachable leaf
+asserts are read back as those atoms instead.
 """
 
 from __future__ import annotations
@@ -22,8 +22,10 @@ from typing import TYPE_CHECKING
 from ...algebraic import BOOLEAN
 from ...symbol import symbol_to_str
 from ...symbol import unwrap_structure
+from ...symbol import with_structure
 from ...variable import Domain
 from ...variable import Variable
+from ...variable import atom_asserting
 from ...variable import indicated_values
 from ..circuit import Circuit
 from .diagram import DiagramAlgebra
@@ -51,7 +53,9 @@ def compile_mvsdd(
 
     ``variables`` says where each variable occurs; which atom asserts which
     value follows by substitution. Every reachable leaf it does not account for
-    becomes a two-valued variable of its own. Returns ``(new_circuit, node_map)``,
+    becomes a two-valued variable of its own. A value of ``variables`` no
+    reachable leaf asserts is read back as the atoms asserting it, so
+    ``leaf_mapping`` names those atoms too. Returns ``(new_circuit, node_map)``,
     the same contract as
     :func:`~deeplog.circuit.transform.transform_circuit`. ``target`` and
     ``leaf_mapping`` are the emitter's — see
@@ -86,9 +90,8 @@ def compile_mvsdd(
 
     # 2. Each variable takes one MV variable. Its reached values keep a position
     # each; every value no reachable leaf asserts collapses into a *single*
-    # residual position -- the formula cannot tell those apart, and a position
-    # each would read back as the complement more than once and double count.
-    # mv-sdd requires a domain of at least two values.
+    # residual position -- the formula cannot tell those apart. mv-sdd requires
+    # a domain of at least two values.
     domain_sizes: list[int] = []
     index_of: dict[Variable, int] = {}
     position_of: dict[Variable, dict[int, int]] = {}
@@ -107,7 +110,8 @@ def compile_mvsdd(
     manager = pymvsdd.Manager(pymvsdd.Vtree.right_linear(domain_sizes))
     atoms: dict[Symbol, object] = {}
     leaf_of_slot: dict[tuple[int, int], Symbol] = {}
-    residual_slots: dict[tuple[int, int], tuple[Symbol, ...]] = {}
+    unreached_of_slot: dict[tuple[int, int], tuple[Symbol, ...]] = {}
+    complement_of_slot: dict[tuple[int, int], Symbol] = {}
     for variable in order:
         index = index_of[variable]
         for value, (leaf_symbol, _) in reached[variable].items():
@@ -115,10 +119,20 @@ def compile_mvsdd(
             atoms[leaf_symbol] = manager.literal(index, slot)
             leaf_of_slot[(index, slot)] = leaf_symbol
         residual = residual_of[variable]
-        if residual is not None:
-            residual_slots[(index, residual)] = tuple(
-                leaf for leaf, _ in reached[variable].values()
+        if residual is None:
+            continue
+        if variable in variables:
+            unreached_of_slot[(index, residual)] = tuple(
+                with_structure(
+                    atom_asserting(occurrence, value), circuit.structure.name
+                )
+                for position, value in enumerate(variable.domain.values)
+                if position not in reached[variable]
+                for occurrence in variables[variable]
             )
+        else:
+            ((leaf_symbol, _),) = reached[variable].values()
+            complement_of_slot[(index, residual)] = leaf_symbol
     seed_constants(circuit, atoms, manager.bot(), manager.top())
 
     node_to_mv = circuit.fold(roots, DiagramAlgebra(circuit.structure, atoms))
@@ -128,7 +142,8 @@ def compile_mvsdd(
         target if target is not None else Circuit(circuit.structure),
         circuit.structure,
         leaf_of_slot,
-        residual_slots,
+        unreached_of_slot,
+        complement_of_slot,
         leaf_mapping,
     )
     return emitter.target, {root: emitter.emit(node_to_mv[root]) for root in roots}
@@ -142,13 +157,15 @@ class _MvSddEmitter(DiagramEmitter):
         target: Circuit,
         source_structure: AlgebraicStructure,
         leaf_of_slot: dict[tuple[int, int], Symbol],
-        residual_slots: dict[tuple[int, int], tuple[Symbol, ...]],
+        unreached_of_slot: dict[tuple[int, int], tuple[Symbol, ...]],
+        complement_of_slot: dict[tuple[int, int], Symbol],
         leaf_mapping: Callable[[Symbol], Symbol] | None = None,
     ) -> None:
         """Record what each ``(variable, slot)`` of the diagram asserts."""
         super().__init__(target, source_structure, leaf_mapping)
         self._leaf_of_slot = leaf_of_slot
-        self._residual_slots = residual_slots
+        self._unreached_of_slot = unreached_of_slot
+        self._complement_of_slot = complement_of_slot
 
     def emit(self, node) -> int:
         """The circuit node for this MV-SDD node, built once per canonical node.
@@ -184,15 +201,19 @@ class _MvSddEmitter(DiagramEmitter):
 
         A value the formula asserts has an atom of its own, so the compiled
         interface speaks the user's atoms. The residual slot stands for every
-        value no atom asserts, and holds exactly when none of the others do --
-        which is the complement of them, since a variable takes exactly one
-        value. A slot that is neither is padding to mv-sdd's two-value minimum
-        and is false.
+        value no reachable leaf asserts. A declared variable's values have atoms
+        whether reached or not, so the slot is the disjunction of theirs; a
+        two-valued variable built for a leaf has no atom for its ``false`` value,
+        so that slot is the complement of the leaf. A slot that is neither is
+        padding to mv-sdd's two-value minimum and is false.
         """
         leaf_symbol = self._leaf_of_slot.get((variable, slot))
         if leaf_symbol is not None:
             return self.leaf(leaf_symbol)
-        asserted = self._residual_slots.get((variable, slot))
-        if asserted is None:
-            return self.zero()
-        return self.negate(self.disjoin(*(self.leaf(leaf) for leaf in asserted)))
+        unreached = self._unreached_of_slot.get((variable, slot))
+        if unreached is not None:
+            return self.disjoin(*(self.leaf(atom) for atom in unreached))
+        complemented = self._complement_of_slot.get((variable, slot))
+        if complemented is not None:
+            return self.negate(self.leaf(complemented))
+        return self.zero()

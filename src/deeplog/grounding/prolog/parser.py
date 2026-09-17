@@ -10,8 +10,11 @@ annotated disjunctions) on top by passing its own ``atom_parser`` to
 
 from collections.abc import Callable
 from collections.abc import Iterable
+from itertools import count
+from typing import cast
 
 from deeplog.symbol import Symbol
+from deeplog.symbol import get_term_variables
 from deeplog.symbol import parse_symbol
 from deeplog.util import bracket_aware_split
 
@@ -42,7 +45,9 @@ def parse_rule(
     """Parse one clause line ``h1 ; ... <functor> b1 , ...`` ending in ``.``.
 
     The head/body/functor splitting is generic; ``atom_parser`` decides how each
-    atom is read, so extensions reuse this for their own surface syntax.
+    atom is read, so extensions reuse this for their own surface syntax. Every
+    ``_`` is a variable of its own, as in Prolog: it is named ``_1``, ``_2``,
+    ... with names the clause does not already use.
     """
     assert line[-1] == "."
     line = line[:-1]
@@ -53,7 +58,20 @@ def parse_rule(
         head_str, body_str = line.split(functor)
     head = list(parse_atoms(head_str, ";", atom_parser))
     body = list(parse_atoms(body_str, ",", atom_parser))
-    return create_rule(head, body, functor)
+    return _name_anonymous_variables(create_rule(head, body, functor))
+
+
+def _name_anonymous_variables(clause: RuleType) -> RuleType:
+    """Name every ``_`` in ``clause`` apart, with names the clause does not use."""
+    used = {variable[0] for variable in get_term_variables(clause)}
+    names = (f"_{n}" for n in count(1) if f"_{n}" not in used)
+
+    def name(term: Symbol) -> Symbol:
+        if term == ("_",):
+            return (next(names),)
+        return (term[0], *(name(argument) for argument in term[1:]))
+
+    return cast("RuleType", name(clause))
 
 
 def str_to_rule(line: str) -> RuleType:

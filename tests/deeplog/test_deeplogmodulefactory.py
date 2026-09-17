@@ -20,6 +20,7 @@ from deeplog import Algebra
 from deeplog import AlgebraicStructure
 from deeplog import CircuitNode
 from deeplog import DeepLogModuleFactory
+from deeplog import EqualityPredicate
 from deeplog import Predicate
 from deeplog import SumsPredicate
 from deeplog import SymTensor
@@ -169,6 +170,27 @@ def test_mnist_addition():
 
             result = module(torch.tensor([[i1_gt, i2_gt, s] for s in range(19)]))
             torch.testing.assert_close(result, expected_result)
+
+
+def test_an_atom_builder_passed_to_the_factory_replaces_the_default():
+    """The caller's builder for a predicate is used, not the default one."""
+
+    class AlwaysTrue(EqualityPredicate):
+        def forward_predicate(self, lhs, rhs):
+            return torch.ones_like(lhs, dtype=torch.get_default_dtype())
+
+    factory = DeepLogModuleFactory(
+        {("Burglary",): Domain.of([("false",), ("true",)])},
+        atom_builders={
+            AlwaysTrue.get_predicate(): partial(
+                AlwaysTrue, domain=[("false",), ("true",)]
+            )
+        },
+    )
+
+    module = parse_formula_to_module("sum(Burglary): =(Burglary,true)_boolean", factory)
+
+    torch.testing.assert_close(module(), torch.tensor([[2.0]]))
 
 
 def test_create_unary_node_negation_boolean():

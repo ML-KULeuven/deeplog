@@ -1,13 +1,10 @@
 %  Copyright (c) 2024-2026. KU Leuven
+:- module(deeplog_janus_grounder, [prove_query/5]).
 :- use_module(deeplog_prolog(janus_translation)).
 :- use_module(deeplog_prolog(builtins)).
 
 :- table prove_and_compile(_,_,lattice(disjoin_formulas/3)).
 
-:- dynamic rule/2.
-:- dynamic leaf/1.
-:- dynamic extern_builtin/2.
-:- dynamic engine_id/2.
 :- dynamic factory/1.
 
 disjoin_formulas(Formula1,Formula2,NewFormula) :-

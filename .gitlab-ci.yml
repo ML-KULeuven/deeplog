@@ -125,7 +125,7 @@ test_notebooks:
           - examples/$NOTEBOOK/**/*
           - pyproject.toml
   script:
-    - DEELOG_FAST_DEV_RUN=1 jupyter nbconvert --to notebook --inplace --execute examples/$NOTEBOOK/*.ipynb
+    - DEEPLOG_FAST_DEV_RUN=1 jupyter nbconvert --to notebook --inplace --execute examples/$NOTEBOOK/*.ipynb
   artifacts:
     paths:
       - examples/$NOTEBOOK/

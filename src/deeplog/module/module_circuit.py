@@ -142,10 +142,11 @@ class ModuleCircuit(DeepLogModule):
     def forward(self, *inputs: torch.Tensor):
         """Evaluate the circuit by propagating cacheable tensors through each submodule."""
         cache = {}
-        # With no runtime inputs every leaf was baked to a constant, so there is
-        # no tensor to read the batch size from; evaluate a single constant row.
-        batch = inputs[0].shape[0] if len(inputs) > 0 else 1
-        cache[SymTensor([])] = torch.zeros(batch, 0)
+        # The empty input stands in for the batch, on the inputs' device. With no
+        # runtime inputs every leaf was baked to a constant, so there is no tensor
+        # to read the batch from; evaluate a single constant row.
+        batch, device = (inputs[0].shape[0], inputs[0].device) if inputs else (1, None)
+        cache[SymTensor([])] = torch.zeros(batch, 0, device=device)
         for shape, tensor in zip(as_tuple(self.get_input_shape()), inputs, strict=True):
             cache[shape] = tensor
 

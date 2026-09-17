@@ -108,6 +108,25 @@ def test_unknown_predicate_raises():
         KBestJanusGrounder(k=1).get_query_result(program, SymbolicFormulaFactory())
 
 
+def test_a_builtin_belongs_to_the_grounder_that_added_it():
+    """Grounders proving one program each use only the builtins added to them."""
+
+    def square(lhs, rhs):
+        yield {rhs: (str(int(lhs[0]) ** 2),)}
+
+    program = tuple(str_to_rules("0.5::a.\nq(Y) :- a, square(3, Y).\n?- q(Y)."))
+    without = KBestJanusGrounder(k=2)
+    with_square = KBestJanusGrounder(k=2)
+    with_square.add_builtin("square", 2, square)
+
+    with pytest.raises(UnknownPredicateException):
+        without.get_query_result(program, SymbolicFormulaFactory())
+    result = with_square.get_query_result(program, SymbolicFormulaFactory())
+    assert set(result.formulas) == {("q", ("9",))}
+    with pytest.raises(UnknownPredicateException):
+        without.get_query_result(program, SymbolicFormulaFactory())
+
+
 def test_negation_hoists_single_rv():
     # `not(a)` over a single Boolean RV must split the world: the surviving
     # branch (a=false) carries the negated leaf with probability 1-P(a)=0.7.

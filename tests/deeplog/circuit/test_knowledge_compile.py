@@ -12,14 +12,19 @@ import importlib
 import pytest
 import torch
 
+from deeplog import Domain
+from deeplog import Variable
 from deeplog import to_module
 from deeplog import with_structure
 from deeplog.formula.circuit_factory import CircuitFactory
 from deeplog.formula.distribution import build_leaf_mapping
 from deeplog.formula.strategies import transform_expectation_to_probability
+from deeplog.grounding import ProofBuilder
 from deeplog.grounding import SimpleGrounder
 from deeplog.grounding import str_to_rules
+from deeplog.grounding.prolog import is_query
 from deeplog.systems.deepproblog import Solver
+from deeplog.variable import OPEN
 
 
 pymvsdd = pytest.importorskip("pymvsdd")
@@ -269,6 +274,76 @@ def test_declaring_the_variable_is_what_makes_the_branches_exclusive():
     leaves = [("_", ("a",), ("probability",)), ("_", ("b",), ("probability",))]
     assert sorted(mod_no_cats.get_input_shape()) == leaves
     assert mod_no_cats(torch.tensor([[1.0, 1.0]])).item() == pytest.approx(1.0)
+
+
+def _ground(code, open_predicates):
+    """The proof of every query answer in ``code``, all in one boolean circuit."""
+    program = tuple(str_to_rules(code))
+    builder = ProofBuilder(CircuitFactory())
+    grounder = SimpleGrounder()
+    proofs = {}
+    for query in filter(is_query, program):
+        proofs.update(grounder.ground(program, query[2], builder, open_predicates))
+    return proofs
+
+
+def _variable(name, occurrence, values):
+    """A multi-valued variable over ``values``, occurring in ``occurrence``."""
+    return {Variable(name, Domain.of(values)): (occurrence,)}
+
+
+def _compile_proofs(code, open_predicates, labels, variables):
+    """Knowledge-compile ``code``'s proofs and count them in probability.
+
+    ``variables`` name the boolean atoms as their domain values, which is exactly
+    what the pass consumes, and ``labels`` become the leaf mapping the transform
+    applies — a numeric label folding to a constant node.
+    """
+    answers, nodes = zip(*_ground(code, open_predicates).items(), strict=True)
+    counted = transform_expectation_to_probability(
+        *nodes,
+        leaf_mapping=lambda leaf: with_structure(labels.get(leaf, leaf), "probability"),
+        variables=variables,
+    )
+    return to_module(*counted, names=answers)
+
+
+_ABC = {("a", 0), ("b", 0), ("c", 0)}
+_CHOICE = _variable(("choice",), OPEN, ["a", "b", "c"])
+
+
+def test_a_value_no_proof_reaches_is_read_back_as_its_own_atom():
+    """``not(a), not(b)`` holds exactly when ``choice`` takes the unreached ``c``.
+
+    ``c`` has an atom although no proof reaches it, so the compiled circuit reads
+    the residual as that atom, whose label fills it.
+    """
+    mod = _compile_proofs(
+        "a.\nb.\nc.\nq :- not(a), not(b).\n?- q.\n?- a.",
+        _ABC,
+        {(atom,): ("net", (str(i),)) for i, atom in enumerate("abc")},
+        _CHOICE,
+    )
+
+    net = {with_structure(("net", (str(i),)), "probability"): i for i in (0, 2)}
+    assert sorted(mod.get_input_shape()) == sorted(net)
+    weights = [0.2, 0.3, 0.5]
+    x = torch.tensor([[weights[net[symbol]] for symbol in mod.get_input_shape()]])
+    assert torch.allclose(mod(x), torch.tensor([[0.5, 0.2]]), atol=1e-5)
+
+
+def test_a_fact_outside_every_variable_is_negated_as_itself():
+    """A leaf no variable declares is two-valued, so its ``false`` is its complement."""
+    mod = _compile_proofs(
+        "a.\nb.\nrain.\nq :- a, not(rain).\n?- q.\n?- b.",
+        {("a", 0), ("b", 0), ("rain", 0)},
+        {("a",): ("0.4",), ("b",): ("0.6",), ("rain",): ("0.3",)},
+        _variable(("ab",), OPEN, ["a", "b"]),
+    )
+
+    assert list(mod.get_input_shape()) == []
+    out = mod(torch.zeros((1, 0)))
+    assert torch.allclose(out, torch.tensor([[0.4 * 0.7, 0.6]]), atol=1e-5)
 
 
 # --- The compiler follows from the variables, not from a caller's choice ------

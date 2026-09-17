@@ -49,7 +49,7 @@ Most notebooks run in a few seconds. The two marked **Slow** download MNIST and 
 ```bash
 pytest examples/                        # every notebook
 pytest examples/deepproblog             # run one notebook only
-DEELOG_FAST_DEV_RUN=1 pytest examples/  # one batch per fit, the way CI runs them
+DEEPLOG_FAST_DEV_RUN=1 pytest examples/  # one batch per fit, the way CI runs them
 ```
 
 Needs the `pydeeplog[examples]` extra (`pip install -e ".[examples]"`).

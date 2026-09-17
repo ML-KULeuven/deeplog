@@ -3,15 +3,11 @@
 % targets deeplog's ID:fact/2 and ID:rule/2 program representation and
 % defers formula construction to the Python-side factory via py_call.
 
+:- module(deeplog_kbest, [kbest_prove_query/7]).
 :- use_module(library(heaps)).
 :- use_module(deeplog_prolog(janus_translation)).
 :- use_module(deeplog_prolog(builtins)).
 :- include("heuristics.pl").
-
-:- dynamic rule/2.
-:- dynamic fact/2.
-:- dynamic extern_builtin/2.
-:- dynamic engine_id/2.
 
 % --- Entry point -----------------------------------------------------------
 

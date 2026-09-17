@@ -42,3 +42,10 @@ def test_a_label_operator_inside_an_argument_parses():
     """``::`` is an ordinary binary term, wherever it appears."""
     (rule,) = str_to_rules("p(a::b).")
     assert rule[1] == ("p", ("::", ("a",), ("b",)))
+
+
+def test_every_anonymous_variable_is_a_variable_of_its_own():
+    """Each ``_`` gets a name of its own, and no name the clause already uses."""
+    (rule,) = str_to_rules("q(X) :- r(X, _), r(_1, _).")
+    assert rule[1] == ("q", ("X",))
+    assert rule[2] == (",", ("r", ("X",), ("_2",)), ("r", ("_1",), ("_3",)))
