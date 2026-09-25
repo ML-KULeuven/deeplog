@@ -22,6 +22,7 @@ structure that syntax parses into.
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from typing import cast
@@ -229,7 +230,8 @@ def fold[T](
     Visits children before parents (params then child; lhs then rhs) in the same
     order the parser produced them, so folding through a stateful factory such as
     :class:`DeepLogModuleFactory` reproduces the original ``create_*`` call
-    sequence (and hence its behaviour).
+    sequence (and hence its behaviour). A lump's leaves are the exception: they
+    reach the factory together, in one ``create_atoms`` call.
 
     The AST is a canonical DAG (:func:`hash_cons`), so structurally-equal
     subformulas are the *same object*. A per-call memo (keyed by node identity)
@@ -241,16 +243,17 @@ def fold[T](
     ``memo`` seeds it and is mutated in place, as
     :func:`~deeplog.circuit.fold.fold_circuit`'s does, so successive folds through
     one factory build a shared subformula once between them -- which is how a
-    multi-root lowering shares its subformulas, its circuits and its predicate
-    modules.
+    multi-root lowering shares its subformulas and its circuits. A lump's leaves
+    are built for that lump (:func:`fold_boundary`), not memoized one by one.
 
     A :class:`~deeplog.formula.ast.CircuitNode` is graph-backed, but its
     *boundary* (the leaf / cast children, see
     :attr:`~deeplog.formula.ast.CircuitNode.children`) is a derived AST view. A
     factory that sets
     :attr:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory.lowers_circuit_children`
-    has that boundary folded through the ordinary eliminators (``create_atom``
-    per leaf, ``create_transformation`` per cast) and the results handed to
+    has that boundary folded by :func:`fold_boundary` (its leaves in one
+    ``create_atoms`` call, ``create_transformation`` per cast) and the results
+    handed to
     :meth:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory.embed_circuit`,
     so a lump is transparent to the fold rather than an opaque leaf. Factories
     that leave the flag off (the circuit builder, the text interpreter) get the
@@ -286,7 +289,7 @@ def fold[T](
             )
         case CircuitNode():
             children = (
-                tuple(fold(child, factory, memo=memo) for child in node.children)
+                fold_boundary(node.children, factory, memo=memo)
                 if factory.lowers_circuit_children
                 else ()
             )
@@ -295,6 +298,32 @@ def fold[T](
             raise TypeError(f"Unknown formula node: {node!r}")
     memo[id(node)] = result
     return result
+
+
+def fold_boundary[T](
+    boundary: Sequence[FormulaNode],
+    factory: DeepLogFormulaFactory[T],
+    *,
+    memo: dict[int, T] | None = None,
+) -> tuple[T, ...]:
+    """Fold a lump's ``boundary`` (:attr:`CircuitNode.children`) through ``factory``.
+
+    Its leaves, the :class:`Atom` children, go to one
+    :meth:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory.create_atoms`
+    call, and what that call builds belongs to this lump: it is not memoized per
+    leaf, because an algebra building leaves together may join a leaf to others
+    only this lump reads. Every other child, such as a cast, is folded through
+    :func:`fold` with ``memo``.
+    """
+    leaves = [child for child in boundary if isinstance(child, Atom)]
+    built = factory.create_atoms([leaf.atom for leaf in leaves])
+    by_leaf = dict(zip(map(id, leaves), built, strict=True))
+    return tuple(
+        by_leaf[id(child)]
+        if isinstance(child, Atom)
+        else fold(child, factory, memo=memo)
+        for child in boundary
+    )
 
 
 def children(node: FormulaNode) -> tuple[FormulaNode, ...]:

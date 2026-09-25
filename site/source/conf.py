@@ -20,7 +20,7 @@ from sphinx_helpers.switcher import configure_version_switcher
 project = "DeepLog"
 copyright = "2026, KU Leuven"
 author = "KU Leuven"
-release = "4.0.2"
+release = "4.0.3"
 
 # -- General configuration ---------------------------------------------------
 
@@ -217,7 +217,7 @@ html_sidebars = {
     "tutorial/**": [],
 }
 
-nb_execution_mode = "auto"
+nb_execution_mode = os.environ.get("NB_EXECUTION_MODE", "auto")
 nb_execution_timeout = int(os.environ.get("NB_EXECUTION_TIMEOUT", "300"))
 nb_execution_raise_on_error = False
 

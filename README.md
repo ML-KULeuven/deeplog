@@ -50,18 +50,6 @@ pip install -e ".[examples,tests]"
 
 Editable installs refresh automatically when you change the source tree, which is handy when contributing.
 
-### Docker images (CPU/GPU)
-
-The root `Dockerfile` builds a CPU CI base via a `DEVICE` build arg (default CPU). For local builds:
-
-```bash
-docker build -t deeplog:cpu --build-arg DEVICE=cpu .
-```
-
-CI builds a CPU image from this Dockerfile. The devcontainer image is built from the same base.
-
-The same image definition is used in CI. For local validation, build it with the command above and then run the contributor checks from [CONTRIBUTING.md](CONTRIBUTING.md) in your working tree.
-
 ## Quick start
 
 ```python

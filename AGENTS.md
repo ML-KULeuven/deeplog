@@ -8,7 +8,7 @@
 - Tests are under `tests/deeplog/`, mirroring the source tree. Use existing helpers like
   `tests/deeplog/module/_utils.py`.
 - Docs and examples: `docs/`, `site/`, `examples/` notebooks. Packaging config in
-  `pyproject.toml`, `requirements.txt`.
+  `pyproject.toml`.
 
 ## Build, Test, and Development Commands
 - Run targeted tests: `pytest tests/deeplog/module/test_simplify_module.py`.

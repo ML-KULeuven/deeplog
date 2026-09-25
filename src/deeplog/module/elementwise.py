@@ -9,19 +9,20 @@ one circuit is a node of that circuit instead (:mod:`deeplog.circuit.split`).
 
 :class:`ElementwiseModule` is not told *which* operation to apply: the callable
 is an :attr:`~deeplog.algebraic.AlgebraicStructure.operator_fns` entry, so the
-algebra supplies the semantics. Operands are reshaped to the symbol-union input
-and combined column-wise, and must agree on their output width or be a single
-column that broadcasts across the others.
+algebra supplies the semantics. Operands are reshaped to the union of their
+inputs, which keeps the input tensors they declare, and combined column-wise.
+They must agree on their output width or be a single column that broadcasts
+across the others.
 """
 
 from __future__ import annotations
 
-import itertools
 from collections.abc import Callable
 
 import torch
 from torch import Tensor
 
+from ..shape import Shape
 from ..shape import SymTensor
 from ..shape import get_all_symbols
 from ..shape import structures
@@ -46,7 +47,7 @@ def _output_columns(operand: DeepLogModule) -> list[Symbol]:
 
 
 class ElementwiseModule(DeepLogModule):
-    """Apply ``op`` to the outputs of ``operands`` over their shared symbol input."""
+    """Apply ``op`` to the outputs of ``operands`` over the union of their inputs."""
 
     def __init__(
         self,
@@ -54,20 +55,11 @@ class ElementwiseModule(DeepLogModule):
         *operands: DeepLogModule,
         name: str,
     ) -> None:
-        """Reshape every operand to the symbol-union input so one tensor feeds all."""
+        """Reshape every operand to the union of the operands' inputs."""
         if not operands:
             raise ValueError("ElementwiseModule needs at least one operand.")
         structure = _shared_structure(operands)
-        union = SymTensor(
-            list(
-                dict.fromkeys(
-                    itertools.chain.from_iterable(
-                        get_all_symbols(operand.get_input_shape())
-                        for operand in operands
-                    )
-                )
-            )
-        )
+        union = _union_input(operands)
         columns = [_output_columns(operand) for operand in operands]
         width = max(len(column) for column in columns)
         if any(len(column) not in (1, width) for column in columns):
@@ -89,6 +81,25 @@ class ElementwiseModule(DeepLogModule):
     def forward(self, *x: torch.Tensor) -> torch.Tensor:
         """Apply the operator to every operand's output, broadcasting single columns."""
         return self._op(*(as_tuple(operand(*x))[0] for operand in self._operands))
+
+
+def _union_input(operands: tuple[DeepLogModule, ...]) -> Shape:
+    """The operands' input tensors, in order, each symbol in the first that holds it.
+
+    A symbol an earlier tensor holds is dropped from a later one, and a tensor
+    left empty is dropped. A single tensor is the input itself.
+    """
+    placed: set[Symbol] = set()
+    tensors: list[SymTensor] = []
+    for operand in operands:
+        for tensor in as_tuple(operand.get_input_shape()):
+            fresh = [s for s in get_all_symbols(tensor) if s not in placed]
+            placed.update(fresh)
+            if fresh:
+                tensors.append(SymTensor(fresh))
+    if not tensors:
+        return SymTensor([])
+    return tensors[0] if len(tensors) == 1 else tuple(tensors)
 
 
 def _shared_structure(operands: tuple[DeepLogModule, ...]) -> str | None:

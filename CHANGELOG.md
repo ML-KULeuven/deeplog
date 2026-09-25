@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.3] - 2026-09-25
+
+### Changed
+- The `deepproblog` notebook trains on 7,500 pairs instead of 10,000, and reaches about 84% on its 100 test pairs instead of 91%. The docs build executes it, where a cell must finish within 600 s.
+- The `deepproblog` and `semantic_loss` notebooks download MNIST into `DEEPLOG_DATA_DIR` when it is set, and into `data/` beside the notebook otherwise, as before. CI sets it to a directory it caches between jobs: every notebook job, and the docs build twice, downloaded MNIST again, and on the group's runner a slow mirror took a job 14 minutes or stalled it past its one-hour limit. A notebook job also fails a cell after 600 s, where a stalled download held it for the hour.
+
+### Removed
+- `requirements.txt` and the `Dockerfile`, which described the CI image. Install from source with the extras instead.
+
+### Fixed
+- The `examples`, `tests` and `site` extras install matplotlib, which the `deepproblog` and `semantic_loss` notebooks import. Only the CI image had it, so those notebooks failed where an extra had installed their dependencies.
+- The `site` extra installs sphinx-multiversion and jupyter-sphinx, which the docs build loads as Sphinx extensions. Only the CI image had them, so the docs did not build where the extra had installed their dependencies.
+- A `Predicate` reads a constant that is a vector, such as a point, at an argument position that holds no symbol. The position's input names no symbol and its tensor holds no values, but `forward` still read it, which failed with `RuntimeError: shape mismatch` for any constant that was not a scalar. `forward` now reads such a position's constants alone, as `eager_eval` already did.
+- `ElementwiseModule` keeps the input tensors its operands declare. It stacked every symbol its operands read into one tensor, which cannot be fed when their feature shapes differ, so a connective over two quantifiers, one reading an image and the other a number, compiled into a module that could not be called. Symbols one operand reads from one tensor share a feature shape, and symbols from different tensors need not, so each operand's input tensor is now kept, minus the symbols an earlier one already holds. A module compiled from a connective over operands reading different symbols therefore takes one tensor per operand's input, not one tensor for all of them: pass them separately, or `reshape` the module to the input you want.
+- A circuit runs each predicate once for all the leaves it reads, as it did before 4.0.0. The fold built a lump's leaves one at a time, through `create_atom`, so every leaf got a predicate module of its own: 4.0.0 had replaced the batched leaf construction of DeepProbLog's compile step, `build_modules_for_leaves`, with that fold. A network whose rows give several leaves, as DeepProbLog's `nn(classifier, [X], Y, [0..9])` gives ten per image, therefore ran once per leaf, 20 times per MNIST-addition batch instead of once over both images, which made a training step about nine times slower than it needs to be. The fold now builds a lump's leaves in one call to `create_atoms`, a new method of `DeepLogFormulaFactory` that builds them one at a time unless an algebra overrides it, and `DeepLogModuleFactory` calls each builder once with every leaf of its predicate, as the atom builder protocol always allowed. The leaves of one predicate share its input tensors, so at each argument position they must share a feature shape. A compiled module takes the same inputs as before.
+
 ## [4.0.2] - 2026-09-17
 
 ### Changed

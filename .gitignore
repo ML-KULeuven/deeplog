@@ -195,3 +195,6 @@ site/source/public_api.rst
 *.pdf
 site/source/paths/
 /uv.lock
+
+# Datasets the notebooks download in CI (DEEPLOG_DATA_DIR).
+.datasets/

@@ -172,6 +172,105 @@ def test_mnist_addition():
             torch.testing.assert_close(result, expected_result)
 
 
+class _Counted(torch.nn.Module):
+    """``module``, counting how often it runs."""
+
+    def __init__(self, module):
+        super().__init__()
+        self.module = module
+        self.runs = 0
+
+    def forward(self, x):
+        self.runs += 1
+        return self.module(x)
+
+
+def _digit(image, value):
+    """The probability-valued leaf ``digit(image, value)``."""
+    return Atom(("_", ("digit", (image,), value), ("probability",)))
+
+
+def test_a_lump_runs_a_network_once_for_all_its_leaves():
+    """Six leaves of one network predicate, over two images, are one run of it.
+
+    The rows of each image's distribution sum to one, so their sum over both
+    images is two.
+    """
+    classifier = _Counted(IndexClassifier(num_classes=3))
+    factory = DeepLogModuleFactory(
+        atom_builders={
+            ("digit", 2, "probability"): get_network_predicate(
+                "digit", 2, "probability", module=classifier
+            )
+        }
+    )
+    leaves = [_digit(image, (str(v),)) for image in ("i1", "i2") for v in range(3)]
+    root = leaves[0]
+    for leaf in leaves[1:]:
+        root = BinaryOp("plus", root, leaf)
+
+    module = reshape(factory.compile(root), input=SymTensor([("i1",), ("i2",)]))
+    result = module(torch.tensor([[0.0, 2.0]]))
+
+    assert classifier.runs == 1
+    torch.testing.assert_close(result, torch.tensor([[2.0]]))
+
+
+def test_a_lump_under_an_aggregation_runs_its_network_once():
+    """``sum(N): digit(i1, N) times digit(i2, N)`` runs the classifier once per call.
+
+    Both images' leaves feed one lump, which the aggregation evaluates over every
+    ``N`` at once. With images 0 and 2 of three classes, the two agree on no
+    class they both favour: 0.9 * 0.05 + 0.05 * 0.05 + 0.05 * 0.9.
+    """
+    classifier = _Counted(IndexClassifier(num_classes=3))
+    factory = DeepLogModuleFactory(
+        {("N",): Domain.of_tensor(torch.arange(3))},
+        atom_builders={
+            ("digit", 2, "probability"): get_network_predicate(
+                "digit", 2, "probability", module=classifier
+            )
+        },
+    )
+    body = BinaryOp("times", _digit("i1", ("N",)), _digit("i2", ("N",)))
+
+    module = reshape(
+        factory.compile(Aggregation("sum", (("N",),), (), body)),
+        input=SymTensor([("i1",), ("i2",)]),
+    )
+    result = module(torch.tensor([[0.0, 2.0]]))
+
+    assert classifier.runs == 1
+    expected = 0.9 * 0.05 + 0.05 * 0.05 + 0.05 * 0.9
+    torch.testing.assert_close(result, torch.tensor([[expected]]))
+
+
+def test_the_fold_builds_a_lumps_leaves_in_one_call():
+    """A lump under an aggregation reaches ``create_atoms`` with all its leaves."""
+    calls = []
+
+    class Recording(DeepLogModuleFactory):
+        def create_atoms(self, atoms):
+            calls.append(list(atoms))
+            return super().create_atoms(atoms)
+
+    factory = Recording(
+        {("N",): Domain.of_tensor(torch.arange(3))},
+        atom_builders={
+            ("digit", 2, "probability"): get_network_predicate(
+                "digit", 2, "probability", module=IndexClassifier(num_classes=3)
+            )
+        },
+    )
+    body = BinaryOp("times", _digit("i1", ("N",)), _digit("i2", ("N",)))
+
+    factory.compile(Aggregation("sum", (("N",),), (), body))
+
+    assert [sorted(map(str, call)) for call in calls] == [
+        sorted(map(str, (_digit("i1", ("N",)).atom, _digit("i2", ("N",)).atom)))
+    ]
+
+
 def test_an_atom_builder_passed_to_the_factory_replaces_the_default():
     """The caller's builder for a predicate is used, not the default one."""
 
@@ -467,7 +566,8 @@ def test_shared_circuit_node_handle_keeps_circuit_linear():
 def _ltn_factory():
     """The LTN grounding setup: a fuzzy algebra and two p-mean quantifiers.
 
-    Mirrors ``examples/ltn/ltn.ipynb``. The structure is a plain
+    Mirrors ``examples/ltn/ltn.ipynb``, plus a ``below`` predicate reading a
+    scalar radius beside ``eq``'s points. The structure is a plain
     ``AlgebraicStructure`` — its product t-norm does not distribute over its
     probabilistic sum, so it is deliberately not a ``Semiring``.
     """
@@ -495,6 +595,12 @@ def _ltn_factory():
         def forward_predicate(self, x, y):
             return torch.exp(-torch.norm(x - y, dim=1))
 
+    class BelowPredicate(Predicate):
+        functor, arity, structure = "below", 2, "fuzzy"
+
+        def forward_predicate(self, point, radius):
+            return torch.sigmoid(radius - torch.norm(point, dim=1))
+
     torch.manual_seed(0)
     return fuzzy, DeepLogModuleFactory(
         structures={"fuzzy": fuzzy},
@@ -506,7 +612,10 @@ def _ltn_factory():
             ("x",): Domain.of_tensor(torch.randn(10, 2)),
             ("y",): Domain.of_tensor(torch.randn(5, 2) * 2),
         },
-        atom_builders={("eq", 2, "fuzzy"): EqualityPredicate},
+        atom_builders={
+            ("eq", 2, "fuzzy"): EqualityPredicate,
+            ("below", 2, "fuzzy"): BelowPredicate,
+        },
     )
 
 
@@ -521,7 +630,7 @@ def test_binary_connective_over_two_quantifiers():
     Neither operand is a circuit node — a quantifier binds nothing a circuit can
     express — so the ``and`` survives the construction fold and is applied to the
     two already-reduced outputs. The operands consume different free variables,
-    so the module's input is their union.
+    so the module takes both, one tensor each.
     """
     _, factory = _ltn_factory()
     x, y = ("x",), ("y",)
@@ -534,8 +643,9 @@ def test_binary_connective_over_two_quantifiers():
         )
     )
 
-    assert list(get_all_symbols(module.get_input_shape())) == [y, x]
-    assert torch.isfinite(module(torch.full((1, 2, 2), 0.25))).all()
+    assert module.get_input_shape() == (SymTensor([y]), SymTensor([x]))
+    point = torch.full((1, 1, 2), 0.25)
+    assert torch.isfinite(module(point, point)).all()
 
 
 @pytest.mark.parametrize("connective", ["and", "or", "implies"])
@@ -552,6 +662,29 @@ def test_connective_over_quantifiers_matches_the_algebra(connective):
     )
 
     torch.testing.assert_close(combined(), expected)
+
+
+def test_connective_over_quantifiers_reading_inputs_of_different_shapes():
+    """Operands reading a point and a scalar take one tensor each.
+
+    ``Forall x . eq(x, y)`` reads the point ``y`` and ``Exists x . below(x, r)``
+    the radius ``r``, which no single tensor can hold together.
+    """
+    fuzzy, factory = _ltn_factory()
+    x, y, r = ("x",), ("y",), ("r",)
+    universal = Aggregation("forall", (x,), (), _eq(x, y))
+    existential = Aggregation(
+        "exists", (x,), (), Atom(with_structure(("below", x, r), "fuzzy"))
+    )
+
+    module = factory.compile(BinaryOp("and", universal, existential))
+
+    assert module.get_input_shape() == (SymTensor([y]), SymTensor([r]))
+    point, radius = torch.full((1, 1, 2), 0.25), torch.full((1, 1), 1.5)
+    expected = fuzzy.get_operator_fn("and")(
+        factory.compile(universal)(point), factory.compile(existential)(radius)
+    )
+    torch.testing.assert_close(module(point, radius), expected)
 
 
 def test_unary_connective_over_a_quantifier_matches_the_algebra():

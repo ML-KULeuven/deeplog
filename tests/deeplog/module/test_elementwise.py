@@ -2,9 +2,9 @@
 """Tests for :class:`~deeplog.module.ElementwiseModule`.
 
 The combinator for operators with no circuit form. It takes the tensor callable
-from the algebra, reshapes every operand onto the symbol-union input so one
-tensor feeds them all, and combines the operands' already-reduced outputs
-column-wise — broadcasting a single column across the rest.
+from the algebra, reshapes every operand onto the union of their inputs, and
+combines the operands' already-reduced outputs column-wise — broadcasting a
+single column across the rest.
 """
 
 import pytest
@@ -37,17 +37,31 @@ def _operand(inputs, outputs, forward, structure="probability"):
     return DummyModule(SymTensor(list(inputs)), SymTensor(list(outputs)), forward)
 
 
-def test_operands_are_aligned_onto_the_symbol_union():
-    """Operands consuming different symbols are both fed by one union tensor."""
+def test_operands_consuming_different_symbols_keep_their_input_tensors():
+    """Each operand's input tensor becomes one of the union's."""
     lhs = _operand([A], [("lhs",)], lambda x: x * 2)
     rhs = _operand([B], [("rhs",)], lambda x: x + 1)
 
     module = ElementwiseModule(lambda a, b: a * b, lhs, rhs, name="times")
 
-    assert list(module.get_input_shape()) == [A, B]
+    assert module.get_input_shape() == (SymTensor([A]), SymTensor([B]))
     # a=3 -> 6, b=5 -> 6, product 36.
     torch.testing.assert_close(
-        module(torch.tensor([[3.0, 5.0]])), torch.tensor([[36.0]])
+        module(torch.tensor([[3.0]]), torch.tensor([[5.0]])), torch.tensor([[36.0]])
+    )
+
+
+def test_operands_whose_inputs_differ_in_feature_shape_are_fed_apart():
+    """A vector input and a scalar input are never stacked into one tensor."""
+    lhs = _operand([A], [("lhs",)], lambda x: x.sum(-1))
+    rhs = _operand([B], [("rhs",)], lambda x: x)
+
+    module = ElementwiseModule(lambda a, b: a * b, lhs, rhs, name="times")
+
+    # a=(1,2) -> 3, b=5 -> 5, product 15.
+    torch.testing.assert_close(
+        module(torch.tensor([[[1.0, 2.0]]]), torch.tensor([[5.0]])),
+        torch.tensor([[15.0]]),
     )
 
 
@@ -58,10 +72,25 @@ def test_shared_symbols_are_unioned_once():
 
     module = ElementwiseModule(lambda a, b: a + b, lhs, rhs, name="plus")
 
-    assert list(module.get_input_shape()) == [A, B, C]
+    assert module.get_input_shape() == (SymTensor([A, B]), SymTensor([C]))
     # (1+2) + (2+3) = 8
     torch.testing.assert_close(
-        module(torch.tensor([[1.0, 2.0, 3.0]])), torch.tensor([[8.0]])
+        module(torch.tensor([[1.0, 2.0]]), torch.tensor([[3.0]])),
+        torch.tensor([[8.0]]),
+    )
+
+
+def test_operands_reading_one_input_tensor_share_it():
+    """Operands over the same symbols take the one tensor both declare."""
+    lhs = _operand([A, B], [("lhs",)], lambda x: x.sum(-1, keepdim=True))
+    rhs = _operand([A, B], [("rhs",)], lambda x: x.prod(-1, keepdim=True))
+
+    module = ElementwiseModule(lambda a, b: a + b, lhs, rhs, name="plus")
+
+    assert module.get_input_shape() == SymTensor([A, B])
+    # (2+3) + (2*3) = 11
+    torch.testing.assert_close(
+        module(torch.tensor([[2.0, 3.0]])), torch.tensor([[11.0]])
     )
 
 

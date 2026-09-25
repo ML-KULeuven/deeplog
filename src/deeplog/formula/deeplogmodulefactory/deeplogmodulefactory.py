@@ -151,9 +151,10 @@ class DeepLogModuleFactory(DeepLogFormulaFactory[DeepLogModule]):
         """Lower a lump: compose its compiled interior with its folded boundary.
 
         ``children`` are the fold results of
-        :attr:`~deeplog.formula.ast.CircuitNode.children`: a predicate module per
-        leaf (``None`` where the leaf has no builder, or is a baked constant) and
-        a cast spine per cross-structure boundary.
+        :attr:`~deeplog.formula.ast.CircuitNode.children`: for each leaf, the
+        module of its predicate, which the leaves of one predicate share
+        (:meth:`create_atoms`; ``None`` where the leaf has no builder, or is a
+        baked constant), and a cast spine per cross-structure boundary.
 
         The lump's output is named by node id (``<circuit>_n<node>``), the
         ``child_name`` a cross-structure cast embeds in its ``transform`` leaf,
@@ -174,15 +175,41 @@ class DeepLogModuleFactory(DeepLogFormulaFactory[DeepLogModule]):
         Raises:
             ValueError: If ``atom`` carries no structure label.
         """
-        structure = structure_of(atom)
-        if structure is None:
-            raise ValueError(f"Invalid atom: {atom}")
-        literal = unwrap_structure(atom)
-        functor, arity = get_predicate(literal)
-        builder = self._atom_builders.get((functor, arity, structure))
-        if builder is None:
-            return None
-        return builder([get_args(literal)]).to_module()
+        return self.create_atoms([atom])[0]
+
+    def create_atoms(self, atoms: Sequence[Symbol]) -> list[DeepLogModule | None]:
+        """Lower the leaves a lump reads, one module per predicate for all of them.
+
+        Each registered builder is called once, with the argument tuples of all
+        the leaves of its predicate, and makes one module with an output per
+        leaf, which stands for each of them. A predicate evaluates the leaves it
+        is given together, so a network whose rows give several leaves runs once
+        for them. A leaf with no builder is ``None``, as in :meth:`create_atom`.
+
+        The symbols the leaves of one predicate give an argument position share
+        that position's input tensor, so they must share a feature shape.
+
+        Raises:
+            ValueError: If an atom carries no structure label.
+        """
+        keys = []
+        grouped: dict[tuple[str, int, str], list[Symbol]] = {}
+        for atom in atoms:
+            structure = structure_of(atom)
+            if structure is None:
+                raise ValueError(f"Invalid atom: {atom}")
+            functor, arity = get_predicate(unwrap_structure(atom))
+            key = (functor, arity, structure)
+            keys.append(key)
+            if key in self._atom_builders:
+                grouped.setdefault(key, []).append(atom)
+        modules = {
+            key: self._atom_builders[key](
+                [get_args(unwrap_structure(atom)) for atom in dict.fromkeys(members)]
+            ).to_module()
+            for key, members in grouped.items()
+        }
+        return [modules.get(key) for key in keys]
 
     def _structure_of(self, operand: DeepLogModule) -> AlgebraicStructure:
         """Resolve an operand's structure to the object carrying its operator functions.

@@ -6,7 +6,8 @@ parser - hold raw :class:`~deeplog.formula.ast.CircuitNode` objects that never
 went through a factory's fold.
 :func:`~deeplog.formula.deeplogmodulefactory.lower_circuit_nodes` is their entry
 point: it compiles the shared arithmetic circuit once (deduped) and folds the
-unioned boundary through the factory's ordinary eliminators. The factory's own
+unioned boundary as the fold does a lump's (:func:`~deeplog.formula.ast.fold_boundary`).
+The factory's own
 :meth:`~deeplog.formula.deeplogmodulefactory.deeplogmodulefactory.DeepLogModuleFactory.embed_circuit`
 reuses ``_compose_circuit_core`` for the single-lump case; a formula AST is
 lowered with
@@ -26,7 +27,7 @@ from ..ast import Atom
 from ..ast import CircuitNode
 from ..ast import FormulaNode
 from ..ast import children
-from ..ast import fold
+from ..ast import fold_boundary
 from ..circuit_node import to_module as circuit_to_module
 from ..strategies import deferred_lump
 from ..strategies import expectation_symbol
@@ -51,8 +52,8 @@ def lower_circuit_nodes(
     :class:`~deeplog.formula.ast.CircuitNode` objects that never went through
     ``factory``'s fold: the DeepProbLog engine and the DIMACS parser. The roots
     share one circuit, so they compile together into one module with an output
-    per root, and their unioned boundary is folded once through ``factory``'s
-    ordinary eliminators.
+    per root, and their unioned boundary is folded once, as the fold does a
+    lump's (:func:`~deeplog.formula.ast.fold_boundary`).
 
     A formula AST is lowered with
     :meth:`~deeplog.formula.deeplogmodulefactory.deeplogmodulefactory.DeepLogModuleFactory.compile`
@@ -83,7 +84,7 @@ def lower_circuit_nodes(
     # The raw roots were never folded, so fold their boundary here. The union of
     # the roots' reachable leaves / casts — deduped by symbol across roots (a
     # symbol's feeder is a deterministic function of the symbol, so colliding
-    # entries agree) — is lowered through the ordinary eliminators under one memo.
+    # entries agree) — is lowered as one lump's boundary, under one memo.
     circuit = roots[0].circuit
     overrides: dict[Symbol, FormulaNode] = {}
     for node in roots:
@@ -95,7 +96,7 @@ def lower_circuit_nodes(
     memo = batched_lowering(
         factory, *boundary, leaf_mapping=leaf_mapping, variables=variables
     )
-    children = [fold(child, factory, memo=memo) for child in boundary]
+    children = fold_boundary(boundary, factory, memo=memo)
 
     return _compose_circuit_core(roots, children, names=names)
 

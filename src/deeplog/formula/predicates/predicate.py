@@ -13,6 +13,7 @@ from ...shape import SymTensor
 from ...symbol import Symbol
 from ...symbol import is_symbol
 from ...symbol import with_structure
+from ...util import as_tuple
 
 
 #: The ground argument tuples a predicate is asked for, one tuple per evaluation.
@@ -202,8 +203,16 @@ class Predicate[*Ts](DeepLogModule, ABC):
         return base.reshape(-1, *base.shape[2:])
 
     def forward(self, *x: torch.Tensor) -> torch.Tensor:
-        """Evaluate the predicate for all provided arguments and return batched results."""
-        return self._run(list(x), batch_size=x[0].shape[0])
+        """Evaluate the predicate for all provided arguments and return batched results.
+
+        A position whose input names no symbol holds only constants, and its
+        tensor, which carries no values, is not read.
+        """
+        x_per_position = [
+            None if symbols.is_empty() else x_j
+            for symbols, x_j in zip(as_tuple(self.get_input_shape()), x, strict=True)
+        ]
+        return self._run(x_per_position, batch_size=x[0].shape[0])
 
     def eager_eval(
         self, tensors: Mapping[Symbol, torch.Tensor] | None = None

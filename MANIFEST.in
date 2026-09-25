@@ -7,9 +7,7 @@ prune logo
 prune gitlab-runner
 exclude AGENTS.md
 exclude CONTRIBUTING.md
-exclude Dockerfile
 exclude conftest.py
-exclude requirements.txt
 exclude .pre-commit-config.yaml
 exclude .gitlab-ci.yml
 exclude .gitlab-ci-local-env

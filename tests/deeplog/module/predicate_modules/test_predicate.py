@@ -134,3 +134,35 @@ def test_predicate_expands_repeated_symbols_alongside_constants():
 def test_predicate_rejects_unexpanded_position_carrying_constants():
     with pytest.raises(ValueError, match="distinct_arguments"):
         NumericFirstArgument([(("0.5",), ("a",))])
+
+
+class Distance(Predicate[torch.Tensor, torch.Tensor]):
+    functor = "distance"
+    arity = 2
+    structure = "real"
+
+    def _resolve_argument(self, symbol, index, /):
+        if symbol == ("origin",):
+            return torch.tensor([0.0, 0.0])
+        return symbol
+
+    def forward_predicate(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
+        return torch.norm(lhs - rhs, dim=1)
+
+
+def test_predicate_reads_a_vector_constant_at_a_position_with_no_symbol():
+    predicate = Distance([(("x",), ("origin",))])
+
+    assert predicate.get_input_shape() == (SymTensor([("x",)]), SymTensor([]))
+
+    result = predicate(torch.tensor([[[3.0, 4.0]]]), torch.empty(1, 0))
+
+    torch.testing.assert_close(result, torch.tensor([[5.0]]))
+
+
+def test_predicate_of_vector_constants_alone():
+    predicate = Distance([(("origin",), ("origin",))])
+
+    result = predicate(torch.empty(2, 0), torch.empty(2, 0))
+
+    torch.testing.assert_close(result, torch.zeros(2, 1))
