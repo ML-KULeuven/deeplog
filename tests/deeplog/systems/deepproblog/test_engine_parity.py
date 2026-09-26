@@ -6,7 +6,6 @@ so a proof is compared as the formula it is rather than as text.
 
 #  Copyright (c) 2024-2026. KU Leuven
 
-import math
 from functools import reduce
 
 import pytest
@@ -18,12 +17,9 @@ from deeplog.formula import AstFactory
 from deeplog.formula import BinaryOp
 from deeplog.formula import FormulaNode
 from deeplog.formula import map_children
-from deeplog.grounding import Builtin
 from deeplog.grounding import JanusGrounder
 from deeplog.grounding import SimpleGrounder
 from deeplog.grounding import str_to_rules
-from deeplog.grounding.prolog import is_query
-from deeplog.symbol import is_variable
 from deeplog.systems.deepproblog import Solver
 
 from ...testing_formulas import operands
@@ -86,26 +82,6 @@ def assert_conditional_parity(code: str) -> None:
         assert _canonicalize(simple_result.evidence) == _canonicalize(
             janus_result.evidence
         )
-
-
-def assert_engine_parity_with_builtins(
-    code: str,
-    builtins: dict[tuple[str, int], Builtin],
-) -> None:
-    """Assert parity when custom builtins are registered on both engines."""
-    program = tuple(str_to_rules(code))
-    factory = AstFactory()
-
-    simple = Solver(SimpleGrounder())
-    janus = Solver(JanusGrounder())
-    for (functor, arity), fn in builtins.items():
-        simple.add_builtin(functor, arity, fn)
-        janus.add_builtin(functor, arity, fn)
-
-    simple_result = simple.get_query_result(program, factory)
-    janus_result = janus.get_query_result(program, factory)
-
-    _assert_results_match(simple_result.formulas, janus_result.formulas)
 
 
 # -- Basic facts and rules --
@@ -187,53 +163,7 @@ def test_variable_in_query():
     """)
 
 
-def test_substitution():
-    assert_engine_parity("""
-        fact(t(1,2,X), t(2,1,X)).
-        ?- fact(t(1,2,3), Z).
-    """)
-
-
 # -- Recursion --
-
-
-def test_anonymous_variables():
-    """Each ``_`` is a variable of its own, in facts, rule bodies and a query."""
-    assert_engine_parity(
-        "p(_, _).\nr(a, b).\nr(c, a).\nq(X) :- r(X, _), r(_, X).\n"
-        "?- p(a, b).\n?- q(a).\n?- r(_, _)."
-    )
-
-
-def test_anonymous_variables_in_a_probabilistic_fact():
-    assert_engine_parity("0.5::p(a, _).\n?- p(a, b).")
-
-
-def test_an_open_predicate_whose_name_prolog_must_quote():
-    """Both grounders make the heads an open predicate's rules prove leaves."""
-    program = tuple(
-        str_to_rules("'an output'(X) :- between(0,1,X).\n?- 'an output'(Y).")
-    )
-    (query,) = filter(is_query, program)
-    open_predicates = {("'an output'", 1)}
-    factory = AstFactory()
-
-    simple = SimpleGrounder().ground(program, query[2], factory, open_predicates)
-    janus = JanusGrounder().ground(program, query[2], factory, open_predicates)
-
-    _assert_results_match(simple, janus)
-
-
-def test_recursive_reasoning():
-    assert_engine_parity("""
-        edge(0,1).
-        edge(1,2).
-        edge(1,3).
-
-        connected(X,Y) :- edge(X,Y).
-        connected(X,Y) :- edge(X,Z), connected(Z,Y).
-        ?- connected(X,Y).
-    """)
 
 
 def test_recursive_with_labels():
@@ -265,24 +195,6 @@ def test_addition_program():
     """)
 
 
-def test_custom_builtin():
-    def square(lhs, rhs):
-        if is_variable(lhs):
-            if not is_variable(rhs):
-                yield {lhs: (str(math.sqrt(int(rhs[0]))),)}
-        else:
-            if is_variable(rhs):
-                yield {rhs: (str(int(lhs[0]) ** 2),)}
-            else:
-                if int(rhs[0]) == int(lhs[0]) ** 2:
-                    yield {}
-
-    assert_engine_parity_with_builtins(
-        "?- square(2,X).",
-        builtins={("square", 2): square},
-    )
-
-
 # -- Multiple queries --
 
 
@@ -292,19 +204,6 @@ def test_multiple_queries():
         lb::b.
         ?- a.
         ?- b.
-    """)
-
-
-# -- Lists --
-
-
-def test_list_predicates():
-    assert_engine_parity("""
-        cons([H|T], H, T).
-        head(L, H) :- cons(L, H, _).
-        tail(L, T) :- cons(L, _, T).
-        ?- head([a,b,c], H).
-        ?- tail([a,b,c], T).
     """)
 
 
@@ -333,13 +232,6 @@ def test_double_negation():
     assert_engine_parity("""
         la::a.
         ?- not(not(a)).
-    """)
-
-
-def test_negation_of_true_fact():
-    assert_engine_parity("""
-        a.
-        ?- not(a).
     """)
 
 

@@ -14,6 +14,7 @@ from .ast import children
 from .ast import fold
 from .ast import map_children
 from .ast_factory import AstFactory
+from .circuit_factory import CircuitFactory
 from .circuit_node import to_module
 from .circuit_node import transform_nodes
 from .deeplogformulafactory import DeepLogFormulaFactory
@@ -52,6 +53,7 @@ __all__ = [
     "lower_circuit_nodes",
     "SymbolicFormulaFactory",
     "AstFactory",
+    "CircuitFactory",
     "FormulaNode",
     "Atom",
     "UnaryOp",

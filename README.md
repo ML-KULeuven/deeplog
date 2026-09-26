@@ -23,8 +23,9 @@ DeepLog publishes optional extras so you can extend the base install as needed:
 | ----- | ----------- |
 | `pydeeplog[examples]` | Adds interactive notebook tooling (Jupyter) plus Lightning/torchvision/torchmetrics for tutorials. |
 | `pydeeplog[janus_engine]` | Installs the Janus SWI-Prolog bridge for the highest performance Prolog backend. |
+| `pydeeplog[mvsdd]` | Installs MV-SDD, the knowledge compiler for a formula that reaches two values of one variable, such as the branches of an annotated disjunction. |
 | `pydeeplog[tests]` | Adds pytest, coverage and supporting utilities for contributors. |
-| `pydeeplog[site]` | Installs the documentation/notebook toolchain (Sphinx, PyData theme, myst-nb, nbconvert, ipykernel, Lightning/torchvision/torchmetrics, …). |
+| `pydeeplog[site]` | Installs the documentation/notebook toolchain (Sphinx, PyData theme, myst-nb, Jupytext, ipykernel, Lightning/torchvision/torchmetrics, …). |
 
 Combine extras as needed, for example `pip install ".[examples,tests]"`.
 
@@ -84,8 +85,41 @@ See `examples/` for end-to-end notebooks (MNIST addition, semantic loss, LTN, �
 ## Documentation & tutorials
 
 - **Landing page & docs** – All documentation lives under [`site/`](site/). Build it locally with the steps in [Building the documentation site](#building-the-documentation-site).
-- **Notebooks** – Reproduces the semantic loss workflow, DeepLog module deep dives, MNIST addition with DeepProbLog, and more. Launch them from the `examples/` directory after installing `deeplog[examples]`.
+- **Notebooks** – The notebooks in [`examples/`](examples/) teach DeepLog concept by concept; they are listed [below](#notebooks). The docs site sequences a selection of them into two reading paths, one for ML practitioners and one for neurosymbolic developers, and each notebook's page there has an **Open in Colab** badge.
 - **API reference** – Generated automatically via `sphinx-autoapi`, covering symbols, shapes, modules, and engine utilities.
+
+### Notebooks
+
+#### Foundations
+
+| Notebook | What it teaches |
+|---|---|
+| [`symbol`](examples/symbol.md) | The `Symbol` type: DeepLog's lightweight tagged-tuple representation of anything symbolic. |
+| [`shape`](examples/shape.md) | `SymTensor` and how symbolic shapes let DeepLog validate module composition. |
+| [`deeplogmodule`](examples/deeplogmodule.md) | `DeepLogModule` — the shape-aware `torch.nn.Module` subclass everything downstream builds on. |
+| [`composition`](examples/composition.md) | Combining modules using `Sequential` and `ModuleCircuit`, and handling automatic shape transformations. |
+
+#### Core concepts
+
+| Notebook | What it teaches                                                                                     |
+|---|-----------------------------------------------------------------------------------------------------|
+| [`formula_to_module`](examples/formula_to_module.md) | Compiling a logical formula straight into a runnable `DeepLogModule` via `parse_formula_to_module`. |
+| [`ast_and_rewrites`](examples/ast_and_rewrites.md) | The materialized formula AST, `fold`/`map_children`, and the `recognize_expectation`/`recognize_posterior` rewrite passes. |
+| [`predicates`](examples/predicates.md) | Predicate modules: how symbolic atoms become executable tensor operations.                          |
+| [`01_aggregation_basics`](examples/01_aggregation_basics.md) | Aggregation syntax, finite domains, and how DeepLog builds aggregation modules.                     |
+| [`03_free_variables_and_batching`](examples/03_free_variables_and_batching.md) | Free variables are module inputs.                                                                   |
+| [`circuits`](examples/circuits.md) | The `Circuit` DAG and `to_module()`.                                                                |
+| [`circuit_transformation`](examples/circuit_transformation.md) | Transforming circuits between algebraic structures (boolean → probability, etc.).                   |
+| [`language`](examples/language.md) | Tour of the textual DeepLog formula language and its parser.                                        |
+
+#### Applications
+
+| Notebook | What it teaches |
+|---|---|
+| [`problog`](examples/problog.md) | Running ProbLog programs: probabilistic facts, rules, queries, and conditioning on evidence with `:- ` integrity constraints (`P(q \| e)`). |
+| [`deepproblog`](examples/deepproblog.md) | Neural predicates: a fact's probability comes from a network instead of a constant (an annotated disjunction compiled via the MV-SDD backend), building up to the classic MNIST-addition experiment. **Slow.** |
+| [`semantic_loss`](examples/semantic_loss.md) | A full ML training pipeline that uses a DeepLog formula as a differentiable loss term (semantic loss). **Slow.** |
+| [`ltn`](examples/ltn.md) | Reproducing a subset of the Logic Tensor Networks tutorial on top of DeepLog. |
 
 ## Development workflow
 

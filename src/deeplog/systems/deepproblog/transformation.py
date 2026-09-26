@@ -3,11 +3,11 @@
 
 from collections.abc import Iterable
 
+from deeplog import flatten_symbol
+from deeplog import get_term_variables
 from deeplog.grounding.prolog import RuleType
 from deeplog.grounding.prolog import create_rule
-from deeplog.grounding.prolog.program import is_fact
-from deeplog.symbol import flatten_symbol
-from deeplog.symbol import get_term_variables
+from deeplog.grounding.prolog import is_fact
 
 from .parser import create_labeled_fact
 from .parser import get_atom

@@ -79,6 +79,16 @@ Implemented frameworks
 
             <footer><a class="dl-cta-button dl-cta-button--ghost" href="docs/deepproblog_builtins.html">Open built-ins</a></footer>
 
+      .. container:: dl-resource-card
+
+         **Writing a prover on Janus**
+
+         Run your own SWI-Prolog prover through DeepLog: load it with a JanusProver and build it on DeepLog's Prolog library, whose exports are part of the public API.
+
+         .. raw:: html
+
+            <footer><a class="dl-cta-button dl-cta-button--ghost" href="docs/janus_prover.html">Open the prover reference</a></footer>
+
 Talks
 +++++
 
@@ -182,3 +192,4 @@ Engines & tooling
    deeplog_circuits
    docs/deepproblog_language
    docs/deepproblog_builtins
+   docs/janus_prover

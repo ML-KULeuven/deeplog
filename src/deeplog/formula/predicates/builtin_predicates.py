@@ -23,7 +23,8 @@ class SumsPredicate(Predicate[torch.Tensor, torch.Tensor, torch.Tensor]):
     arity = 3
     structure = "boolean"
 
-    def _resolve_argument(self, symbol: Symbol, _: int, /) -> float | Symbol:
+    def resolve_argument(self, symbol: Symbol, _: int, /) -> float | Symbol:
+        """A number for an argument that writes one, else the argument as a variable."""
         if len(symbol) != 1:
             return symbol
         try:
@@ -55,7 +56,8 @@ class EqualityPredicate(Predicate[torch.Tensor, torch.Tensor]):
         self._domain_mapping = {symbol: i for i, symbol in enumerate(domain)}
         super().__init__(all_arguments)
 
-    def _resolve_argument(self, symbol: Symbol, _: int, /) -> int | Symbol:
+    def resolve_argument(self, symbol: Symbol, _: int, /) -> int | Symbol:
+        """The id of an argument in the domain, else the argument as a variable."""
         return self._domain_mapping.get(symbol, symbol)
 
     def forward_predicate(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
@@ -72,7 +74,7 @@ class _LabelProbabilityPredicate(Predicate[torch.Tensor, torch.Tensor]):
 
     arity = 2
 
-    def _resolve_argument(self, symbol: Symbol, index: int, /) -> float | Symbol:
+    def resolve_argument(self, symbol: Symbol, index: int, /) -> float | Symbol:
         if index == 0:
             if symbol == ("true",):
                 return 1.0
@@ -195,7 +197,17 @@ class NetworkPredicate(Predicate[torch.Tensor, torch.Tensor]):
         self._module = module
         self.register_buffer("_values", values, persistent=False)
 
-    def _resolve_argument(self, symbol: Symbol, index: int, /) -> float | Symbol:
+    def resolve_argument(self, symbol: Symbol, index: int, /) -> float | Symbol:
+        """The module's input, or the value whose row is read.
+
+        The first argument is a number it writes, or else a variable. The second
+        is a variable, or the value it names: a name's position among a symbolic
+        domain's names, a number of a tensor domain, or, without a domain, a row.
+
+        Raises:
+            ValueError: If the second argument names no value of the domain, or,
+                without one, no row.
+        """
         value = _number(symbol)
         if index == 0:
             return symbol if value is None else value

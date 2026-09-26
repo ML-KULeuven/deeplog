@@ -18,6 +18,7 @@ from .formula import AggregationBuilder
 from .formula import Arguments
 from .formula import AstFactory
 from .formula import AtomBuilder
+from .formula import CircuitFactory
 from .formula import CircuitNode
 from .formula import DeepLogFormulaFactory
 from .formula import DeepLogModuleFactory
@@ -64,9 +65,12 @@ from .symbol import apply_substitution
 from .symbol import flatten_symbol
 from .symbol import get_predicate
 from .symbol import get_term_variables
+from .symbol import is_variable
 from .symbol import parse_symbol
+from .symbol import split_list
 from .symbol import symbol_to_pretty_string
 from .symbol import to_symbol
+from .variable import OPEN
 from .variable import Domain
 from .variable import SymbolicDomain
 from .variable import TensorDomain
@@ -76,6 +80,7 @@ from .variable import VariableAtoms
 
 __all__ = [
     "MPE",
+    "OPEN",
     "REAL",
     "AggregationBuilder",
     "Arguments",
@@ -94,6 +99,7 @@ __all__ = [
     "apply_substitution",
     "BOOLEAN",
     "Circuit",
+    "CircuitFactory",
     "CircuitNode",
     "compose_modules",
     "construct_transformation",
@@ -112,6 +118,7 @@ __all__ = [
     "get_predicate",
     "structure_of",
     "get_term_variables",
+    "is_variable",
     "LOGPROBABILITY",
     "LogProbabilityPredicate",
     "map_shape",
@@ -131,6 +138,7 @@ __all__ = [
     "Shape",
     "ShapeMismatchException",
     "simplify_module",
+    "split_list",
     "parse_symbol",
     "SumsPredicate",
     "Symbol",

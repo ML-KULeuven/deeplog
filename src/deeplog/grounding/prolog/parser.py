@@ -1,11 +1,8 @@
 #  Copyright (c) 2024-2026. KU Leuven
-"""Parse plain-Prolog source text into :mod:`~deeplog.grounding.prolog.program` clauses.
+"""Plain-Prolog source text: parsed into :mod:`~deeplog.grounding.prolog.program` clauses, and rendered from symbols.
 
-The head / body / functor splitting is generic and knows only plain Prolog. An
-extension such as DeepProbLog layers its own surface syntax (``p :: a`` labels,
-annotated disjunctions) on top by passing its own ``atom_parser`` to
-:func:`parse_rule` / :func:`parse_atoms` -- see
-``deeplog.systems.deepproblog.parser``.
+The head / body / functor splitting is generic and knows only plain Prolog; an
+operator such as ``::`` is read as the ordinary binary term it is.
 """
 
 from collections.abc import Callable
@@ -16,6 +13,7 @@ from typing import cast
 from deeplog.symbol import Symbol
 from deeplog.symbol import get_term_variables
 from deeplog.symbol import parse_symbol
+from deeplog.symbol import split_list
 from deeplog.util import bracket_aware_split
 
 from .program import RuleType
@@ -115,3 +113,60 @@ def str_to_rules(code: str) -> Iterable[RuleType]:
     """Parse a plain-Prolog program; clauses may share a line."""
     for clause in iter_clauses(code):
         yield str_to_rule(clause)
+
+
+def symbol_to_prolog_str(symbol: Symbol) -> str:
+    """Convert a Symbol to a valid Prolog term string using strict prefix notation.
+
+    Translates ``cons``/``nil`` chains (deeplog's internal list encoding) to
+    Prolog list syntax ``[h1, h2, ... | tail]`` so SWI list builtins like
+    ``nth0/3`` and ``member/2`` operate on them.
+    """
+    list_str = _try_render_prolog_list(symbol)
+    if list_str is not None:
+        return list_str
+    if symbol == ("nil",):
+        return "[]"
+    functor = symbol[0]
+    if len(symbol) == 1:
+        return _quote_prolog_atom(functor)
+    args = ",".join(symbol_to_prolog_str(s) for s in symbol[1:])
+    return f"{_quote_prolog_atom(functor)}({args})"
+
+
+def _try_render_prolog_list(symbol: Symbol) -> str | None:
+    """Render a ``cons``/``nil`` chain as ``[h1, h2, ... | tail]``; else None."""
+    elements, tail = split_list(symbol)
+    if not elements:
+        return None
+    rendered = ",".join(symbol_to_prolog_str(element) for element in elements)
+    if tail == ("nil",):
+        return f"[{rendered}]"
+    return f"[{rendered}|{symbol_to_prolog_str(tail)}]"
+
+
+def _quote_prolog_atom(s: str) -> str:
+    if _is_prolog_bare_token(s):
+        return s
+    escaped = s.replace("'", "\\'")
+    return f"'{escaped}'"
+
+
+def _is_prolog_bare_token(s: str) -> bool:
+    """Return true if ``s`` can be emitted bare (unquoted) into Prolog source.
+
+    Bare-safe: numbers (parsed as int/float), lowercase identifiers
+    ``[a-z][a-zA-Z0-9_]*``, and variable-form names (uppercase- or
+    underscore-prefixed identifiers) which Prolog should read as
+    variables -- quoting them would convert them into atoms.
+    """
+    if not s:
+        return False
+    try:
+        float(s)
+        return True
+    except ValueError:
+        pass
+    if not all(c.isalnum() or c == "_" for c in s):
+        return False
+    return s[0].islower() or s[0].isupper() or s[0] == "_"

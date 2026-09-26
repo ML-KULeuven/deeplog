@@ -48,7 +48,7 @@ def defined_names():
             home = getattr(value, "__module__", None)
             if name.startswith("_") or isinstance(value, typing.TypeVar):
                 continue
-            if str(home).startswith("deeplog"):
+            if home == "deeplog" or str(home).startswith("deeplog."):
                 defined.setdefault(name, home)
     return defined
 

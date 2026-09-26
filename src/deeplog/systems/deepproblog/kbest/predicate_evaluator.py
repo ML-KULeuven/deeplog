@@ -15,10 +15,10 @@ from collections.abc import Mapping
 
 import torch
 
-from deeplog.algebraic import get_algebraic_structure
-from deeplog.formula.deeplogmodulefactory.builder_protocols import AtomBuilder
-from deeplog.formula.predicates.predicate import Predicate
-from deeplog.symbol import Symbol
+from deeplog import AtomBuilder
+from deeplog import Predicate
+from deeplog import Symbol
+from deeplog import get_algebraic_structure
 
 
 class NeuralPredicateEvaluator:

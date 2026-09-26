@@ -30,7 +30,7 @@ from deeplog import ...
 
 ## Environment
 
-- DeepLog version: <!-- output of `python -c "import deeplog; print(deeplog.__version__)"` -->
+- DeepLog version: <!-- output of `python -c "import importlib.metadata; print(importlib.metadata.version('pydeeplog'))"` -->
 - Python version: <!-- `python --version` -->
 - PyTorch version: <!-- `python -c "import torch; print(torch.__version__)"` -->
 - OS / platform:

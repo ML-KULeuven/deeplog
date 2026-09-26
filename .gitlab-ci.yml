@@ -62,7 +62,7 @@ default:
   before_script:
     - uv venv .venv
     - source .venv/bin/activate
-    - uv pip install -e ".[dev,examples,janus_engine,site,tests]"
+    - uv pip install -e ".[dev,examples,janus_engine,mvsdd,site,tests]"
 
 lint:
   rules:
@@ -71,7 +71,6 @@ lint:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
   script:
-    - nbstripout --verify examples/**/*.ipynb
     - ruff check .
     - ruff format --check .
 
@@ -108,35 +107,18 @@ test_code:
 test_notebooks:
   needs:
     - job: lint
-  parallel:
-    matrix:
-      - NOTEBOOK: [symbol, shape, deeplogmodule, composition, language, formula_to_module, semantic_loss, problog, deepproblog, predicates, circuits, "01_aggregation_basics", "03_free_variables_and_batching", ltn, circuit_transformation]
-  # Concurrent matrix jobs sharing a host race for ZMQ ports, so kernel startup
-  # occasionally fails with "Address already in use" / "Kernel didn't respond".
-  # The failure is transient, so retry the job rather than fail the pipeline.
-  retry:
-    max: 2
-    when:
-      - script_failure
-      - stuck_or_timeout_failure
-      - runner_system_failure
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
     - changes:
         paths:
           - src/**/*
-          - examples/$NOTEBOOK/**/*
+          - examples/**/*
           - pyproject.toml
           - .gitlab-ci.yml
   cache: *datasets
-  # A cell that runs past the timeout fails the job, where a stalled download
-  # would otherwise hold it until the job's own limit.
   script:
-    - DEEPLOG_FAST_DEV_RUN=1 jupyter nbconvert --to notebook --inplace --execute --ExecutePreprocessor.timeout=600 examples/$NOTEBOOK/*.ipynb
-  artifacts:
-    paths:
-      - examples/$NOTEBOOK/
+    - DEEPLOG_FAST_DEV_RUN=1 pytest examples/
 
 
 mirror_github_release:
@@ -175,7 +157,34 @@ mirror_github_release:
       if [ -n "$GITHUB_HEAD" ] && [ "$GITHUB_TAGGED" = "$GITHUB_HEAD" ]; then
         PARENT=$(git rev-parse -q --verify "${GITHUB_HEAD}^" || true)
       fi
-    - TREE=$(git rev-parse "HEAD^{tree}")
+    # Colab opens the released notebooks from GitHub as .ipynb, so each notebook is
+    # written as one, whose first code cell installs this release where DeepLog is
+    # not importable.
+    - |
+      python - <<'EOF'
+      import tomllib
+      from pathlib import Path
+
+      import jupytext
+      import nbformat
+
+      with open("pyproject.toml", "rb") as f:
+          version = tomllib.load(f)["project"]["version"]
+      install = nbformat.v4.new_code_cell(
+          "try:\n"
+          "    import deeplog\n"
+          "except ImportError:\n"
+          f'    %pip install -q "pydeeplog[examples]=={version}"',
+          id="install",
+      )
+      for path in Path("examples").glob("*.md"):
+          notebook = jupytext.read(path)
+          first_code = next(i for i, cell in enumerate(notebook.cells) if cell.cell_type == "code")
+          notebook.cells.insert(first_code, install)
+          nbformat.write(notebook, path.with_suffix(".ipynb"))
+      EOF
+    - git add examples/*.ipynb
+    - TREE=$(git write-tree)
     - SQUASHED=$(git commit-tree "$TREE" ${PARENT:+-p "$PARENT"} -m "Release $CI_COMMIT_TAG")
     # Atomic, so the branch and the tag always move together: the check above
     # relies on the tag naming GitHub's latest commit.

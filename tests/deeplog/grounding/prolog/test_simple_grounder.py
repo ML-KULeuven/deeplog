@@ -11,7 +11,7 @@ The factory is :class:`~deeplog.formula.ast_factory.AstFactory`, so each proof
 is asserted as the formula the grounder built rather than as its rendering.
 """
 
-from pathlib import Path
+import math
 
 import pytest
 
@@ -24,6 +24,7 @@ from deeplog.grounding import JanusGrounder
 from deeplog.grounding import SimpleGrounder
 from deeplog.grounding import UnknownPredicateException
 from deeplog.grounding.prolog import str_to_rules
+from deeplog.symbol import is_variable
 from deeplog.symbol import parse_symbol
 
 from ...testing_formulas import leaf
@@ -174,6 +175,49 @@ def test_open_rule_nonground_head_raises(grounder):
         )
 
 
+@pytest.mark.parametrize("grounder", _grounders())
+def test_recursive_rules_reach_every_answer(grounder):
+    program = tuple(
+        str_to_rules(
+            """
+            edge(0,1).
+            edge(1,2).
+            edge(1,3).
+            connected(X,Y) :- edge(X,Y).
+            connected(X,Y) :- edge(X,Z), connected(Z,Y).
+            """
+        )
+    )
+    result = grounder.ground(program, parse_symbol("connected(X,Y)"), AstFactory())
+    connected = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3)]
+    assert set(result) == {("connected", (str(x),), (str(y),)) for x, y in connected}
+
+
+@pytest.mark.parametrize("grounder", _grounders())
+def test_answer_substitutes_through_nested_terms(grounder):
+    program = tuple(str_to_rules("fact(t(1,2,X), t(2,1,X))."))
+    result = grounder.ground(program, parse_symbol("fact(t(1,2,3), Z)"), AstFactory())
+    assert set(result) == {
+        ("fact", ("t", ("1",), ("2",), ("3",)), ("t", ("2",), ("1",), ("3",)))
+    }
+
+
+@pytest.mark.parametrize("grounder", _grounders())
+def test_added_builtin_binds_its_arguments(grounder):
+    def square(lhs, rhs):
+        if is_variable(lhs):
+            if not is_variable(rhs):
+                yield {lhs: (str(math.isqrt(int(rhs[0]))),)}
+        elif is_variable(rhs):
+            yield {rhs: (str(int(lhs[0]) ** 2),)}
+        elif int(rhs[0]) == int(lhs[0]) ** 2:
+            yield {}
+
+    grounder.add_builtin("square", 2, square)
+    result = grounder.ground((), parse_symbol("square(2,X)"), AstFactory())
+    assert result == {parse_symbol("square(2,4)"): TRUE}
+
+
 @pytest.mark.parametrize(
     "grounder_type",
     [SimpleGrounder, JanusGrounder]
@@ -199,6 +243,27 @@ def test_a_builtin_belongs_to_the_grounder_that_added_it(grounder_type):
     }
     with pytest.raises(UnknownPredicateException):
         without.ground(program, goal, AstFactory())
+
+
+@pytest.mark.parametrize("grounder", _grounders())
+def test_list_terms_unify_through_rules(grounder):
+    program = tuple(
+        str_to_rules(
+            """
+            cons([H|T], H, T).
+            head(L, H) :- cons(L, H, _).
+            tail(L, T) :- cons(L, _, T).
+            """
+        )
+    )
+    abc = ("cons", ("a",), ("cons", ("b",), ("cons", ("c",), ("nil",))))
+    bc = abc[2]
+
+    heads = grounder.ground(program, parse_symbol("head([a,b,c], H)"), AstFactory())
+    tails = grounder.ground(program, parse_symbol("tail([a,b,c], T)"), AstFactory())
+
+    assert set(heads) == {("head", abc, ("a",))}
+    assert set(tails) == {("tail", abc, bc)}
 
 
 @pytest.mark.skipif(not JanusGrounder.is_available(), reason="janus_swi not installed")
@@ -230,20 +295,6 @@ def test_query_ignores_a_builder_an_earlier_query_left_behind():
     )
 
     assert set(result[("s",)].split(" or ")) == {"m_boolean", "n_boolean"}
-
-
-@pytest.mark.skipif(not JanusGrounder.is_available(), reason="janus_swi not installed")
-def test_an_engine_of_its_own_leaves_the_janus_engine_alone():
-    """A grounder whose engine defines the Janus engine's predicates replaces none of them."""
-
-    class ToyGrounder(JanusGrounder):
-        _engine_code_path = Path(__file__).parent / "toy_engine.pl"
-
-    program = tuple(str_to_rules("q.\n?- q."))
-    goal = parse_symbol("q")
-
-    assert ToyGrounder().ground(program, goal, AstFactory()) == {"toy": "toy"}
-    assert set(JanusGrounder().ground(program, goal, AstFactory())) == {("q",)}
 
 
 def test_a_goal_that_calls_itself_says_so():

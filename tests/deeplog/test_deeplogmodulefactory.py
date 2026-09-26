@@ -566,8 +566,8 @@ def test_shared_circuit_node_handle_keeps_circuit_linear():
 def _ltn_factory():
     """The LTN grounding setup: a fuzzy algebra and two p-mean quantifiers.
 
-    Mirrors ``examples/ltn/ltn.ipynb``, plus a ``below`` predicate reading a
-    scalar radius beside ``eq``'s points. The structure is a plain
+    Mirrors ``examples/ltn.md``, plus a ``below`` predicate reading a scalar
+    radius beside ``eq``'s points. The structure is a plain
     ``AlgebraicStructure`` — its product t-norm does not distribute over its
     probabilistic sum, so it is deliberately not a ``Semiring``.
     """
@@ -861,3 +861,55 @@ def test_compile_requires_a_formula():
     """There is no module with no columns."""
     with pytest.raises(ValueError, match="At least one formula"):
         DeepLogModuleFactory().compile()
+
+
+# --- Atoms ------------------------------------------------------------------
+
+
+def test_create_atom_rejects_an_unlabelled_symbol():
+    """An atom carries the structure it lives in; a bare symbol is not one.
+
+    The same refusal :class:`~deeplog.formula.circuit_factory.CircuitFactory`
+    makes one fold earlier, so the two factories agree on what an atom is.
+    """
+    factory = DeepLogModuleFactory()
+    with pytest.raises(ValueError, match="Invalid atom"):
+        factory.create_atom(("plain_atom",))
+
+
+def test_create_atom_returns_none_for_unregistered_predicates():
+    """A leaf whose predicate isn't registered stays an external input."""
+    factory = DeepLogModuleFactory()
+    leaf = ("_", ("unknown_pred", ("a",), ("b",)), ("probability",))
+    assert factory.create_atom(leaf) is None
+
+
+def test_create_atom_invokes_registered_builder():
+    """When a matching builder exists, create_atom returns that predicate's module."""
+    factory = DeepLogModuleFactory()
+    # ("=", 2, "boolean") is registered by default (EqualityPredicate).
+    leaf = ("_", ("=", ("true",), ("false",)), ("boolean",))
+    module = factory.create_atom(leaf)
+    assert module is not None
+    assert list(module.get_output_shape()) == [leaf]
+
+
+def test_create_atom_builds_one_module_per_leaf():
+    """Per-leaf lowering: each leaf of the same predicate gets its own module.
+
+    The pre-transparent-fold design batched all leaves of a predicate into one
+    module covering every atom. The transparent fold instead lowers each leaf
+    independently through ``create_atom`` — a distinct module per atom (sharing
+    the builder's weights, not one batched forward pass: the accepted tradeoff).
+    """
+    factory = DeepLogModuleFactory()
+    leaf_b = ("_", ("=", ("Burglary",), ("true",)), ("boolean",))
+    leaf_e = ("_", ("=", ("Earthquake",), ("true",)), ("boolean",))
+
+    module_b = factory.create_atom(leaf_b)
+    module_e = factory.create_atom(leaf_e)
+
+    assert module_b is not None and module_e is not None
+    assert module_b is not module_e  # independent per-leaf modules
+    assert set(get_all_symbols(module_b.get_output_shape())) == {leaf_b}
+    assert set(get_all_symbols(module_e.get_output_shape())) == {leaf_e}

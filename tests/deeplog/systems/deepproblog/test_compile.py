@@ -1,7 +1,6 @@
 #  Copyright (c) 2024-2026. KU Leuven
 """Tests for the compile_to_module pipeline."""
 
-import pytest
 import torch
 
 from deeplog.formula import DeepLogModuleFactory
@@ -11,6 +10,7 @@ from deeplog.grounding import str_to_rules
 from deeplog.shape import get_all_symbols
 from deeplog.systems.deepproblog import Solver
 from deeplog.systems.deepproblog import compile_to_module
+from deeplog.systems.deepproblog.compile import build_leaf_mapping
 from deeplog.util import as_tuple
 
 
@@ -57,57 +57,6 @@ def test_multiple_atoms_share_arguments():
 
     module = compile_to_module(result, DeepLogModuleFactory())
     assert module is not None
-
-
-def test_create_atom_rejects_an_unlabelled_symbol():
-    """An atom carries the structure it lives in; a bare symbol is not one.
-
-    The same refusal :class:`~deeplog.formula.circuit_factory.CircuitFactory`
-    makes one fold earlier, so the two factories agree on what an atom is.
-    """
-    factory = DeepLogModuleFactory()
-    with pytest.raises(ValueError, match="Invalid atom"):
-        factory.create_atom(("plain_atom",))
-
-
-def test_create_atom_returns_none_for_unregistered_predicates():
-    """A leaf whose predicate isn't registered stays an external input."""
-    factory = DeepLogModuleFactory()
-    leaf = ("_", ("unknown_pred", ("a",), ("b",)), ("probability",))
-    assert factory.create_atom(leaf) is None
-
-
-def test_create_atom_invokes_registered_builder():
-    """When a matching builder exists, create_atom returns that predicate's module."""
-    factory = DeepLogModuleFactory()
-    # ("=", 2, "boolean") is registered by default (EqualityPredicate).
-    leaf = ("_", ("=", ("true",), ("false",)), ("boolean",))
-    module = factory.create_atom(leaf)
-    assert module is not None
-    assert list(module.get_output_shape()) == [leaf]
-
-
-def test_create_atom_builds_one_module_per_leaf():
-    """Per-leaf lowering: each leaf of the same predicate gets its own module.
-
-    The pre-transparent-fold design batched all leaves of a predicate into one
-    module covering every atom. The transparent fold instead lowers each leaf
-    independently through ``create_atom`` — a distinct module per atom (sharing
-    the builder's weights, not one batched forward pass: the accepted tradeoff).
-    """
-    from deeplog.shape import get_all_symbols
-
-    factory = DeepLogModuleFactory()
-    leaf_b = ("_", ("=", ("Burglary",), ("true",)), ("boolean",))
-    leaf_e = ("_", ("=", ("Earthquake",), ("true",)), ("boolean",))
-
-    module_b = factory.create_atom(leaf_b)
-    module_e = factory.create_atom(leaf_e)
-
-    assert module_b is not None and module_e is not None
-    assert module_b is not module_e  # independent per-leaf modules
-    assert set(get_all_symbols(module_b.get_output_shape())) == {leaf_b}
-    assert set(get_all_symbols(module_e.get_output_shape())) == {leaf_e}
 
 
 def test_compile_transforms_boolean_lump_to_probability():
@@ -255,3 +204,59 @@ def test_compile_multiple_queries():
 
     output_symbols = list(module.get_output_shape())
     assert len(output_symbols) == 2
+
+
+def test_leaf_mapping_maps_a_labeled_atom_to_its_probability_label():
+    labels = {
+        ("digit", ("i1",), ("0",)): ("classifier", ("i1",), ("0",)),
+        ("digit", ("i1",), ("1",)): ("classifier", ("i1",), ("1",)),
+    }
+    mapping = build_leaf_mapping(labels)
+    assert mapping(("digit", ("i1",), ("0",))) == (
+        "_",
+        ("classifier", ("i1",), ("0",)),
+        ("probability",),
+    )
+    assert mapping(("digit", ("i1",), ("1",))) == (
+        "_",
+        ("classifier", ("i1",), ("1",)),
+        ("probability",),
+    )
+
+
+def test_leaf_mapping_keeps_atoms_sharing_arguments_apart():
+    """a(x1) and b(x1) share arguments; the labels disambiguate them.
+
+    A by-arguments heuristic cannot resolve this — both atoms and both
+    labels collide on arguments alone — but the label map is exact.
+    """
+    labels = {
+        ("a", ("x1",)): ("nn1", ("x1",)),
+        ("b", ("x1",)): ("nn2", ("x1",)),
+    }
+    mapping = build_leaf_mapping(labels)
+    assert mapping(("a", ("x1",))) == (
+        "_",
+        ("nn1", ("x1",)),
+        ("probability",),
+    )
+    assert mapping(("b", ("x1",))) == (
+        "_",
+        ("nn2", ("x1",)),
+        ("probability",),
+    )
+
+
+def test_leaf_mapping_retags_an_unlabeled_leaf_to_probability():
+    mapping = build_leaf_mapping({("a", ("x1",)): ("nn1", ("x1",))})
+    # An unlabeled boolean leaf keeps its atom, retagged as probability.
+    assert mapping(("fact", ("y",))) == (
+        "_",
+        ("fact", ("y",)),
+        ("probability",),
+    )
+
+
+def test_leaf_mapping_without_labels_retags_everything():
+    mapping = build_leaf_mapping({})
+    assert mapping(("a",)) == ("_", ("a",), ("probability",))

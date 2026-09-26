@@ -6,10 +6,10 @@ Parsing is the grounder's (:func:`deeplog.grounding.str_to_rule`), which reads
 reading, building and taking apart the labeled atom ``("::", label, atom)``.
 """
 
+from deeplog import Symbol
+from deeplog import to_symbol
 from deeplog.grounding.prolog import RuleType
 from deeplog.grounding.prolog import create_rule
-from deeplog.symbol import Symbol
-from deeplog.symbol import to_symbol
 
 
 def create_labeled_atom(atom: Symbol | str, label: Symbol | str | None) -> Symbol:

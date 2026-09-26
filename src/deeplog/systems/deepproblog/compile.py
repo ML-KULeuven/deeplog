@@ -3,29 +3,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 from typing import cast
 
-from ...algebraic import PROBABILITY
-from ...circuit.circuit import Circuit
-from ...formula.ast import CircuitNode
-from ...formula.deeplogmodulefactory import lower_circuit_nodes
-from ...formula.distribution import build_leaf_mapping
-from ...formula.strategies import absorb_aggregation
-from ...module import ColumnwiseModule
-from ...module import WrappedModule
-from ...shape import SymTensor
-from ...shape import get_all_symbols
-from ...shape import sole_structure
-from ...symbol import Symbol
-from ...symbol import with_structure
+from deeplog import PROBABILITY
+from deeplog import CircuitFactory
+from deeplog import CircuitNode
+from deeplog import Symbol
+from deeplog import SymTensor
+from deeplog import WrappedModule
+from deeplog import get_all_symbols
+from deeplog import sole_structure
+from deeplog import with_structure
+from deeplog.formula import lower_circuit_nodes
+from deeplog.module import ColumnwiseModule
+
 from .solver import EngineResult
 
 
 if TYPE_CHECKING:
-    from ...formula.ast import FormulaNode
-    from ...formula.deeplogmodulefactory import DeepLogModuleFactory
-    from ...module import DeepLogModule
+    from deeplog import DeepLogModule
+    from deeplog import DeepLogModuleFactory
+    from deeplog import FormulaNode
 
 
 def compile_to_module(
@@ -138,23 +139,56 @@ def _lower(
     site. What the engine knows and the count cannot derive — Definition 12's α
     as a leaf mapping, and where each variable occurs — is handed to it there.
     """
-    target = Circuit(structure=PROBABILITY)
-    # Total on these: the lumps are circuit nodes (``_as_circuit_nodes``) and the
-    # operation is ``expectation``, which is the pair ``absorb_aggregation``
-    # answers ``None`` to anything else for. A non-boolean lump raises there.
-    deferred = cast(
-        "list[CircuitNode]",
-        [
-            absorb_aggregation(lambda _structure: target, "expectation", (), (), lump)
-            for lump in boolean_lumps
-        ],
-    )
+    # One factory, so every count's leaf lands in its one probability circuit.
+    counts = CircuitFactory()
+    deferred = [
+        counts.create_aggregation("expectation", [], (), lump) for lump in boolean_lumps
+    ]
     return lower_circuit_nodes(
         factory,
         *deferred,
         leaf_mapping=build_leaf_mapping(result.labels),
         variables=result.variables,
     )
+
+
+def build_leaf_mapping(
+    labels: Mapping[Symbol, Symbol],
+) -> Callable[[Symbol], Symbol]:
+    """Build a boolean-to-probability leaf mapping directly from atom labels.
+
+    ``labels`` maps each labeled boolean atom (e.g. ``("a", ("x1",))``) to its
+    probability label atom (e.g. ``("nn1", ("x1",))``). The returned callable
+    rewrites a *bare* boolean leaf (the canonical identity a circuit exposes via
+    :meth:`~deeplog.circuit.circuit.Circuit.get_leaf_name`) to its matching
+    probability leaf. Leaves without an atom label are retagged to the
+    probability structure unchanged (they become probability inputs or
+    builder-backed leaves).
+
+    Building the mapping straight from ``labels`` keeps it unambiguous when
+    distinct atoms share arguments — ``a(x1)`` and ``b(x1)`` labeled by
+    ``nn1(x1)`` and ``nn2(x1)`` — which arguments alone cannot resolve.
+
+    A numeric label (e.g. ``0.6 :: fact``) maps to its constant symbol like any
+    other, and the target circuit folds it to a constant node.
+
+    Args:
+        labels: Maps boolean atoms to their probability label atoms.
+
+    Returns:
+        A callable mapping boolean leaf symbols to probability leaf symbols.
+    """
+    mapping: dict[Symbol, Symbol] = {
+        bool_atom: with_structure(prob_atom, "probability")
+        for bool_atom, prob_atom in labels.items()
+    }
+
+    def leaf_mapping(sym: Symbol) -> Symbol:
+        # ``sym`` is a bare boolean leaf; map it to its label or carry it into
+        # the probability structure unchanged.
+        return mapping.get(sym) or with_structure(sym, "probability")
+
+    return leaf_mapping
 
 
 def _tag_answers(

@@ -2,12 +2,13 @@
 
 import pytest
 
+from deeplog.grounding.prolog import create_fact
+from deeplog.grounding.prolog import create_query
+from deeplog.grounding.prolog import create_rule
 from deeplog.symbol import parse_symbol
+from deeplog.symbol import split_list
 from deeplog.symbol import symbol_to_pretty_string
 from deeplog.symbol import symbol_to_str
-from deeplog.systems.deepproblog import create_labeled_fact
-from deeplog.systems.deepproblog import create_query
-from deeplog.systems.deepproblog import create_rule
 
 
 symbol_examples = [
@@ -62,6 +63,24 @@ def test_empty_list():
     assert parse_symbol("[]") == ("nil",)
 
 
+@pytest.mark.parametrize(
+    ("symbol_str", "elements", "tail"),
+    [
+        ("[a,b]", ["a", "b"], "[]"),
+        ("[a,[b,c],d|T]", ["a", "[b,c]", "d"], "T"),
+        ("[]", [], "[]"),
+        ("f(a)", [], "f(a)"),
+    ],
+    ids=["list", "nested list with a tail", "empty list", "not a list"],
+)
+def test_split_list(symbol_str, elements, tail):
+    """A list splits into its elements and the tail they end in."""
+    assert split_list(parse_symbol(symbol_str)) == (
+        [parse_symbol(element) for element in elements],
+        parse_symbol(tail),
+    )
+
+
 def test_infix_functor_parsing():
     assert parse_symbol("a _ b") == ("_", ("a",), ("b",))
     #    assert parse_symbol("a_b") == ("_", ("a",), ("b",))
@@ -83,7 +102,7 @@ rule_examples = [
         "addition(X,Y,Z) :- digit(X,N1) , digit(Y,N2) , Z is N1+N2",
     ),
     (
-        create_labeled_fact(("digit", ("X",), ("Y",)), ("nn", ("X",), ("Y",))),
+        create_fact(("::", ("nn", ("X",), ("Y",)), ("digit", ("X",), ("Y",)))),
         "nn(X,Y) :: digit(X,Y) :- true",
     ),
     (create_query([("addition", ("a",), ("b",), ("c",))]), "?- addition(a,b,c)"),

@@ -18,6 +18,7 @@ All types of contributions are encouraged and valued. See the [Table of Contents
 - [Suggesting Enhancements](#suggesting-enhancements)
 - [Your First Code Contribution](#your-first-code-contribution)
 - [Improving The Documentation](#improving-the-documentation)
+  - [Notebooks](#notebooks)
 - [Code Quality & Tooling](#code-quality--tooling)
 - [Styleguides](#styleguides)
   - [Commit Messages](#commit-messages)
@@ -142,12 +143,31 @@ For docs and notebooks:
 - Install site tooling if you change `site/`: `pip install -r site/requirements.txt`.
 - Build and preview locally: `(cd site && make html)` then `python -m http.server --directory site/build/html 8000` and open `http://localhost:8000`. See `README.md#building-the-documentation-site` for the full flow.
 - Keep API links resolvable for AutoAPI, e.g. `[DeepLogModule](deeplog.module.deeplog_module.DeepLogModule)`.
-- When editing notebooks in `examples/`, run `pre-commit run nbstripout --all-files` (or `pre-commit run --all-files`) to strip metadata.
 - For visible UI/content changes, consider adding a screenshot to the issue; otherwise, just note the affected pages and commands run.
+
+#### Notebooks
+
+The notebooks in `examples/` are MyST Markdown files, `examples/<name>.md` in Jupytext's `md:myst` format, and hold no outputs. Every notebook runs as part of the default `pytest` suite, collected by `examples/conftest.py`, so they double as integration tests — if a rename breaks one, CI catches it. A new notebook also gets a row in the README's notebook list.
+
+Most notebooks run in a few seconds. `deepproblog` and `semantic_loss` download MNIST and train a model, so a full run takes minutes:
+
+```bash
+pytest examples/                        # every notebook
+pytest examples/deepproblog.md          # one notebook
+DEEPLOG_FAST_DEV_RUN=1 pytest examples/  # one batch per fit, the way CI runs them
+```
+
+Needs the `examples` and `tests` extras (`pip install -e ".[examples,tests]"`).
+
+No cell may be tagged `raises-exception`: running the notebook would pass it whatever it raised. A cell that demonstrates an error catches that exception itself. `tests/test_examples.py` refuses the tag.
+
+On the docs site, every notebook has an **Open in Colab** badge under its title. It opens the notebook as released at the version in `pyproject.toml`, from that tag on the GitHub mirror. There, each notebook is also an `.ipynb`, with one more code cell before its first, which installs the same version (`pydeeplog[examples]==<version>`) when DeepLog is not importable.
+
+The notebooks in `examples/` carry neither. The docs build adds the badge and the release adds the install cell, so a new notebook or a version bump needs no edit to either. The docs build puts the badge under the title, so a notebook opens with a markdown cell whose first line is its `# ` title. The badge of a notebook added since the last release opens only once the next release is out.
 
 ## Code Quality & Tooling
 
-We keep formatting, linting, and notebook metadata consistent with `pre-commit` (Black, Ruff, nbstripout). Install the dev extras and set up the hooks before opening an issue or preparing a patch:
+We keep formatting, linting, and types consistent with `pre-commit` (Ruff, pyright). Install the dev extras and set up the hooks before opening an issue or preparing a patch:
 
 ```bash
 pip install -e ".[dev]"

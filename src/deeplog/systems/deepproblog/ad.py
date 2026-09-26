@@ -25,19 +25,20 @@ from collections.abc import Mapping
 from collections.abc import Sequence
 from typing import cast
 
+from deeplog import OPEN
+from deeplog import Domain
+from deeplog import Symbol
+from deeplog import SymbolicDomain
+from deeplog import Variable
+from deeplog import VariableAtoms
+from deeplog import apply_substitution
+from deeplog import flatten_symbol
+from deeplog import get_term_variables
+from deeplog import is_variable
+from deeplog import symbol_to_pretty_string
 from deeplog.grounding.prolog import RuleType
-from deeplog.grounding.prolog.unify import calculate_mgu
-from deeplog.symbol import Symbol
-from deeplog.symbol import apply_substitution
-from deeplog.symbol import flatten_symbol
-from deeplog.symbol import get_term_variables
-from deeplog.symbol import is_variable
-from deeplog.symbol import symbol_to_str
-from deeplog.variable import OPEN
-from deeplog.variable import Domain
-from deeplog.variable import SymbolicDomain
-from deeplog.variable import Variable
-from deeplog.variable import VariableAtoms
+from deeplog.grounding.prolog import calculate_mgu
+from deeplog.grounding.prolog import is_fact
 
 from .parser import create_labeled_fact
 from .parser import get_atom
@@ -60,8 +61,6 @@ def is_annotated_disjunction(rule: Symbol) -> bool:
     ``;``-tree of labeled atoms with body ``true``. An AD must have at least
     two labeled branches; a regular labeled fact ``p::a.`` is not an AD.
     """
-    from deeplog.grounding.prolog.program import is_fact
-
     if not is_fact(rule):
         return False
     head = rule[1]
@@ -144,9 +143,9 @@ def declare_neural(
     positions = [index for index in range(1, len(atom)) if atom[index] == output]
     if len(positions) != 1:
         raise ValueError(
-            f"Neural annotation {symbol_to_str(label)} declares "
-            f"{symbol_to_str(output)} over a domain, but it occurs "
-            f"{len(positions)} times in {symbol_to_str(atom)}; it must occur "
+            f"Neural annotation {symbol_to_pretty_string(label)} declares "
+            f"{symbol_to_pretty_string(output)} over a domain, but it occurs "
+            f"{len(positions)} times in {symbol_to_pretty_string(atom)}; it must occur "
             f"exactly once, as the argument the domain ranges over."
         )
     position = positions[0]
@@ -191,13 +190,13 @@ def _images(
     if not free:
         yield {}
         return
-    seen: set[tuple[tuple[Symbol, Symbol], ...]] = set()
+    seen: set[frozenset[tuple[Symbol, Symbol]]] = set()
     for atom in atoms:
         mgu = calculate_mgu(occurrence, atom)
         if mgu is None or mgu.get(OPEN) not in domain.values:
             continue
         image = {name: value for name, value in mgu.items() if name in free}
-        key = tuple(sorted(image.items(), key=lambda item: symbol_to_str(item[0])))
+        key = frozenset(image.items())
         if key not in seen:
             seen.add(key)
             yield image

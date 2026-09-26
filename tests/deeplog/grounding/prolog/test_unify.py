@@ -1,6 +1,6 @@
 #  Copyright (c) 2024-2026. KU Leuven
 
-from deeplog.grounding.prolog.unify import calculate_mgu
+from deeplog.grounding.prolog import calculate_mgu
 from deeplog.grounding.prolog.unify import replace_with_fresh_variables
 from deeplog.grounding.prolog.unify import unify
 from deeplog.symbol import apply_substitution
@@ -87,6 +87,15 @@ def test_unify_fail():
 
     unification = unify(term1, term2)
     assert unification is None
+
+
+def test_terms_of_different_arity_do_not_unify():
+    assert calculate_mgu(("p", a), ("p", a, b)) is None
+
+
+def test_every_underscore_is_the_same_variable():
+    underscore = ("_",)
+    assert calculate_mgu(("p", underscore, underscore), ("p", a, b)) is None
 
 
 def test_fresh_variables():

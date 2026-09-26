@@ -13,15 +13,20 @@ construction.
 import pytest
 import torch
 
+from deeplog import OPEN
 from deeplog import CircuitNode
 from deeplog import DeepLogModuleFactory
+from deeplog import Domain
+from deeplog import Variable
 from deeplog import reshape
+from deeplog import with_structure
 from deeplog.formula import Aggregation
 from deeplog.formula import Atom
 from deeplog.formula import BinaryOp
 from deeplog.formula import UnaryOp
 from deeplog.formula import lower_circuit_nodes
 from deeplog.formula.circuit_factory import CircuitFactory
+from deeplog.formula.deeplogmodulefactory.lower import batched_lowering
 from deeplog.shape import SymTensor
 
 
@@ -284,6 +289,52 @@ def test_deferred_lump_reads_back_only_what_absorption_minted():
 
     assert deferred_lump(feeder) is lump
     assert deferred_lump(_expectation([BURGLARY], Atom(BURGLARY_BOOL_SYM))) is None
+
+
+X_1 = ("x", ("1",))
+X_2 = ("x", ("2",))
+
+
+def _count_through_the_lowering(**model_facts):
+    """The weighted model count of ``x(1) or x(2)``, taken at the lowering's site."""
+    cf = CircuitFactory()
+    either = cf.create_binary_node(
+        "or",
+        cf.create_atom(("_", X_1, ("boolean",))),
+        cf.create_atom(("_", X_2, ("boolean",))),
+    )
+    count = cf.create_aggregation("expectation", (), (), either)
+    memo = batched_lowering(
+        DeepLogModuleFactory(),
+        *(feeder for _, feeder in count.feeders),
+        **model_facts,
+    )
+    (module,) = set(memo.values())
+    return float(module().flatten()[0])
+
+
+def _label(symbol):
+    """Definition 12's α: ``x(1)`` is labelled 0.3 and ``x(2)`` 0.7."""
+    labels = {X_1: ("0.3",), X_2: ("0.7",)}
+    return with_structure(labels.get(symbol, symbol), "probability")
+
+
+def test_the_lowering_counts_with_what_the_model_declares():
+    """An expectation lowered through the fold honours the declared variables.
+
+    ``batched_lowering`` is the single weighted-model-count site, and it used
+    to be unable to receive Definition 12's α or the model's variables — so a
+    multi-valued variable reaching it compiled as if its values were independent
+    atoms, silently. Both values of the variable cover ``x(1) or x(2)``, so the
+    count is 1; read as independent it is 1 - 0.7*0.3 instead.
+    """
+    pytest.importorskip("pymvsdd")
+    variables = {Variable(("x",), Domain.of(["1", "2"])): (("x", OPEN),)}
+
+    assert _count_through_the_lowering(
+        leaf_mapping=_label, variables=variables
+    ) == pytest.approx(1.0)
+    assert _count_through_the_lowering(leaf_mapping=_label) == pytest.approx(0.79)
 
 
 def test_lower_circuit_nodes_rejects_a_root_that_is_not_a_lump():

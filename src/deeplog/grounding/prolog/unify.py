@@ -23,8 +23,16 @@ def _replace_all_occurrences(
 
 
 def calculate_mgu(term1: Symbol, term2: Symbol) -> dict[Symbol, Symbol] | None:
-    """
-    Calculate the mgu between term1 and term2 if it exists, returns None otherwise.
+    """Return the most general unifier of ``term1`` and ``term2``, or ``None``.
+
+    The unifier is the substitution ``s`` with
+    ``apply_substitution(term1, s) == apply_substitution(term2, s)`` that every
+    other such substitution refines. ``None`` means the terms do not unify.
+    Variables are identified by name, so every ``_`` is the same variable.
+
+    There is no occurs check. Unifying a variable with a term containing it is
+    not supported: it may raise :class:`RecursionError`, or return a substitution
+    :func:`~deeplog.symbol.apply_substitution` cannot apply.
     """
     queue: deque[tuple[Symbol, Symbol]] = deque([(term1, term2)])
     substitution: dict[Symbol, Symbol] = {}

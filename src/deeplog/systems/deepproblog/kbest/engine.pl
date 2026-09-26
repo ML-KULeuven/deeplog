@@ -3,10 +3,9 @@
 % targets deeplog's ID:fact/2 and ID:rule/2 program representation and
 % defers formula construction to the Python-side factory via py_call.
 
-:- module(deeplog_kbest, [kbest_prove_query/7]).
+:- module(deeplog_kbest, [kbest_prove_query/8]).
 :- use_module(library(heaps)).
-:- use_module(deeplog_prolog(janus_translation)).
-:- use_module(deeplog_prolog(builtins)).
+:- use_module(deeplog(grounding)).
 :- include("heuristics.pl").
 
 % --- Entry point -----------------------------------------------------------
@@ -14,12 +13,12 @@
 % Enumerates up to K top-ranked proof formulas for Query; each solution
 % returns the corresponding (GroundQuery, Formula) pair. Python collects the
 % set and folds them with factory.disjoin to build the per-goal result.
-kbest_prove_query(ID, QuerySymbol, Factory, K, HeuristicName, GroundQuery, Formula) :-
+kbest_prove_query(ID, Prover, QuerySymbol, Factory, K, HeuristicName, GroundQuery, Formula) :-
     from_symbol(QuerySymbol, Query),
     initial_heuristic(HeuristicName, InitialHeur),
     py_call(Factory:get_true(), InitFormula),
     singleton_heap(Heap, InitialHeur, n([ID:Query], Query, InitFormula, [])),
-    step(Heap, K, Factory, [], Proofs),
+    step(Heap, K, Prover, Factory, [], Proofs),
     member(GroundTerm-Formula, Proofs),
     to_symbol(GroundTerm, GroundQuery).
 
@@ -28,23 +27,23 @@ initial_heuristic(gm, H) :- geometric_mean(H).
 
 % --- Heap step loop --------------------------------------------------------
 
-step(Heap, _, _, Proofs, FinalProofs) :-
+step(Heap, _, _, _, Proofs, FinalProofs) :-
     empty_heap(Heap), !,
     reverse(Proofs, FinalProofs).
 
-step(_, K, _, Proofs, FinalProofs) :-
+step(_, K, _, _, Proofs, FinalProofs) :-
     length(Proofs, L), L >= K, !,
     reverse(Proofs, FinalProofs).
 
-step(Heap, K, Factory, Acc, Proofs) :-
+step(Heap, K, Prover, Factory, Acc, Proofs) :-
     get_from_heap(Heap, Heur, n(Goals, GroundTerm, Formula, Assigned), RestHeap),
     (   Goals == []
-    ->  step(RestHeap, K, Factory, [GroundTerm-Formula|Acc], Proofs)
+    ->  step(RestHeap, K, Prover, Factory, [GroundTerm-Formula|Acc], Proofs)
     ;   findall(NewHeur-NewNode,
-                expand(Heur, n(Goals, GroundTerm, Formula, Assigned), Factory, NewHeur, NewNode),
+                expand(Heur, n(Goals, GroundTerm, Formula, Assigned), Prover, Factory, NewHeur, NewNode),
                 Children),
         foldl(add_pair, Children, RestHeap, NewHeap),
-        step(NewHeap, K, Factory, Acc, Proofs)
+        step(NewHeap, K, Prover, Factory, Acc, Proofs)
     ).
 
 add_pair(Key-Value, H0, H1) :- add_to_heap(H0, Key, Value, H1).
@@ -52,7 +51,7 @@ add_pair(Key-Value, H0, H1) :- add_to_heap(H0, Key, Value, H1).
 % --- Node expansion --------------------------------------------------------
 %
 % A node is n(Goals, GroundTerm, Formula, Assigned) paired with a heuristic
-% key in the heap. Goals is a list of ID:Goal items still to prove;
+% key in the heap. Prover is the JanusProver whose builtins the goals may call. Goals is a list of ID:Goal items still to prove;
 % GroundTerm is the top-level query term (becomes ground as the proof
 % unifies); Formula is the partial proof formula built by conjoining fact
 % leaves; Assigned is the per-branch list of Goal-Bool commitments for
@@ -60,17 +59,17 @@ add_pair(Key-Value, H0, H1) :- add_to_heap(H0, Key, Value, H1).
 % if committed negatively via NAF hoisting).
 
 % Top-level conjunction: push both goals in head order.
-expand(Heur, n([ID:','(G1,G2)|Rest], GT, F, A), _, Heur,
+expand(Heur, n([ID:','(G1,G2)|Rest], GT, F, A), _, _, Heur,
        n([ID:G1, ID:G2|Rest], GT, F, A)) :- !.
 
 % Disjunction: spawn a child for each branch.
-expand(Heur, n([ID:';'(G1,_G2)|Rest], GT, F, A), _, Heur,
+expand(Heur, n([ID:';'(G1,_G2)|Rest], GT, F, A), _, _, Heur,
        n([ID:G1|Rest], GT, F, A)).
-expand(Heur, n([ID:';'(_G1,G2)|Rest], GT, F, A), _, Heur,
+expand(Heur, n([ID:';'(_G1,G2)|Rest], GT, F, A), _, _, Heur,
        n([ID:G2|Rest], GT, F, A)) :- !.
 
 % `true` — consume with no effect.
-expand(Heur, n([_:true|Rest], GT, F, A), _, Heur, n(Rest, GT, F, A)) :- !.
+expand(Heur, n([_:true|Rest], GT, F, A), _, _, Heur, n(Rest, GT, F, A)) :- !.
 
 % Negation as failure, restricted to the deterministic part of the proof.
 % Resolves Goal against the per-branch assignment A; on the first
@@ -85,10 +84,10 @@ expand(Heur, n([_:true|Rest], GT, F, A), _, Heur, n(Rest, GT, F, A)) :- !.
 %   - Categorical: an AD splits into N+1 children — one per branch
 %     value (cat(CatId)-Idx) plus one "none" child (cat(CatId)-none)
 %     whose probability is the residual 1 - Σ P_i.
-expand(Heur, n([ID:not(Goal)|Rest], GT, F, A), Factory, NewHeur, NewNode) :- !,
+expand(Heur, n([ID:not(Goal)|Rest], GT, F, A), Prover, Factory, NewHeur, NewNode) :- !,
     catch(
         catch(
-            (   naf_resolve(ID:Goal, A)
+            (   naf_resolve(ID:Goal, Prover, A)
             ->  Outcome = success
             ;   Outcome = failure
             ),
@@ -101,23 +100,10 @@ expand(Heur, n([ID:not(Goal)|Rest], GT, F, A), Factory, NewHeur, NewNode) :- !,
     naf_dispatch(Outcome, Heur, n([ID:not(Goal)|Rest], GT, F, A),
                  Factory, NewHeur, NewNode).
 
-% Pure Prolog builtin: execute and consume.
-expand(Heur, n([_:Goal|Rest], GT, F, A), _, Heur, n(Rest, GT, F, A)) :-
-    nonvar(Goal),
-    allowed_builtin(Goal), !,
-    call(Goal).
-
-% Python-registered extern builtin: enumerate solutions, unify, consume.
-expand(Heur, n([ID:Goal|Rest], GT, F, A), _, Heur, n(Rest, GT, F, A)) :-
-    nonvar(Goal),
-    functor(Goal, Name, Arity),
-    ID:engine_id(Engine, EngineID),
-    EngineID:extern_builtin(Name, Arity), !,
-    to_symbol(Goal, GoalSym),
-    py_call(Engine:'_call_builtin'(GoalSym), ResultSyms),
-    member(ResultSym, ResultSyms),
-    from_symbol(ResultSym, Unified),
-    Goal = Unified.
+% Builtin: prove it, binding its arguments, and consume.
+expand(Heur, n([_:Goal|Rest], GT, F, A), Prover, _, Heur, n(Rest, GT, F, A)) :-
+    is_builtin(Prover, Goal), !,
+    call_builtin(Prover, Goal).
 
 % Categorical (annotated-disjunction) fact: enforces per-proof mutual
 % exclusivity. AD branches arrive in the program with their probability
@@ -139,7 +125,7 @@ expand(Heur, n([ID:Goal|Rest], GT, F, A), _, Heur, n(Rest, GT, F, A)) :-
 %   (c) No cat(CatId) entry in A → fresh consumption; unwrap, conjoin
 %       the leaf, update the heuristic with the inner probability, and
 %       record cat(CatId)-ValueIdx in A.
-expand(Heur, n([ID:Goal|Rest], GT, F, A), Factory, NewHeur,
+expand(Heur, n([ID:Goal|Rest], GT, F, A), _, Factory, NewHeur,
        n(Rest, GT, NewF, NewA)) :-
     ID:fact(Goal, '@cat'(InnerLabel, CatId, ValueIdx)),
     (   member(cat(CatId)-Choice, A)
@@ -175,7 +161,7 @@ expand(Heur, n([ID:Goal|Rest], GT, F, A), Factory, NewHeur,
 %       so consume the goal without re-conjoining or re-multiplying.
 %   (c) Goal not in A → fresh consumption; conjoin the leaf, update
 %       the heuristic, and record Goal-true in A.
-expand(Heur, n([ID:Goal|Rest], GT, F, A), Factory, NewHeur,
+expand(Heur, n([ID:Goal|Rest], GT, F, A), _, Factory, NewHeur,
        n(Rest, GT, NewF, NewA)) :-
     ID:fact(Goal, Label),
     Label \= '@cat'(_,_,_),
@@ -193,26 +179,22 @@ expand(Heur, n([ID:Goal|Rest], GT, F, A), Factory, NewHeur,
     ).
 
 % Rule: replace the head goal with the rule body (a nested conjunction).
-expand(Heur, n([ID:Goal|Rest], GT, F, A), _, Heur, n([ID:Body|Rest], GT, F, A)) :-
+expand(Heur, n([ID:Goal|Rest], GT, F, A), _, _, Heur, n([ID:Body|Rest], GT, F, A)) :-
     ID:rule(Goal, Body).
 
 % Unknown predicate: fires only when no other expand clause applies.
-expand(_, n([ID:Goal|_], _, _, _), _, _, _) :-
+expand(_, n([ID:Goal|_], _, _, _), Prover, _, _, _) :-
     nonvar(Goal),
     Goal \= ','(_,_),
     Goal \= ';'(_,_),
     Goal \= true,
     Goal \= not(_),
-    \+ allowed_builtin(Goal),
+    \+ is_builtin(Prover, Goal),
     functor(Goal, Name, Arity),
     functor(Probe, Name, Arity),
     \+ ID:fact(Probe, _),
     \+ ID:rule(Probe, _),
-    (   ID:engine_id(_, EngineID)
-    ->  \+ EngineID:extern_builtin(Name, Arity)
-    ;   true
-    ),
-    throw(error(unknown_procedure(Name, Arity), ID)).
+    unknown_predicate(Goal).
 
 % --- NAF dispatch ----------------------------------------------------------
 
@@ -308,42 +290,31 @@ cat_residual_probability([_BGoal-_BIdx-BInner|Rest], Factory, AccP, OutP) :-
 % throws naf_needs_choice/2, which the outer engine catches and turns
 % into a heap-level split (see naf_dispatch).
 
-naf_resolve(_:true, _) :- !.
-naf_resolve(ID:','(G1,G2), A) :- !,
-    naf_resolve(ID:G1, A),
-    naf_resolve(ID:G2, A).
-naf_resolve(ID:';'(G1,G2), A) :- !,
-    (   naf_resolve(ID:G1, A)
-    ;   naf_resolve(ID:G2, A)
+naf_resolve(_:true, _, _) :- !.
+naf_resolve(ID:','(G1,G2), Prover, A) :- !,
+    naf_resolve(ID:G1, Prover, A),
+    naf_resolve(ID:G2, Prover, A).
+naf_resolve(ID:';'(G1,G2), Prover, A) :- !,
+    (   naf_resolve(ID:G1, Prover, A)
+    ;   naf_resolve(ID:G2, Prover, A)
     ).
-naf_resolve(ID:not(G), A) :- !,
-    \+ naf_resolve(ID:G, A).
-naf_resolve(_:Goal, _) :-
-    nonvar(Goal),
-    allowed_builtin(Goal), !,
-    call(Goal).
-naf_resolve(ID:Goal, _) :-
-    nonvar(Goal),
-    functor(Goal, Name, Arity),
-    ID:engine_id(Engine, EngineID),
-    EngineID:extern_builtin(Name, Arity), !,
-    to_symbol(Goal, GoalSym),
-    py_call(Engine:'_call_builtin'(GoalSym), ResultSyms),
-    member(ResultSym, ResultSyms),
-    from_symbol(ResultSym, Unified),
-    Goal = Unified.
+naf_resolve(ID:not(G), Prover, A) :- !,
+    \+ naf_resolve(ID:G, Prover, A).
+naf_resolve(_:Goal, Prover, _) :-
+    is_builtin(Prover, Goal), !,
+    call_builtin(Prover, Goal).
 % NAF over a categorical fact: look up the per-branch assignment for
 % this CatId. If the AD has been committed to some outcome, succeed
 % iff the committed value matches this branch's index (any other value
 % — or the "none" outcome — means this Goal is false in the world).
 % Otherwise, throw to trigger the multi-way hoist in naf_dispatch.
-naf_resolve(ID:Goal, A) :-
+naf_resolve(ID:Goal, _, A) :-
     ID:fact(Goal, '@cat'(_, CatId, ValueIdx)), !,
     (   member(cat(CatId)-Choice, A)
     ->  Choice == ValueIdx
     ;   throw(naf_needs_categorical_choice(ID, CatId))
     ).
-naf_resolve(ID:Goal, A) :-
+naf_resolve(ID:Goal, _, A) :-
     ID:fact(Goal, Label),
     Label \= '@cat'(_,_,_),
     (   member(Goal-true, A)
@@ -352,30 +323,26 @@ naf_resolve(ID:Goal, A) :-
     ->  fail
     ;   throw(naf_needs_choice(Goal, Label))
     ).
-naf_resolve(ID:Goal, A) :-
+naf_resolve(ID:Goal, Prover, A) :-
     ID:rule(Goal, Body),
-    naf_resolve(ID:Body, A).
+    naf_resolve(ID:Body, Prover, A).
 
 % Unknown predicate inside a NAF subproof: mirror the main engine's
 % behavior and throw, rather than silently treating it as failure.
-% Fires only when no fact/rule/extern_builtin is registered for the
-% predicate name+arity (matching the bottom-of-stack expand clause).
-naf_resolve(ID:Goal, _) :-
+% Fires only when no fact, rule or builtin exists for the predicate
+% name+arity (matching the bottom-of-stack expand clause).
+naf_resolve(ID:Goal, Prover, _) :-
     nonvar(Goal),
     Goal \= ','(_,_),
     Goal \= ';'(_,_),
     Goal \= true,
     Goal \= not(_),
-    \+ allowed_builtin(Goal),
+    \+ is_builtin(Prover, Goal),
     functor(Goal, Name, Arity),
     functor(Probe, Name, Arity),
     \+ ID:fact(Probe, _),
     \+ ID:rule(Probe, _),
-    (   ID:engine_id(_, EngineID)
-    ->  \+ EngineID:extern_builtin(Name, Arity)
-    ;   true
-    ),
-    throw(error(unknown_procedure(Name, Arity), ID)).
+    unknown_predicate(Goal).
 
 % --- Performance optimization notes ----------------------------------------
 %

@@ -19,19 +19,19 @@ from functools import reduce
 from typing import TYPE_CHECKING
 from typing import TypeVar
 
+from deeplog import Symbol
+from deeplog import VariableAtoms
+from deeplog import apply_substitution
+from deeplog import get_predicate
 from deeplog.grounding import ProofBuilder
 from deeplog.grounding.prolog import PrologGrounder
 from deeplog.grounding.prolog import RuleType
+from deeplog.grounding.prolog import calculate_mgu
 from deeplog.grounding.prolog import create_rule
 from deeplog.grounding.prolog import get_constraint_body
 from deeplog.grounding.prolog import is_constraint
+from deeplog.grounding.prolog import is_fact
 from deeplog.grounding.prolog import is_query
-from deeplog.grounding.prolog.program import is_fact
-from deeplog.grounding.prolog.unify import calculate_mgu
-from deeplog.symbol import Symbol
-from deeplog.symbol import apply_substitution
-from deeplog.symbol import get_predicate
-from deeplog.variable import VariableAtoms
 
 from .ad import Declaration
 from .ad import declare_neural
@@ -43,7 +43,7 @@ from .transformation import remove_labeled_rules
 
 
 if TYPE_CHECKING:
-    from deeplog.formula.deeplogformulafactory import DeepLogFormulaFactory
+    from deeplog import DeepLogFormulaFactory
 
 
 F = TypeVar("F")

@@ -15,7 +15,7 @@ class IgnoringPredicate(Predicate[torch.Tensor]):
         self.resolve_argument_calls: list[int] = []
         super().__init__(all_arguments, ignore_arguments=(1,))
 
-    def _resolve_argument(self, symbol, index, /):
+    def resolve_argument(self, symbol, index, /):
         self.resolve_argument_calls.append(index)
         return symbol
 
@@ -32,7 +32,7 @@ class SymbolRedirectPredicate(Predicate[torch.Tensor, torch.Tensor]):
         self.resolve_argument_calls: list[tuple[int, tuple[str, ...]]] = []
         super().__init__(all_arguments)
 
-    def _resolve_argument(self, symbol, index, /):
+    def resolve_argument(self, symbol, index, /):
         self.resolve_argument_calls.append((index, symbol))
         if symbol == ("alias",):
             return ("redirect",)
@@ -40,6 +40,20 @@ class SymbolRedirectPredicate(Predicate[torch.Tensor, torch.Tensor]):
 
     def forward_predicate(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
         return lhs + rhs
+
+
+def test_a_predicate_defining_the_former_name_of_resolve_argument_is_refused():
+    """An override under the old name would never be called, so it is an error."""
+    with pytest.raises(TypeError, match="rename the method"):
+
+        class Stale(Predicate[torch.Tensor]):
+            functor, arity, structure = "stale", 1, "boolean"
+
+            def _resolve_argument(self, symbol, index, /):
+                return symbol
+
+            def forward_predicate(self, tensor):
+                return tensor
 
 
 def test_predicate_skips_ignored_argument():
@@ -84,7 +98,7 @@ class NumericFirstArgument(Predicate[torch.Tensor, torch.Tensor]):
     structure = "boolean"
     distinct_arguments = (0,)
 
-    def _resolve_argument(self, symbol, index, /):
+    def resolve_argument(self, symbol, index, /):
         return float(symbol[0]) if index == 0 else symbol
 
     def forward_predicate(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
@@ -116,7 +130,7 @@ def test_predicate_expands_repeated_symbols_alongside_constants():
     class HalfConstant(AddingPredicate):
         functor = "half_constant"
 
-        def _resolve_argument(self, symbol, index, /):
+        def resolve_argument(self, symbol, index, /):
             if index == 1 and symbol == ("two",):
                 return 2.0
             return symbol
@@ -141,7 +155,7 @@ class Distance(Predicate[torch.Tensor, torch.Tensor]):
     arity = 2
     structure = "real"
 
-    def _resolve_argument(self, symbol, index, /):
+    def resolve_argument(self, symbol, index, /):
         if symbol == ("origin",):
             return torch.tensor([0.0, 0.0])
         return symbol

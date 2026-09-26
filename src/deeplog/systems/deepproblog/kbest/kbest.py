@@ -5,28 +5,29 @@ Unlike the plain grounders, k-best must know probabilities *while* it searches
 (to rank and prune proofs), so it keeps DeepProbLog's labeled program
 representation and builds labeled leaves in-line via
 :class:`~deeplog.systems.deepproblog.kbest.probabilistic_factory.ProbabilisticFactory`.
-It reuses :class:`~deeplog.grounding.prolog.JanusGrounder` for the Janus session
-plumbing (code loading, program caching, builtins, error translation), overriding
-only ``_rules_to_janus_code`` to render the labeled program its engine needs.
+It runs its own engine on a :class:`~deeplog.grounding.prolog.JanusProver`,
+which loads the engine and the programs, keeps the builtins, and runs the queries.
 """
 
 from collections import defaultdict
 from collections.abc import Callable
 from collections.abc import Iterable
+from functools import lru_cache
 from functools import reduce
 from pathlib import Path
 
+from deeplog import Symbol
+from deeplog import to_symbol
+from deeplog.grounding.prolog import Builtin
+from deeplog.grounding.prolog import JanusGrounder
+from deeplog.grounding.prolog import JanusProver
+from deeplog.grounding.prolog import Program
 from deeplog.grounding.prolog import RuleType
 from deeplog.grounding.prolog import get_constraint_body
 from deeplog.grounding.prolog import is_constraint
+from deeplog.grounding.prolog import is_fact
 from deeplog.grounding.prolog import is_query
-from deeplog.grounding.prolog.janus import JANUS_AVAILABLE
-from deeplog.grounding.prolog.janus import JanusGrounder
-from deeplog.grounding.prolog.janus import JanusNotAvailableException
-from deeplog.grounding.prolog.janus.janus import symbol_to_prolog_str
-from deeplog.grounding.prolog.program import is_fact
-from deeplog.symbol import Symbol
-from deeplog.symbol import to_symbol
+from deeplog.grounding.prolog import symbol_to_prolog_str
 
 from ..ad import declare_neural
 from ..ad import get_ad_branches
@@ -39,16 +40,6 @@ from ..parser import get_label
 from ..solver import EngineResult
 from ..transformation import remove_labeled_rules
 from .probabilistic_factory import ProbabilisticFactory
-
-
-try:
-    from janus_swi import PrologError
-    from janus_swi import janus
-except (ModuleNotFoundError, RuntimeError):
-    # JanusGrounder.__init__ raises JanusNotAvailableException long before any
-    # code path that needs ``janus``/``PrologError`` runs, so the names being
-    # unbound here is safe.
-    pass
 
 
 ROOT = Path(__file__).parent
@@ -136,9 +127,6 @@ class KBestJanusGrounder(JanusGrounder):
     label symbol to its probability scalar.
     """
 
-    _id_prefix = "kbest_engine"
-    _engine_code_path = ROOT / "engine.pl"
-
     _HEURISTICS = {"pp", "gm"}
 
     def __init__(self, k: int, heuristic: str = "pp"):
@@ -153,9 +141,8 @@ class KBestJanusGrounder(JanusGrounder):
             raise ValueError("k must be >= 1")
         if heuristic not in self._HEURISTICS:
             raise ValueError(f"heuristic must be one of {sorted(self._HEURISTICS)}")
-        if not JANUS_AVAILABLE:
-            raise JanusNotAvailableException()
         super().__init__()
+        self._kbest = JanusProver(ROOT / "engine.pl")
         self._k = k
         self._heuristic = heuristic
 
@@ -171,6 +158,10 @@ class KBestJanusGrounder(JanusGrounder):
             "get_result rather than the plain ground() contract."
         )
 
+    def add_builtin(self, functor: str, arity: int, builtin_function: Builtin) -> None:
+        """Register a builtin for the goals this grounder proves."""
+        self._kbest.add_builtin(functor, arity, builtin_function)
+
     def get_result(
         self,
         program,
@@ -179,7 +170,7 @@ class KBestJanusGrounder(JanusGrounder):
         evaluator: Callable[[Symbol], float] | None = None,
     ) -> EngineResult:
         """Prove a single ``goal`` with k-best search."""
-        program_id = self._assert_program(program)
+        program_id = self._kbest.consult(_clauses(program))
         prob_factory = ProbabilisticFactory(factory, evaluator)
         formulas = self._kbest_ground(program_id, goal, prob_factory)
         return EngineResult(formulas, prob_factory.labels, prob_factory.variables)
@@ -191,7 +182,7 @@ class KBestJanusGrounder(JanusGrounder):
         evaluator: Callable[[Symbol], float] | None = None,
     ) -> EngineResult:
         """Evaluate every query with k-best search, conditioned on constraints."""
-        program_id = self._assert_program(program)
+        program_id = self._kbest.consult(_clauses(program))
         prob_factory = ProbabilisticFactory(factory, evaluator)
         evidence = self._build_evidence(program, program_id, prob_factory)
         all_formulas: dict[Symbol, object] = {}
@@ -221,55 +212,51 @@ class KBestJanusGrounder(JanusGrounder):
         return evidence
 
     def _kbest_ground(self, program_id, goal, factory: ProbabilisticFactory):
-        self._bind_engine(program_id)
-        variables = {
-            "ProgramID": program_id,
-            "Query": goal,
-            "Factory": factory,
-            "K": self._k,
-            "Heuristic": self._heuristic,
+        rows = self._kbest.query(
+            "kbest_prove_query(Program, Prover, Query, Factory, K, Heuristic,"
+            " GroundQuery, Formula)",
+            {
+                "Program": program_id,
+                "Prover": self._kbest,
+                "Query": goal,
+                "Factory": factory,
+                "K": self._k,
+                "Heuristic": self._heuristic,
+            },
+        )
+        per_goal: dict = defaultdict(list)
+        for row in rows:
+            per_goal[row["GroundQuery"]].append(row["Formula"])
+        return {
+            ground: reduce(factory.disjoin, formulas)
+            for ground, formulas in per_goal.items()
         }
-        try:
-            rows = janus.query(
-                "Engine:kbest_prove_query(ProgramID,Query,Factory,K,Heuristic,"
-                "GroundQuery,Formula)",
-                {**variables, "Engine": self._engine_module},
+
+
+@lru_cache(maxsize=64)
+def _clauses(program: Program) -> tuple[str, ...]:
+    """``program`` as the *labeled* Prolog clauses k-best's engine reads.
+
+    Unlike the base grounder, which turns the facts of open predicates into
+    unlabeled leaves, k-best keeps the ``::`` labels as ``fact/2``, so its engine
+    can rank partial proofs by probability. The renderings of the 64 most recent
+    programs are cached.
+    """
+    clauses = []
+    for rule in remove_labeled_rules(expand_annotated_disjunctions(program)):
+        if is_query(rule) or is_constraint(rule):
+            continue
+        label = get_fact_label(rule)
+        if is_fact(rule) and label is not None:
+            clauses.append(
+                f"fact({symbol_to_prolog_str(get_fact_atom(rule))},"
+                f"{symbol_to_prolog_str(label)})."
             )
-            per_goal: dict = defaultdict(list)
-            for row in rows:
-                per_goal[row["GroundQuery"]].append(row["Formula"])
-            return {
-                ground: reduce(factory.disjoin, formulas)
-                for ground, formulas in per_goal.items()
-            }
-        except PrologError as err:
-            raise self._translate_prolog_error(err) from err
-
-    def _rules_to_janus_code(self, program, open_predicates=frozenset()):
-        """Render the *labeled* program k-best's engine.pl expects.
-
-        The base grounder emits ``leaf/1`` for the facts of its open predicates
-        and knows nothing of labels; k-best instead keeps the ``::`` labels, so
-        its engine can rank partial proofs by probability, and has no use for
-        ``open_predicates``. Only the rendering differs — the caching is
-        inherited from
-        :meth:`~deeplog.grounding.prolog.JanusGrounder._assert_program`.
-        """
-        program = remove_labeled_rules(expand_annotated_disjunctions(program))
-        yield ":- dynamic fact/2, rule/2, engine_id/2."
-        for rule in program:
-            if is_query(rule) or is_constraint(rule):
-                continue
-            label = get_fact_label(rule)
-            if is_fact(rule) and label is not None:
-                yield (
-                    f"fact({symbol_to_prolog_str(get_fact_atom(rule))},"
-                    f"{symbol_to_prolog_str(label)})."
-                )
-            elif get_label(rule[1]) is None:
-                yield (
-                    f"rule({symbol_to_prolog_str(rule[1])},"
-                    f"{symbol_to_prolog_str(rule[2])})."
-                )
-            else:
-                raise ValueError(f"{rule} is not handled by the KBestJanusGrounder.")
+        elif get_label(rule[1]) is None:
+            clauses.append(
+                f"rule({symbol_to_prolog_str(rule[1])},"
+                f"{symbol_to_prolog_str(rule[2])})."
+            )
+        else:
+            raise ValueError(f"{rule} is not handled by the KBestJanusGrounder.")
+    return (":- dynamic fact/2, rule/2.", *sorted(clauses))

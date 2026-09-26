@@ -364,6 +364,20 @@ def apply_substitution(term: Symbol, substitution: Mapping[Symbol, Symbol]) -> S
     return term[0], *substituted_args
 
 
+def split_list(term: Symbol) -> tuple[list[Symbol], Symbol]:
+    """Return the elements of the list ``term`` and the tail they end in.
+
+    A list is a ``cons``/``nil`` chain, so ``[a, b]`` is ``([a, b], nil)``,
+    ``[a | T]`` is ``([a], T)``, and a term that is not a list is
+    ``([], term)``.
+    """
+    elements: list[Symbol] = []
+    while len(term) == 3 and term[0] == "cons":
+        elements.append(term[1])
+        term = term[2]
+    return elements, term
+
+
 def _parse_list(list_str: str) -> Symbol:
     assert list_str[0] == "[" and list_str[-1] == "]"
     inner = list_str[1:-1].strip()

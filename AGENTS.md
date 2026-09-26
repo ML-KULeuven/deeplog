@@ -12,8 +12,9 @@
 
 ## Build, Test, and Development Commands
 - Run targeted tests: `pytest tests/deeplog/module/test_simplify_module.py`.
-- Run full suite: `pytest`. `testpaths` is `["tests", "examples"]` and `--nbmake` is on by
-  default, so **the example notebooks are part of the test suite** and execute on every run.
+- Run full suite: `pytest`. `testpaths` is `["tests", "examples"]` and `examples/conftest.py`
+  collects every notebook, so **the example notebooks are part of the test suite** and execute on
+  every run.
 - Optional backends (`pysdd`, `pymvsdd`, `klay`, `janus-swi`) gate large parts of the suite.
   Run in an environment that has them, or a passing run proves less than it looks.
 - `pre-commit` runs ruff, ruff-format and pyright; pyright resolves its interpreter from
@@ -22,9 +23,10 @@
 ## Coding Style & Naming Conventions
 - Python 3.12+ typing (`tuple[...]`, `list[...]`); prefer the `as_tuple` helper for uniform
   tuple handling. 4-space indentation.
-- `__init__.py` holds the package docstring, re-exports and `__all__` — never a definition.
-  A package needing a shared entry point names a file for its job (`dispatch.py`), and
-  `common.py` / `utils.py` / `helpers.py` are not job names.
+- A public package's `__init__.py` holds its docstring, re-exports and `__all__`; an internal
+  package's holds only its docstring (rule 11). Never a definition. A package needing a shared
+  entry point names a file for its job (`dispatch.py`), and `common.py` / `utils.py` /
+  `helpers.py` are not job names.
 - Docstrings are published: `site/source/conf.py` points autoapi at `src/deeplog`. They state
   what the code does, what the arguments mean and what a caller must guarantee. Design
   rationale goes in the CHANGELOG or the merge request. State a fact at one level — usually
@@ -105,12 +107,21 @@ MV-SDD categorical slot by its annotated-disjunction branch atom, not a syntheti
 quotient's column by the division, not relabelled to its numerator. Mint an `@`-name only
 where there is no user-side referent at all, such as a padding slot.
 
-### 10. A rename is a rename
-No aliases, no deprecation shims, no back-compat layer. Update every call site; the CHANGELOG
-carries the migration and the major version carries the cost. A refactor is finished when the
-sweep is: grep every removed or renamed name across `src/ tests/ docs/ examples/`, resolve
-Sphinx cross-references against the live package, and delete what the change orphaned — a
-class nothing constructs, an exception nothing raises.
+### 10. Cleanliness over legacy
+Cleanliness and minimality win over legacy, always: never keep a worse design to spare
+existing callers. Whether a break gets a transition path until the next major is decided case
+by case: raise it, don't assume either way. A refactor ends with the sweep: grep every removed
+or renamed name across `src/ tests/ docs/ examples/`, resolve Sphinx cross-references against
+the live package, and delete what the change orphaned — a class nothing constructs, an
+exception nothing raises.
+
+### 11. The public API is functionality
+A name is public when a user needs it to state a model, compile it, run it, extend DeepLog
+through a builder, ground a program, or run an algebraic circuit. How compile works (factories,
+the fold, lumps, the lowering walk, passes) is machinery and stays internal, however useful it
+looks. A public signature mentions only public types. The public namespaces are `deeplog`,
+`deeplog.circuit`, one package per grounder under `deeplog.grounding`, and `deeplog.nesydb`;
+only they define `__all__`.
 
 ## Testing Guidelines
 - Framework: `pytest`. Place new unit tests beside the module they cover, mirroring `src/`.

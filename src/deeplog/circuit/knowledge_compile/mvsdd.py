@@ -60,8 +60,20 @@ def compile_mvsdd(
     :func:`~deeplog.circuit.transform.transform_circuit`. ``target`` and
     ``leaf_mapping`` are the emitter's — see
     :class:`~deeplog.circuit.knowledge_compile.diagram.DiagramEmitter`.
+
+    Raises:
+        ImportError: If mv-sdd, which ``pydeeplog[mvsdd]`` installs, is not
+            installed.
     """
-    import pymvsdd
+    try:
+        import pymvsdd
+    except ModuleNotFoundError as error:
+        if error.name != "pymvsdd":
+            raise
+        raise ImportError(
+            "Compiling a formula that reaches two values of one variable needs "
+            "mv-sdd, which pydeeplog[mvsdd] installs."
+        ) from None
 
     leaf_nodes = circuit.reachable_leaves(roots)
     asserted = indicated_values(variables)

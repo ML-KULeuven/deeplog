@@ -12,7 +12,7 @@ namespaces = false
 
 [project]
 name = "pydeeplog"
-version = "4.0.3"
+version = "4.1.0"
 dependencies = [
     "torch >=2.4,<3",
     "pysdd >=1.0,<2",
@@ -68,12 +68,15 @@ examples = [
     "graphviz",
 ]
 janus_engine = ["janus_swi"]
+mvsdd = ["mv-sdd"]
 tests = [
     "pytest",
     "pytest-xdist",
     "coverage",
     "pytest-cov",
-    "nbmake",
+    "jupytext",
+    "nbclient",
+    "ipykernel",
     "pytorch-lightning",
     "torchvision",
     "torchmetrics",
@@ -90,7 +93,8 @@ site = [
     "sphinx-copybutton",
     "sphinx-multiversion",
     "jupyter-sphinx",
-    "nbconvert",
+    "nbformat",
+    "jupytext",
     "ipykernel",
     "pytorch-lightning",
     "torchvision",
@@ -100,13 +104,14 @@ site = [
     "graphviz",
 ]
 dev = [
-    "nbstripout",
     "ruff",
     "pyright",
     "pytest",
     "pytest-xdist",
     "pytest-cov",
-    "nbmake",
+    "jupytext",
+    "nbclient",
+    "ipykernel",
     "build",
     "twine",
 ]
@@ -118,7 +123,6 @@ lint.select = ["E", "F", "W", "I", "D1", "B", "UP", "S", "CPY001"]
 lint.ignore = ["E501", "S101"]
 lint.preview = true
 lint.explicit-preview-rules = true
-extend-exclude = ["examples/**/*.ipynb"]
 
 [tool.ruff.lint.isort]
 force-single-line = true
@@ -135,7 +139,9 @@ notice-rgx = "(?i)Copyright \\(c\\) \\d{4}(-\\d{4})?\\. KU Leuven"
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "examples"]
-addopts = ["--nbmake", "--nbmake-timeout=120"]
+
+[tool.jupytext]
+notebook_metadata_filter = "-jupytext.text_representation.jupytext_version"
 
 [tool.coverage.report]
 # Don't count imports that only exist for static type checkers — they never

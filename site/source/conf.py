@@ -4,12 +4,13 @@
 
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sphinx_helpers.notebooks import copy_example_notebooks
+from sphinx_helpers.notebooks import write_example_notebooks
 from sphinx_helpers.public_api import drop_borrowed_docstring
 from sphinx_helpers.public_api import write_public_api
 from sphinx_helpers.references import resolve_autoapi_xref
@@ -20,7 +21,9 @@ from sphinx_helpers.switcher import configure_version_switcher
 project = "DeepLog"
 copyright = "2026, KU Leuven"
 author = "KU Leuven"
-release = "4.0.3"
+release = tomllib.loads(
+    (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text()
+)["project"]["version"]
 
 # -- General configuration ---------------------------------------------------
 
@@ -69,7 +72,7 @@ autodoc_inherit_docstrings = False
 maximum_signature_line_length = 88
 
 templates_path = ["_templates"]
-exclude_patterns = ["_autoapi_templates", "**/*-checkpoint.ipynb"]
+exclude_patterns = ["_autoapi_templates"]
 
 add_module_names = False
 python_use_unqualified_type_names = True
@@ -226,7 +229,7 @@ def setup(app):
     """Set up the build environment."""
     app.add_config_value("smv_root_ref", smv_root_ref, "env")
     app.connect("config-inited", configure_version_switcher)
-    app.connect("builder-inited", copy_example_notebooks)
+    app.connect("builder-inited", write_example_notebooks)
     app.connect("builder-inited", write_public_api)
     app.connect("autodoc-process-docstring", drop_borrowed_docstring)
     app.connect("autodoc-process-signature", elide_unrepresentable_defaults)

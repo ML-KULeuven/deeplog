@@ -15,13 +15,13 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import TypeVar
 
-from deeplog.algebraic import get_algebraic_structure
+from deeplog import OPEN
+from deeplog import Domain
+from deeplog import Symbol
+from deeplog import Variable
+from deeplog import VariableAtoms
+from deeplog import get_algebraic_structure
 from deeplog.grounding import ProofBuilder
-from deeplog.symbol import Symbol
-from deeplog.variable import OPEN
-from deeplog.variable import Domain
-from deeplog.variable import Variable
-from deeplog.variable import VariableAtoms
 
 
 F = TypeVar("F")

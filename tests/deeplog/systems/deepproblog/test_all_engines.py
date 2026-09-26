@@ -1,7 +1,5 @@
 #  Copyright (c) 2024-2026. KU Leuven
 
-import math
-
 import pytest
 
 from deeplog import to_module
@@ -13,7 +11,6 @@ from deeplog.grounding import SimpleGrounder
 from deeplog.grounding import UnknownPredicateException
 from deeplog.grounding import str_to_rule
 from deeplog.grounding import str_to_rules
-from deeplog.symbol import is_variable
 from deeplog.symbol import parse_symbol
 from deeplog.symbol import symbol_to_pretty_string
 from deeplog.symbol import with_structure
@@ -97,51 +94,6 @@ class TestEngines:
             # The label for the auxiliary atom maps back to the classifier annotation
             assert result.labels[("aux0", (str(i),))] == ("classifier", (str(i),))
 
-    def test_reasoning(self, engine_class):
-        program = tuple(
-            str_to_rules(
-                """
-        edge(0,1).
-        edge(1,2).
-        edge(1,3).
-
-        connected(X,Y) :- edge(X,Y).
-        connected(X,Y) :- edge(X,Z), connected(Z,Y).
-        ?-connected(X,Y).
-        """
-            )
-        )
-        connections = set(
-            engine_class().get_query_result(program, SymbolicFormulaFactory()).formulas
-        )
-        connected = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3)]
-        expected_connections = {
-            ("connected", (str(x),), (str(y),)) for x, y in connected
-        }
-        assert connections == expected_connections
-
-    def test_add_builtin(self, engine_class):
-        engine = engine_class()
-
-        def square(lhs, rhs):
-            if is_variable(lhs):
-                if not is_variable(rhs):
-                    yield {lhs: (str(math.sqrt(int(rhs[0]))),)}
-            else:
-                if is_variable(rhs):
-                    yield {rhs: (str(int(lhs[0]) ** 2),)}
-                else:
-                    if int(rhs[0]) == int(lhs[0]) ** 2:
-                        yield {}
-
-        engine.add_builtin("square", 2, square)
-        result = engine.get_query_result(
-            tuple(str_to_rules("?-square(2,X).")), SymbolicFormulaFactory()
-        )
-        assert (
-            len(result.formulas) == 1 and parse_symbol("square(2,4)") in result.formulas
-        )
-
     def test_multiple_proofs(self, engine_class):
         engine = engine_class()
 
@@ -183,44 +135,6 @@ class TestEngines:
         # a(input(0)) proves via a(X):-b(Y) (b grounds to b(0), Y unused) and
         # a(X):-c(X) (c(input(0))); operand order is engine-dependent.
         assert set(operands(formula, "or")) == {leaf("b(0)"), leaf("c(input(0))")}
-
-    def test_substitution(self, engine_class):
-        engine = engine_class()
-
-        code = """
-        fact(t(1,2,X), t(2,1,X)).
-
-        ?- fact(t(1,2,3), Z).
-        """
-
-        program = tuple(str_to_rules(code))
-        result = engine.get_query_result(program, SymbolicFormulaFactory())
-        sym_query, _ = list(result.formulas.items())[0]
-        assert sym_query == (
-            "fact",
-            ("t", ("1",), ("2",), ("3",)),
-            ("t", ("2",), ("1",), ("3",)),
-        )
-
-    def test_list_predicates_with_rules(self, engine_class):
-        engine = engine_class()
-        code = """
-        cons([H|T], H, T).
-        head(L, H) :- cons(L, H, _).
-        tail(L, T) :- cons(L, _, T).
-        ?- head([a,b,c], H).
-        ?- tail([a,b,c], T).
-        """
-        program = tuple(str_to_rules(code))
-        results = engine.get_query_result(program, SymbolicFormulaFactory())
-
-        list_term = ("cons", ("a",), ("cons", ("b",), ("cons", ("c",), ("nil",))))
-        head_key = ("head", list_term, ("a",))
-        tail_term = ("cons", ("b",), ("cons", ("c",), ("nil",)))
-        tail_key = ("tail", list_term, tail_term)
-
-        assert head_key in results.formulas
-        assert tail_key in results.formulas
 
     def test_labeled_formula_no_builder(self, engine_class):
         program_code = """

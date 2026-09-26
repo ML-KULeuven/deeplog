@@ -23,15 +23,10 @@ import torch
 
 from deeplog import to_dict
 from deeplog import to_module as circuit_to_module
-from deeplog.algebraic import PROBABILITY
-from deeplog.circuit.circuit import Circuit
 from deeplog.formula import DeepLogModuleFactory
 from deeplog.formula import SymbolicFormulaFactory
 from deeplog.formula.circuit_factory import CircuitFactory
-from deeplog.formula.deeplogmodulefactory.lower import batched_lowering
-from deeplog.formula.distribution import build_leaf_mapping
 from deeplog.formula.predicates.builtin_predicates import get_network_predicate
-from deeplog.formula.strategies import absorb_aggregation
 from deeplog.formula.strategies import transform_expectation_to_probability
 from deeplog.grounding import JanusGrounder
 from deeplog.grounding import SimpleGrounder
@@ -43,6 +38,7 @@ from deeplog.symbol import with_structure
 from deeplog.systems.deepproblog import KBestJanusGrounder
 from deeplog.systems.deepproblog import Solver
 from deeplog.systems.deepproblog import compile_to_module
+from deeplog.systems.deepproblog.compile import build_leaf_mapping
 from deeplog.systems.deepproblog.kbest.kbest import expand_annotated_disjunctions
 from deeplog.util import as_tuple
 from deeplog.variable import OPEN
@@ -572,52 +568,3 @@ def test_a_neural_annotation_must_name_a_variable_of_its_atom():
     """The declared variable has to occur in the atom, or it opens no position."""
     with pytest.raises(ValueError, match="must occur exactly once"):
         _recognize("nn(m_digit, [X], Y, [0..2]) :: digit(X,Z).\n?- digit(i1,0).")
-
-
-def _count_through_the_lowering(code: str, **model_facts):
-    """The weighted model count of ``code``'s query, taken at the lowering's site."""
-    program = tuple(str_to_rules(code))
-    result = Solver(SimpleGrounder()).get_query_result(program, CircuitFactory())
-    (lump,) = result.formulas.values()
-    target = Circuit(structure=PROBABILITY)
-    node = absorb_aggregation(lambda _structure: target, "expectation", (), (), lump)
-    assert node is not None
-    memo = batched_lowering(
-        DeepLogModuleFactory(),
-        *(feeder for _, feeder in node.feeders),
-        **model_facts,
-    )
-    (module,) = set(memo.values())
-    return float(module().flatten()[0])
-
-
-_EXCLUSIVE = """
-0.3::x(1); 0.7::x(2).
-q :- x(1).
-q :- x(2).
-?- q.
-"""
-
-
-def test_the_lowering_counts_with_what_the_model_declares():
-    """An expectation lowered through the fold honours the declared variables.
-
-    ``batched_lowering`` is the single weighted-model-count site, and it used
-    to be unable to receive Definition 12's α or the model's variables — so an
-    annotated disjunction reaching it compiled as if its branches were
-    independent, silently. Both branches of an exclusive variable cover it, so
-    the count is 1; read as independent it is 1 - 0.7*0.3 instead.
-    """
-    labels_only = {"leaf_mapping": _leaf_mapping(_EXCLUSIVE)}
-
-    assert _count_through_the_lowering(
-        _EXCLUSIVE, **labels_only, variables=_recognize(_EXCLUSIVE)
-    ) == pytest.approx(1.0)
-    assert _count_through_the_lowering(_EXCLUSIVE, **labels_only) == pytest.approx(0.79)
-
-
-def _leaf_mapping(code: str):
-    """Definition 12's α for ``code``, as the count's boolean-to-probability map."""
-    program = tuple(str_to_rules(code))
-    result = Solver(SimpleGrounder()).get_query_result(program, CircuitFactory())
-    return build_leaf_mapping(result.labels)

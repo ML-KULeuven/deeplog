@@ -53,6 +53,19 @@ class Predicate[*Ts](DeepLogModule, ABC):
     #: carrying constants cannot be opted in.
     distinct_arguments: tuple[int, ...] = ()
 
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Refuse a subclass defining ``_resolve_argument``, the former name of :meth:`resolve_argument`.
+
+        Raises:
+            TypeError: If ``cls`` defines ``_resolve_argument``.
+        """
+        super().__init_subclass__(**kwargs)
+        if "_resolve_argument" in vars(cls):
+            raise TypeError(
+                f"{cls.__qualname__} defines _resolve_argument, which is called "
+                "resolve_argument now; rename the method."
+            )
+
     def __init__(
         self,
         all_arguments: Arguments,
@@ -125,7 +138,7 @@ class Predicate[*Ts](DeepLogModule, ABC):
         constants: dict[int, torch.Tensor] = {}
         for i, arguments in enumerate(all_arguments):
             for k, j in enumerate(self._argument_indices):
-                constant_or_symbol = self._resolve_argument(arguments[j], j)
+                constant_or_symbol = self.resolve_argument(arguments[j], j)
                 if is_symbol(constant_or_symbol):
                     symbols[k].append(constant_or_symbol)
                     indices[k].append(i)
@@ -219,7 +232,7 @@ class Predicate[*Ts](DeepLogModule, ABC):
     ) -> torch.Tensor:
         """Evaluate eagerly, resolving any free symbols via ``tensors``.
 
-        Free symbols (positions where ``_resolve_argument`` returned a
+        Free symbols (positions where ``resolve_argument`` returned a
         :class:`Symbol` rather than a constant) are looked up in
         ``tensors`` and stacked into the input batch for that position.
         Constant positions use the buffers populated during ``__init__``.
@@ -286,13 +299,18 @@ class Predicate[*Ts](DeepLogModule, ABC):
         """Return the tuple ``(functor, arity, structure)``."""
         return cls.functor, cls.arity, cls.structure
 
-    def _resolve_argument(
+    def resolve_argument(
         self, symbol: Symbol, index: int, /
     ) -> Symbol | int | float | bool | torch.Tensor:
-        """
-        Return a replacement for the argument at the given position.
-        - Symbol: treated as a variable (the returned symbol is used instead of the original).
-        - Non-symbol value: treated as a constant.
+        """What the argument ``symbol`` at position ``index`` of an atom stands for.
+
+        A subclass overrides this to give its atoms constant arguments. The
+        default keeps every argument a variable.
+
+        Returns:
+            A symbol, which makes the argument a variable read from the input
+            under that symbol, or a value, which makes it a constant: a tensor
+            is used as it is, and a number or a boolean as a scalar.
         """
         return symbol
 
