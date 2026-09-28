@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.1] - 2026-09-28
+
+### Fixed
+- `compose_modules` with a single module returns a module producing the `output_shape` it was asked for. It returned the module as it was, whatever its own output shape, so a caller asking for fewer or reordered outputs got the module's own. The module is now reshaped to `output_shape`, and still returned as it is when it already produces it.
+
 ## [4.1.0] - 2026-09-26
 
 ### Added

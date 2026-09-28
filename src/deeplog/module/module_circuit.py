@@ -18,6 +18,7 @@ from ..symbol import Symbol
 from ..util import as_tuple
 from .deeplog_module import DeepLogModule
 from .reshape import construct_transformation
+from .reshape import reshape
 
 
 def _get_missing_transformations(
@@ -168,14 +169,15 @@ def compose_modules(
 ) -> DeepLogModule:
     """Compose modules into one module producing ``output_shape``.
 
-    A single module is returned as it is; several become a
-    :class:`ModuleCircuit`, which orders them by what each one's inputs need
-    and inserts the transformations between them.
+    A single module is reshaped to ``output_shape``, and returned as it is when
+    it already produces it; several become a :class:`ModuleCircuit`, which
+    orders them by what each one's inputs need and inserts the transformations
+    between them.
     """
     modules = list(modules)
     if len(modules) == 0:
         raise ValueError("At least one module is required to compose_modules.")
     if len(modules) == 1:
-        return modules[0]
+        return reshape(modules[0], output=output_shape)
     # TODO: potential optimization. If dependency graph is linear, return a sequential.
     return ModuleCircuit(modules, output_shape)

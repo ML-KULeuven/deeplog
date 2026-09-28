@@ -4,6 +4,7 @@ import torch
 
 from deeplog import ModuleCircuit
 from deeplog import SymTensor
+from deeplog import compose_modules
 
 from ._utils import DummyModule
 
@@ -99,3 +100,20 @@ class TestModuleCircuit:
         assert result.shape == (1, 2)
         assert pytest.approx(15.0) == float(result[0, 0])
         assert pytest.approx(10.0) == float(result[0, 1])
+
+
+def test_compose_one_module_produces_the_requested_shape():
+    module = DummyModule(
+        SymTensor("a"), SymTensor(["b", "c"]), lambda x: torch.cat([2 * x, 3 * x], 1)
+    )
+
+    composed = compose_modules([module], SymTensor(["c"]))
+
+    assert composed.get_output_shape() == SymTensor(["c"])
+    assert float(composed(torch.FloatTensor([[2.0]]))) == pytest.approx(6.0)
+
+
+def test_compose_one_module_that_already_fits_returns_it():
+    module = DummyModule(SymTensor("a"), SymTensor("b"), lambda x: x)
+
+    assert compose_modules([module], SymTensor("b")) is module
