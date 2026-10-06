@@ -14,7 +14,7 @@ DeepLog language
    .. rst-class:: dl-section__lead
 
       The DeepLog language is a compact syntax that maps directly to
-      ``DeepLogFormulaFactory`` nodes. It is used to build differentiable
+      formula nodes. It is used to build differentiable
       circuits from logical formulas and supports aggregations, transforms,
       unary/binary operators, and predicate leaves.
 
@@ -75,13 +75,16 @@ Key semantics
   the body and parameter formulas.
 * **Operator precedence**: all binary operators share one precedence level and
   associate to the left; use parentheses to enforce evaluation order.
-* **Unary operators**: any identifier can act as a unary prefix operator.
+* **Unary operators**: any identifier can act as a unary prefix operator. A
+  functor written against its parentheses makes an atom, as in Prolog:
+  ``q(x_bar)_boolean`` is the atom ``q(x_bar)``, while ``q (x_bar)_boolean``
+  applies the operator ``q`` to a cast.
 * **Transformations**: ``(phi)_structure`` turns a grouped formula into a
-  structure transform_circuit node.
+  ``Transformation`` node.
 * **Leaves**: every leaf pairs a symbol literal with its structure via the
   ``_structure`` suffix.
 * **Structure names**: the built-in structures are ``_boolean``,
-  ``_probability``, and ``_logprobability``.
+  ``_probability``, ``_logprobability``, ``_real``, and ``_mpe``.
 
 Underscores are reserved for ``_structure`` suffixes. Predicate names that
 include underscores should be quoted inside the symbol literal (e.g.
@@ -98,6 +101,7 @@ operators are interpreted across a formula. The most common structures are:
 * **Probability**: weighted formulas (``_probability``) that combine numeric
   scores.
 * **Log-probability**: log-space weighted formulas (``_logprobability``).
+* **Real**: real numbers (``_real``), such as a network's logits or a count.
 
 Structures are attached to leaves (``predicate(args)_structure``) and can be
 changed mid-formula using transformations such as ``(expr)_probability``. This
@@ -105,6 +109,12 @@ is how you express patterns like "evaluate a Boolean condition, then turn it
 into a probability and multiply by literal weights." The operator names in the
 surface language stay the same; the structure tells the system how to interpret
 them.
+
+A structure also declares its aggregators: the operations an aggregation over
+one of its formulas can name. ``real`` and ``probability`` aggregate with
+``sum``, ``logprobability`` with ``sum`` as log-sum-exp, and ``boolean`` with
+``exists`` and ``forall``. Counting a Boolean formula's models is therefore a
+``sum`` over the formula cast into ``real``, where ``true`` is 1.
 
 Structure classes
 ~~~~~~~~~~~~~~~~~
@@ -136,10 +146,11 @@ log space. Custom structures use whichever classes provide the roles they have.
 
    from deeplog import Algebra, AlgebraicStructure, Semifield, Semiring
 
-   # Minimal: free-form operator names
+   # Minimal: free-form operator and aggregator names
    fuzzy = AlgebraicStructure(
        name="fuzzy",
        operator_fns={"and": ..., "or": ..., "not": ...},
+       aggregation_fns={"exists": ..., "forall": ...},
    )
 
    # Semiring: enables auto-mapping of product/sum
@@ -194,19 +205,19 @@ Implementation hooks
 
 These details explain how the language connects to the underlying codebase.
 They are not required to read or write formulas, but help when extending or
-debugging the parser and factories.
+debugging the parser.
 
-Mapping to factory calls
-~~~~~~~~~~~~~~~~~~~~~~~~
+Mapping to AST nodes
+~~~~~~~~~~~~~~~~~~~~
 
 ==============================  ==================================================
-Syntax                          Factory call
+Syntax                          AST node
 ------------------------------  --------------------------------------------------
-``Op(V1, V2; p1): body``         ``create_aggregation(Op, [V1, V2], [p1], body)``
-``(phi)_structure``              ``create_transformation(structure, phi)``
-``lhs Op rhs``                   ``create_binary_node(Op, lhs, rhs)``
-``Op phi``                       ``create_unary_node(Op, phi)``
-``symbol_structure``             ``create_leaf_node(parse_symbol(symbol), structure)``
+``Op(V1, V2; p1): body``         ``Aggregation(Op, (V1, V2), (p1,), body)``
+``(phi)_structure``              ``Transformation(structure, phi)``
+``lhs Op rhs``                   ``BinaryOp(Op, lhs, rhs)``
+``Op phi``                       ``UnaryOp(Op, phi)``
+``symbol_structure``             ``Atom(with_structure(parse_symbol(symbol), structure))``
 ==============================  ==================================================
 
 Examples
@@ -218,7 +229,7 @@ Model counting
 .. code-block:: text
 
    sum(Burglary, Earthquake):
-       =(Burglary,true)_boolean or =(Earthquake,true)_boolean
+       (=(Burglary,true)_boolean or =(Earthquake,true)_boolean)_real
 
 Weighted model counting
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -228,7 +239,7 @@ Weighted model counting
    sum(Burglary, Earthquake):
          (=(Burglary,true)_boolean or =(Earthquake,true)_boolean)_probability
        times
-         (p(Burglary)_probability times p(Earthquake)_probability)
+         (p(Burglary,0.2)_probability times p(Earthquake,0.6)_probability)
 
 Parsing API
 ~~~~~~~~~~~

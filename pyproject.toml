@@ -12,7 +12,7 @@ namespaces = false
 
 [project]
 name = "pydeeplog"
-version = "4.1.1"
+version = "5.0.0"
 dependencies = [
     "torch >=2.4,<3",
     "pysdd >=1.0,<2",
@@ -22,7 +22,7 @@ dependencies = [
 ]
 requires-python = ">= 3.12"
 readme = "README.md"
-description = "An operational framework for building neurosymbolic (NeSy) systems on top of PyTorch."
+description = "The PyTorch for neurosymbolic AI: state the logic, and DeepLog compiles it into a differentiable PyTorch module that runs on the GPU."
 authors = [
     { name = "KU Leuven" },
 ]
@@ -51,7 +51,7 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://github.com/ML-KULeuven/deeplog"
-Documentation = "https://ml-kuleuven.github.io/deeplog/"
+Documentation = "https://dtai.cs.kuleuven.be/deeplog/"
 Repository = "https://github.com/ML-KULeuven/deeplog"
 Source = "https://github.com/ML-KULeuven/deeplog"
 Issues = "https://github.com/ML-KULeuven/deeplog/issues"
@@ -72,6 +72,7 @@ mvsdd = ["mv-sdd"]
 tests = [
     "pytest",
     "pytest-xdist",
+    "filelock",
     "coverage",
     "pytest-cov",
     "jupytext",
@@ -92,6 +93,8 @@ site = [
     "sphinx-design==0.6.1",
     "sphinx-copybutton",
     "sphinx-multiversion",
+    "sphinx-sitemap",
+    "sphinxext-opengraph",
     "jupyter-sphinx",
     "nbformat",
     "jupytext",
@@ -108,6 +111,7 @@ dev = [
     "pyright",
     "pytest",
     "pytest-xdist",
+    "filelock",
     "pytest-cov",
     "jupytext",
     "nbclient",
@@ -141,6 +145,7 @@ notice-rgx = "(?i)Copyright \\(c\\) \\d{4}(-\\d{4})?\\. KU Leuven"
 testpaths = ["tests", "examples"]
 
 [tool.jupytext]
+formats = "examples///ipynb,examples///md:myst"
 notebook_metadata_filter = "-jupytext.text_representation.jupytext_version"
 
 [tool.coverage.report]

@@ -15,7 +15,7 @@ from .generic import lower_generic
 
 
 if TYPE_CHECKING:
-    from ...module import DeepLogModule
+    from ...module.deeplog_module import DeepLogModule
     from ...symbol import Symbol
     from ..circuit import Circuit
 

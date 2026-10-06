@@ -6,14 +6,13 @@ node kinds mirror the eliminators of
 :class:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory`: the AST is
 the *free term* over that signature, and :func:`fold` is the unique catamorphism
 that re-emits a term through any factory — so the existing factories
-(``SymbolicFormulaFactory`` → text, ``DeepLogModuleFactory`` → modules) become
+(``SymbolicFormulaFactory`` → text, ``CircuitFactory`` → circuit lumps) become
 *interpreters* of the AST. A :class:`~deeplog.formula.ast.CircuitNode` may also
 appear as a compressed AST node whose unary/binary structure is stored in a
 circuit graph instead of as nested Python objects; ``fold`` splices it in via
 ``embed_circuit``.
-Rewrite passes (e.g. expectation recognition) operate on the symbolic tree before
-it is folded to a module; :func:`map_children` is the shallow functor map — the
-companion to :func:`fold` — that those passes recurse with.
+:func:`map_children` is the shallow functor map — the companion to :func:`fold` —
+that rebuilds a node from rewritten children.
 Every node kind renders itself through :class:`FormulaNodeDisplay`: ``str`` for the
 formula's surface syntax, ``repr`` and :meth:`FormulaNodeDisplay.tree` for the node
 structure that syntax parses into.
@@ -22,18 +21,26 @@ structure that syntax parses into.
 from __future__ import annotations
 
 from collections.abc import Callable
-from collections.abc import Sequence
 from dataclasses import dataclass
+from dataclasses import fields
 from functools import cached_property
+from typing import TYPE_CHECKING
 from typing import cast
 
 from ..algebraic import PROBABILITY
-from ..circuit.circuit import Circuit
 from ..symbol import Symbol
+from ..symbol import is_variable
+from ..symbol import retag
 from ..symbol import structure_of
+from ..symbol import symbol_to_pretty_string
 from ..symbol import symbol_to_str
+from ..symbol import without_structure
 from .deeplogformulafactory import DeepLogFormulaFactory
 from .symbolic_factory import SymbolicFormulaFactory
+
+
+if TYPE_CHECKING:
+    from ..circuit.circuit import Circuit
 
 
 class FormulaNodeDisplay:
@@ -56,17 +63,48 @@ class FormulaNodeDisplay:
         return _tree(cast("FormulaNode", self))
 
 
+class _ValueHashed:
+    """A frozen node hashed by value, once, when it is built.
+
+    Its children are built before it and hash in constant time, so hashing a
+    formula does not recurse however deeply it nests. It pickles as its fields,
+    so a loaded node hashes afresh.
+    """
+
+    _hash: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_hash", hash((type(self), *self._values())))
+
+    def __hash__(self) -> int:
+        return self._hash
+
+    def __reduce__(self):
+        return type(self), self._values()
+
+    def _values(self) -> tuple:
+        return tuple(getattr(self, field.name) for field in fields(self))  # pyright: ignore[reportArgumentType]
+
+
 @dataclass(frozen=True, repr=False)
-class Atom(FormulaNodeDisplay):
+class Atom(_ValueHashed, FormulaNodeDisplay):
     """A leaf atom.
 
     ``atom`` is the structure-wrapped symbol ``("_", inner, (structure,))``,
     exactly as
     :meth:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory.create_atom`
-    receives it.
+    receives it. ``=`` is symmetric, and an ``=`` comparing a written value with
+    a variable holds the variable first: ``Atom`` stores ``=(a, X)`` as
+    ``=(X, a)``, so the two spellings are one atom.
     """
 
     atom: Symbol
+    __hash__ = _ValueHashed.__hash__
+
+    def __post_init__(self) -> None:
+        """Hold an ``=`` of a written value and a variable with the variable first."""
+        object.__setattr__(self, "atom", _variable_first(self.atom))
+        super().__post_init__()
 
     @property
     def structure(self) -> str | None:
@@ -74,12 +112,26 @@ class Atom(FormulaNodeDisplay):
         return structure_of(self.atom)
 
 
+def _variable_first(atom: Symbol) -> Symbol:
+    """``atom``, with the variable first if it is ``=`` of a written value and a variable."""
+    inner = without_structure(atom)
+    if (
+        len(inner) != 3
+        or inner[0] != "="
+        or is_variable(inner[1])
+        or not is_variable(inner[2])
+    ):
+        return atom
+    return retag(("=", inner[2], inner[1]), atom)
+
+
 @dataclass(frozen=True, repr=False)
-class UnaryOp(FormulaNodeDisplay):
+class UnaryOp(_ValueHashed, FormulaNodeDisplay):
     """A unary operator applied to a single operand."""
 
     operator: str
     operand: FormulaNode
+    __hash__ = _ValueHashed.__hash__
 
     @property
     def structure(self) -> str | None:
@@ -88,12 +140,13 @@ class UnaryOp(FormulaNodeDisplay):
 
 
 @dataclass(frozen=True, repr=False)
-class BinaryOp(FormulaNodeDisplay):
+class BinaryOp(_ValueHashed, FormulaNodeDisplay):
     """A binary operator combining two operands."""
 
     operator: str
     lhs: FormulaNode
     rhs: FormulaNode
+    __hash__ = _ValueHashed.__hash__
 
     @property
     def structure(self) -> str | None:
@@ -103,33 +156,55 @@ class BinaryOp(FormulaNodeDisplay):
 
 
 @dataclass(frozen=True, repr=False)
-class Transformation(FormulaNodeDisplay):
+class Transformation(_ValueHashed, FormulaNodeDisplay):
     """A structure-conversion node mapping ``child`` into ``structure``."""
 
     structure: str
     child: FormulaNode
+    __hash__ = _ValueHashed.__hash__
 
 
 @dataclass(frozen=True, repr=False)
-class Aggregation(FormulaNodeDisplay):
+class Aggregation(_ValueHashed, FormulaNodeDisplay):
     """An aggregation over ``binders`` applying ``operation`` to ``child``.
 
-    ``binders`` and ``params`` are tuples (not lists) so the node stays hashable
-    and immutable; :func:`fold` converts ``binders`` back to a list at the factory
-    call boundary.
+    Unless ``operation`` is ``expectation``, its value is its algebra's
+    aggregator for ``operation``
+    (:attr:`~deeplog.algebraic.AlgebraicStructure.aggregation_fns`) of
+    ``child`` and ``params`` over every assignment of ``binders``.
+
+    Each binder is a variable. ``binders`` and ``params`` are tuples (not lists)
+    so the node stays hashable and immutable; :func:`fold` converts ``binders``
+    back to a list at the factory call boundary.
+
+    Raises:
+        ValueError: If a binder is not a variable.
     """
 
     operation: str
     binders: tuple[Symbol, ...]
     params: tuple[FormulaNode, ...]
     child: FormulaNode
+    __hash__ = _ValueHashed.__hash__
+
+    def __post_init__(self) -> None:
+        """Refuse a binder that is not a variable, then hash the node."""
+        for binder in self.binders:
+            if not is_variable(binder):
+                raise ValueError(
+                    f"{self.operation} binds {symbol_to_pretty_string(binder)}, "
+                    f"which is not a variable; a variable starts with an uppercase "
+                    f"letter or an underscore."
+                )
+        super().__post_init__()
 
     @property
     def structure(self) -> str | None:
-        """An ``expectation`` yields probability; any other aggregation carries
-        its child's structure."""
+        """An ``expectation`` is a value of its distribution's algebra, or of
+        probability without one; any other aggregation carries its child's
+        structure."""
         if self.operation == "expectation":
-            return PROBABILITY.name
+            return self.params[0].structure if self.params else PROBABILITY.name
         return self.child.structure
 
 
@@ -184,24 +259,33 @@ class CircuitNode(FormulaNodeDisplay):
         """Boundary children of this compressed AST chunk.
 
         A ``CircuitNode`` compresses a whole circuit subgraph, so its formula
-        children are what feeds that subgraph's boundary: one per leaf / constant
-        symbol reachable from ``node`` (in the circuit's deterministic topological
-        order), each the symbol's ``feeders`` override or, by default, its
-        identity ``Atom`` — not the direct graph-node successors.
+        children are what feeds that subgraph's boundary, in :attr:`boundary`'s
+        order, not the direct graph-node successors.
+        """
+        return tuple(child for _, child in self.boundary)
+
+    @cached_property
+    def boundary(self) -> tuple[tuple[Symbol, FormulaNode], ...]:
+        """Each leaf / constant symbol reachable from ``node``, with the child feeding it.
+
+        The symbols come in the circuit's deterministic topological order, each
+        fed by its ``feeders`` override or, by default, its identity ``Atom``,
+        which may name it otherwise: an ``Atom`` holds ``=`` with the variable
+        first.
 
         Cached: computing it walks the whole reachable subgraph and allocates an
-        ``Atom`` per boundary symbol, yet it is read once per AST pass per lump
-        (:func:`fold`, :func:`map_children`, and hence every rewrite pass).
-        Caching also keeps the identity of those ``Atom``s stable for as long as
-        the lump lives, which the identity-keyed fold memo relies on. Reachability
-        from a fixed node never changes — a circuit only ever grows new nodes —
-        so the cache cannot go stale. (``cached_property`` writes straight into
+        ``Atom`` per boundary symbol, yet it is read by every walk that reaches
+        the lump through :func:`children`, the lowering's among them. Caching also
+        keeps the identity of those ``Atom``s stable for as long as the lump
+        lives, which the lowering's identity-keyed bookkeeping relies on.
+        Reachability from a fixed node never changes — a circuit only ever grows
+        new nodes — so the cache cannot go stale. (``cached_property`` writes straight into
         ``__dict__``, so it works on this frozen dataclass, and neither ``__eq__``
         nor ``__hash__`` consults it.)
         """
         overrides = dict(self.feeders)
         return tuple(
-            overrides.get(name, Atom(name))
+            (name, overrides.get(name, Atom(name)))
             for name in self.circuit.reachable_symbol_names([self.node])
         )
 
@@ -223,15 +307,14 @@ def fold[T](
     node: FormulaNode,
     factory: DeepLogFormulaFactory[T],
     *,
-    memo: dict[int, T] | None = None,
+    memo: dict[int, tuple[FormulaNode, T]] | None = None,
 ) -> T:
     """Re-emit ``node`` through ``factory`` — the unique catamorphism.
 
     Visits children before parents (params then child; lhs then rhs) in the same
     order the parser produced them, so folding through a stateful factory such as
-    :class:`DeepLogModuleFactory` reproduces the original ``create_*`` call
-    sequence (and hence its behaviour). A lump's leaves are the exception: they
-    reach the factory together, in one ``create_atoms`` call.
+    :class:`~deeplog.formula.circuit_factory.CircuitFactory` reproduces the
+    original ``create_*`` call sequence (and hence its behaviour).
 
     The AST is a canonical DAG (:func:`hash_cons`), so structurally-equal
     subformulas are the *same object*. A per-call memo (keyed by node identity)
@@ -242,88 +325,76 @@ def fold[T](
     it. The memo is value-preserving (the catamorphism is pure over the DAG).
     ``memo`` seeds it and is mutated in place, as
     :func:`~deeplog.circuit.fold.fold_circuit`'s does, so successive folds through
-    one factory build a shared subformula once between them -- which is how a
-    multi-root lowering shares its subformulas and its circuits. A lump's leaves
-    are built for that lump (:func:`fold_boundary`), not memoized one by one.
+    one factory build a shared subformula once between them. It maps a node's
+    ``id`` to the node and its result: holding the node keeps its ``id`` from
+    being reused by another node while the memo lives.
 
-    A :class:`~deeplog.formula.ast.CircuitNode` is graph-backed, but its
-    *boundary* (the leaf / cast children, see
-    :attr:`~deeplog.formula.ast.CircuitNode.children`) is a derived AST view. A
-    factory that sets
-    :attr:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory.lowers_circuit_children`
-    has that boundary folded by :func:`fold_boundary` (its leaves in one
-    ``create_atoms`` call, ``create_transformation`` per cast) and the results
-    handed to
-    :meth:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory.embed_circuit`,
-    so a lump is transparent to the fold rather than an opaque leaf. Factories
-    that leave the flag off (the circuit builder, the text interpreter) get the
-    node spliced in verbatim with no children. Either way the *interior* boolean
-    graph stays compiled in the circuit - only the boundary is re-materialized
-    as AST.
+    A :class:`~deeplog.formula.ast.CircuitNode` is a compiled region, so it
+    reaches :meth:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory.embed_circuit`
+    as it is: the fold does not descend its boundary.
     """
     if memo is None:
         memo = {}
-    if id(node) in memo:
-        return memo[id(node)]
+    # An explicit stack rather than recursion: a grounded proof can be a chain of
+    # disjunctions thousands deep.
+    stack: list[tuple[FormulaNode, bool]] = [(node, False)]
+    while stack:
+        current, ready = stack.pop()
+        if id(current) in memo:
+            continue
+        if not ready:
+            stack.append((current, True))
+            stack.extend((operand, False) for operand in reversed(operands(current)))
+            continue
+        memo[id(current)] = (current, _eliminate(current, factory, memo))
+    return memo[id(node)][1]
+
+
+def operands(node: FormulaNode) -> tuple[FormulaNode, ...]:
+    """The nodes ``node`` is built from, in the order :func:`fold` folds them.
+
+    A lump's boundary is not among them: a lump is compiled, not folded.
+    """
+    # Tests in order of frequency: walks call this once per node of a formula.
+    if isinstance(node, BinaryOp):
+        return (node.lhs, node.rhs)
+    if isinstance(node, Atom | CircuitNode):
+        return ()
+    if isinstance(node, UnaryOp):
+        return (node.operand,)
+    if isinstance(node, Transformation):
+        return (node.child,)
+    if isinstance(node, Aggregation):
+        return (*node.params, node.child)
+    raise TypeError(f"Unknown formula node: {node!r}")
+
+
+def _eliminate[T](
+    node: FormulaNode,
+    factory: DeepLogFormulaFactory[T],
+    memo: dict[int, tuple[FormulaNode, T]],
+) -> T:
+    """Call ``factory``'s eliminator for ``node`` on its operands' results in ``memo``."""
+
+    def result(operand: FormulaNode) -> T:
+        return memo[id(operand)][1]
+
     match node:
         case Atom(atom):
-            result = factory.create_atom(atom)
+            return factory.create_atom(atom)
         case UnaryOp(operator, operand):
-            result = factory.create_unary_node(
-                operator, fold(operand, factory, memo=memo)
-            )
+            return factory.create_unary_node(operator, result(operand))
         case BinaryOp(operator, lhs, rhs):
-            result = factory.create_binary_node(
-                operator, fold(lhs, factory, memo=memo), fold(rhs, factory, memo=memo)
-            )
+            return factory.create_binary_node(operator, result(lhs), result(rhs))
         case Transformation(structure, child):
-            result = factory.create_transformation(
-                structure, fold(child, factory, memo=memo)
-            )
+            return factory.create_transformation(structure, result(child))
         case Aggregation(operation, binders, params, child):
-            result = factory.create_aggregation(
-                operation,
-                list(binders),
-                [fold(p, factory, memo=memo) for p in params],
-                fold(child, factory, memo=memo),
+            return factory.create_aggregation(
+                operation, list(binders), [result(p) for p in params], result(child)
             )
         case CircuitNode():
-            children = (
-                fold_boundary(node.children, factory, memo=memo)
-                if factory.lowers_circuit_children
-                else ()
-            )
-            result = factory.embed_circuit(node, children)
-        case _:
-            raise TypeError(f"Unknown formula node: {node!r}")
-    memo[id(node)] = result
-    return result
-
-
-def fold_boundary[T](
-    boundary: Sequence[FormulaNode],
-    factory: DeepLogFormulaFactory[T],
-    *,
-    memo: dict[int, T] | None = None,
-) -> tuple[T, ...]:
-    """Fold a lump's ``boundary`` (:attr:`CircuitNode.children`) through ``factory``.
-
-    Its leaves, the :class:`Atom` children, go to one
-    :meth:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory.create_atoms`
-    call, and what that call builds belongs to this lump: it is not memoized per
-    leaf, because an algebra building leaves together may join a leaf to others
-    only this lump reads. Every other child, such as a cast, is folded through
-    :func:`fold` with ``memo``.
-    """
-    leaves = [child for child in boundary if isinstance(child, Atom)]
-    built = factory.create_atoms([leaf.atom for leaf in leaves])
-    by_leaf = dict(zip(map(id, leaves), built, strict=True))
-    return tuple(
-        by_leaf[id(child)]
-        if isinstance(child, Atom)
-        else fold(child, factory, memo=memo)
-        for child in boundary
-    )
+            return factory.embed_circuit(node)
+    raise TypeError(f"Unknown formula node: {node!r}")
 
 
 def children(node: FormulaNode) -> tuple[FormulaNode, ...]:
@@ -362,8 +433,7 @@ def map_children(
     ``map_children`` stays within the AST and descends exactly one level, leaving
     the recursion to ``f``. It is the building block for AST→AST rewrite passes: a
     bottom-up pass is an ``f`` that calls ``map_children(node, f)`` first and then
-    rewrites ``node`` itself (see
-    :func:`deeplog.formula.passes.recognize_expectation`).
+    rewrites ``node`` itself (see :func:`hash_cons`).
     """
     match node:
         case Atom():
@@ -397,8 +467,9 @@ def hash_cons(node: FormulaNode, table: dict[FormulaNode, FormulaNode]) -> Formu
     Bottom-up: children are interned first (via :func:`map_children`), so two
     structurally-equal subformulas become the *same object* — the parsed tree
     collapses to a canonical DAG keyed by value. ``table`` is the intern map,
-    threaded by the caller so each parse gets a fresh, self-contained namespace
-    (no global leak). Leaves bottom out for free: ``map_children`` returns an
+    threaded by the caller: a parse interns one formula into a fresh table, and
+    :meth:`~deeplog.formula.lowering.compiler.Compiler.compile` all of its
+    formulas into one. Leaves bottom out for free: ``map_children`` returns an
     ``Atom``/``CircuitNode`` unchanged, and ``setdefault`` interns it by value.
 
     Purely representational — interning never changes a node's *value*, so
@@ -406,8 +477,26 @@ def hash_cons(node: FormulaNode, table: dict[FormulaNode, FormulaNode]) -> Formu
     ``create_*`` stream — one ``create_*`` call per interned node, since its memo
     keys on the identity interning just made canonical.
     """
-    node = map_children(node, lambda c: hash_cons(c, table))
-    return table.setdefault(node, node)
+    interned: dict[int, FormulaNode] = {}
+
+    def canonical(child: FormulaNode) -> FormulaNode:
+        # A lump's unfed leaf is a fresh Atom each time map_children builds it.
+        return interned[id(child)] if id(child) in interned else hash_cons(child, table)
+
+    # An explicit stack rather than recursion, as in fold: parsed text can nest
+    # thousands deep.
+    stack: list[tuple[FormulaNode, bool]] = [(node, False)]
+    while stack:
+        current, ready = stack.pop()
+        if id(current) in interned:
+            continue
+        if not ready:
+            stack.append((current, True))
+            stack.extend((child, False) for child in reversed(children(current)))
+            continue
+        rebuilt = map_children(current, canonical)
+        interned[id(current)] = table.setdefault(rebuilt, rebuilt)
+    return interned[id(node)]
 
 
 def _datum(node: FormulaNode) -> str:
@@ -448,7 +537,7 @@ def _tree(node: FormulaNode) -> str:
 class _DisplayFactory(SymbolicFormulaFactory):
     """Formula text in which a compiled lump is spelled as its circuit handle."""
 
-    def embed_circuit(self, node: CircuitNode, children: tuple[str, ...] = ()) -> str:
+    def embed_circuit(self, node: CircuitNode) -> str:
         """Render a lump as its handle: its interior is compiled, not text."""
         return _datum(node)
 

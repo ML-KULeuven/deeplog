@@ -13,7 +13,7 @@ Resources
 
 .. rst-class:: dl-section__lead
 
-      Catch up on the theory behind neurosymbolic systems, cite the right paper for your stack, and grab the engine docs needed to deploy DeepLog in production pipelines.
+      Catch up on the theory behind neurosymbolic systems, cite the right paper for your stack, and grab the engine docs needed to deploy DeepLog in production.
 
 Language guide
 ++++++++++++++
@@ -36,7 +36,7 @@ Language guide
 
          **DeepLog predicate modules**
 
-         Browse the built-in predicate modules that the formula factory wires in by default, including probability and equality predicates.
+         Browse the built-in predicate modules that a compiler wires in by default, including probability and equality predicates.
 
          .. raw:: html
 
@@ -100,7 +100,7 @@ Talks
 
          **From Statistical Relational to Neural Symbolic Artificial Intelligence**
 
-         Dumancic walks through the trajectory from SRL foundations to modern NeSy pipelines, highlighting where DeepLog fits and how semantic constraints anchor learning.
+         Dumancic walks through the trajectory from SRL foundations to modern NeSy systems, highlighting where DeepLog fits and how semantic constraints anchor learning.
 
          .. raw:: html
 

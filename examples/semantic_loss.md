@@ -12,11 +12,9 @@ kernelspec:
 
 # Semantic Loss
 
-To showcase how DeepLog would be included in a normal ML pipeline, we implement the [Semantic Loss](https://proceedings.mlr.press/v80/xu18h.html) framework in DeepLog.
+To showcase how DeepLog would be included in a normal ML training loop, we implement the [Semantic Loss](https://proceedings.mlr.press/v80/xu18h.html) framework in DeepLog.
 
 In this experiment, we train a neural network on the MNIST dataset in a semi-supervised setting, discarding most of the labels. A constraint is added that enforces exactly one output of the neural network is 1, while all others should be 0.
-
-
 
 +++
 
@@ -53,7 +51,7 @@ class MNISTNet(nn.Module):
         return x
 
 
-mlp = MNISTNet()
+network = MNISTNet()
 ```
 
 ## Dataset
@@ -138,22 +136,19 @@ test_dataloader = DataLoader(test_base, batch_size=512, num_workers=0)
 
 ## Constraint
 
-Exactly-one is a textbook CNF: one clause saying at least one output is on, and one clause per pair saying no two are on together. Forty-six clauses over ten variables — easier to generate than to write out, so we generate DIMACS text and let `parse_dimacs_cnf` build the boolean circuit.
+Exactly-one is a textbook CNF: one clause saying at least one output is on, and one clause per pair saying no two are on together. Forty-six clauses over ten variables are easier to generate than to write out, so we generate DIMACS text and let `parse_dimacs_cnf` read it into a boolean formula over the variables `V1`…`V10`, in which the literal `i` is the test `=(Vi,true)`.
 
-A CNF is a *boolean* formula, and reading it as a probability is a weighted model count. That is what `transform_expectation_to_probability` does: it knowledge-compiles the circuit and emits it into the probability semiring, so the module takes one probability per digit and returns the probability that exactly one of them is on. Its `leaf_mapping` renames the DIMACS variables `v1`…`v10` to the network outputs they stand for, so the compiled module reads the ten sigmoids directly.
+The semantic loss is the probability that the constraint holds when each output is on independently, with the probability the network gives it: an *expectation* over `V1`…`V10`. Without a distribution, the variables an expectation binds are independent, and the probability of each test `=(Vi,true)` is an input of the compiled module: here the ten network outputs, in order. The compiler computes the expectation by weighted model counting, so the module takes one probability per digit and returns the probability that exactly one of them is on.
 
 ```{code-cell} ipython3
-from deeplog import parse_dimacs_cnf, parse_symbol, reshape, SymTensor, to_module
-from deeplog import CircuitFactory
-from deeplog.formula.strategies import transform_expectation_to_probability
-from deeplog.symbol import with_structure
+from deeplog import Aggregation, Compiler, SymTensor, parse_dimacs_cnf, parse_symbol, reshape
 
 
 num_outputs = 10
 
 
 def exactly_one_cnf(n: int) -> str:
-    """DIMACS CNF for 'exactly one of v1..vn is true'."""
+    """DIMACS CNF for 'exactly one of V1..Vn is true'."""
     at_least_one = [tuple(range(1, n + 1))]
     at_most_one = [(-i, -j) for i in range(1, n + 1) for j in range(i + 1, n + 1)]
     clauses = at_least_one + at_most_one
@@ -161,25 +156,19 @@ def exactly_one_cnf(n: int) -> str:
     return "\n".join([header, *(" ".join(map(str, c)) + " 0" for c in clauses)])
 
 
-def network_output(variable):
-    """Name DIMACS variable ``vi`` after the network output it stands for."""
-    return parse_symbol(f"nn({int(variable[0][1:]) - 1})")
-
-
 print(exactly_one_cnf(3))  # the encoding in miniature
 
-cnf = parse_dimacs_cnf(exactly_one_cnf(num_outputs), CircuitFactory())
-(weighted,) = transform_expectation_to_probability(cnf, leaf_mapping=network_output)
-constraint_module = to_module(weighted, names=(("exactly_one",),))
+variables = tuple(parse_symbol(f"V{i}") for i in range(1, num_outputs + 1))
+exactly_one = Aggregation(
+    "expectation", variables, (), parse_dimacs_cnf(exactly_one_cnf(num_outputs))
+)
 
 # One input column per network output, in the network's order.
 constraint_module = reshape(
-    constraint_module,
-    input=SymTensor(
-        [with_structure(parse_symbol(f"nn({i})"), "probability") for i in range(num_outputs)]
-    ),
+    Compiler().compile(exactly_one),
+    input=SymTensor([f"=(V{i},true) _ probability" for i in range(1, num_outputs + 1)]),
 )
-print(constraint_module)
+print(constraint_module.get_input_shape())
 ```
 
 ## Complete model
@@ -191,8 +180,6 @@ import logging
 
 import pytorch_lightning as pl
 import torchmetrics
-
-from deeplog.util import fast_dev_run_enabled
 
 
 pl.utilities.disable_possible_user_warnings()
@@ -277,13 +264,8 @@ We'll train two identical networks: one with the semantic loss (constraint) and 
 import copy
 
 
-def make_models():
-    constrained = LightningSL(copy.deepcopy(mlp), constraint_module, 0.005, 0.01)
-    baseline = LightningSL(copy.deepcopy(mlp), constraint_module, 0.0, 0.01)
-    return constrained, baseline
-
-
-regularized_network, baseline_network = make_models()
+constrained = LightningSL(copy.deepcopy(network), constraint_module, 0.005, 0.01)
+baseline = LightningSL(copy.deepcopy(network), constraint_module, 0.0, 0.01)
 ```
 
 ### Training both models
@@ -292,15 +274,15 @@ regularized_network, baseline_network = make_models()
 train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=0)
 
 trainer = pl.Trainer(
-    fast_dev_run=fast_dev_run_enabled(),
+    fast_dev_run=os.environ.get("DEEPLOG_FAST_DEV_RUN") == "1",
     max_epochs=2,
     enable_progress_bar=False,
     enable_model_summary=False,
     logger=False,
     enable_checkpointing=False,
 )
-trainer.fit(model=regularized_network, train_dataloaders=train_dataloader)
-trainer.fit(model=baseline_network, train_dataloaders=train_dataloader)
+trainer.fit(model=constrained, train_dataloaders=train_dataloader)
+trainer.fit(model=baseline, train_dataloaders=train_dataloader)
 ```
 
 ### Constraint loss during training (constrained model)
@@ -309,7 +291,7 @@ trainer.fit(model=baseline_network, train_dataloaders=train_dataloader)
 import matplotlib.pyplot as plt
 
 
-plt.plot(regularized_network.constraint_history, label="constraint loss")
+plt.plot(constrained.constraint_history, label="constraint loss")
 plt.xlabel("Batch")
 plt.ylabel("Constraint loss")
 plt.legend()
@@ -322,19 +304,19 @@ Evaluate classification accuracy and constraint satisfaction after training for 
 
 ```{code-cell} ipython3
 constrained_results = trainer.test(
-    model=regularized_network, dataloaders=test_dataloader, verbose=False
+    model=constrained, dataloaders=test_dataloader, verbose=False
 )[0]
 baseline_results = trainer.test(
-    model=baseline_network, dataloaders=test_dataloader, verbose=False
+    model=baseline, dataloaders=test_dataloader, verbose=False
 )[0]
 
 post_constraint_constrained = evaluate_constraint_on_loader(
-    regularized_network,
+    constrained,
     constraint_module,
     test_dataloader,
 )
 post_constraint_baseline = evaluate_constraint_on_loader(
-    baseline_network,
+    baseline,
     constraint_module,
     test_dataloader,
 )

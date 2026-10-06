@@ -8,7 +8,7 @@ from deeplog.algebraic import Semifield
 from deeplog.circuit import Circuit
 from deeplog.circuit.backends import select_backend
 from deeplog.circuit.lower.generic import GenericCircuitModule
-from deeplog.module import ColumnwiseModule
+from deeplog.module.columnwise import ColumnwiseModule
 from deeplog.module.wrappers import WrappedModule
 from deeplog.shape import get_all_symbols
 

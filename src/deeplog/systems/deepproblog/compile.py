@@ -1,231 +1,508 @@
 #  Copyright (c) 2024-2026. KU Leuven
-"""Compile DeepProbLog engine results into DeepLogModules."""
+"""Compile DeepProbLog engine results into DeepLogModules.
+
+A proof is the expectation of its formula, modelled as the DeepLog paper models
+ProbLog: each random atom is reified by a variable of its own. A probabilistic
+fact is a two-valued binder, and an annotated disjunction one binder over its
+values. The formula's atoms become tests of their binders' values, and its
+distribution is the product of the atoms themselves in probability, each
+extended with its binder, such as
+``burglary(B)`` or ``digit(i1, D)``. What the program's labels say is those
+atoms' labelling function, which :func:`compile_to_module` declares to the
+compiler for their predicates.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from collections.abc import Mapping
+from collections.abc import Iterable
+from collections.abc import Sequence
+from dataclasses import dataclass
+from functools import partial
+from functools import reduce
 from typing import TYPE_CHECKING
 from typing import cast
 
+import torch
+
+from deeplog import BOOLEAN
+from deeplog import OPEN
 from deeplog import PROBABILITY
-from deeplog import CircuitFactory
-from deeplog import CircuitNode
+from deeplog import Aggregation
+from deeplog import Atom
+from deeplog import BinaryOp
+from deeplog import Domain
 from deeplog import Symbol
 from deeplog import SymTensor
+from deeplog import UnaryOp
 from deeplog import WrappedModule
-from deeplog import get_all_symbols
-from deeplog import sole_structure
+from deeplog import apply_substitution
+from deeplog import compose_modules
+from deeplog import symbol_to_pretty_string
 from deeplog import with_structure
-from deeplog.formula import lower_circuit_nodes
-from deeplog.module import ColumnwiseModule
+from deeplog import without_structure
 
 from .solver import EngineResult
 
 
 if TYPE_CHECKING:
+    from deeplog import AtomBuilder
+    from deeplog import Compiler
     from deeplog import DeepLogModule
-    from deeplog import DeepLogModuleFactory
     from deeplog import FormulaNode
 
 
-def compile_to_module(
-    result: EngineResult[FormulaNode],
-    factory: DeepLogModuleFactory,
-) -> DeepLogModule:
-    """Compile an engine result to a DeepLogModule.
+def compile_to_module(result: EngineResult, compiler: Compiler) -> DeepLogModule:
+    """Compile an engine result to a DeepLogModule with a column per answer.
 
-    ``result.formulas`` are boolean ``CircuitNode`` lumps sharing one source
-    circuit. Each is lowered as the *expectation* of it, so every query is
-    counted at the lowering's single weighted-model-count site, co-resides in
-    one arithmetic circuit, and ``factory`` lowers them into one multi-output
-    module. Outputs are relabelled from positional
-    names to their query answer atom; two queries with structurally identical
-    proofs still get one output each.
+    Each of ``result.formulas`` is compiled as the expectation of it under the
+    program's labels. With evidence (``result.evidence`` set) each column is the
+    posterior ``P(q | e) = E[q ∧ e] / E[e]`` instead, every answer dividing by
+    the one expectation of the evidence. ``compiler`` compiles them together,
+    declaring the program's variables and their labelling function, and a label
+    naming an atom it has a builder for, such as a network's output, is that
+    builder's value. Columns are named by the answer atoms; two answers with
+    equal proofs still get one column each.
 
-    With evidence (``result.evidence`` set) each output is the posterior
-    ``P(q | e) = E[q∧e] / E[e]`` instead — see :func:`_compile_conditional`.
-    Either way the result is a single ``SymTensor`` with one column per answer.
-
-    Args:
-        result: The engine result; ``formulas`` are boolean circuit lumps and
-            ``labels`` their probability annotations. ``evidence``, when present,
-            is the shared boolean ``e`` lump to condition on.
-        factory: The module factory that lowers the transformed lumps.
-
-    Returns:
-        A composed DeepLogModule whose outputs are named by query answer —
-        ``P(q)`` without evidence, ``P(q | e)`` with it.
+    Raises:
+        ValueError: If ``result`` has no formula, a random atom's predicate
+            already has a builder in ``compiler``, or a label is neither a
+            number nor an atom in probability.
     """
+    lifting = _Lifting(result)
+    queries = [lifting.expectation(formula) for formula in result.formulas.values()]
     if result.evidence is not None:
-        return _compile_conditional(result, factory)
+        evidence = lifting.expectation(result.evidence)
+        queries = [lifting.posterior(query, evidence) for query in queries]
+    if not queries:
+        raise ValueError("The engine result holds no formula to compile.")
+    compiler = compiler.declaring(
+        {variable.binder: variable.domain for variable in lifting.variables},
+        lifting.labelling(compiler),
+    )
+    return compiler.compile(dict(zip(result.formulas, queries, strict=True)))
 
-    answers = tuple(result.formulas.keys())
 
-    # The engine already built each query into one shared boolean source circuit.
-    boolean_lumps = _as_circuit_nodes(
-        result.formulas.values(),
-        "Engine result formulas must be boolean circuit lumps.",
+@dataclass(frozen=True)
+class _Label:
+    """A value's probability: a number or an atom's value, or the complement of one."""
+
+    source: float | Symbol
+    complement: bool = False
+
+
+@dataclass(frozen=True, eq=False)
+class _Variable:
+    """A random variable of the program, and how it is reified.
+
+    ``atoms`` maps each program atom asserting a value to that value, and
+    ``labels`` gives each value of ``domain`` its probability, in value order.
+    ``factor`` is the atom standing for the variable in the distribution, with
+    ``binder`` in the position its value takes.
+    """
+
+    binder: Symbol
+    domain: Domain
+    factor: Symbol
+    atoms: dict[Symbol, Symbol]
+    labels: tuple[_Label, ...]
+
+    def at(self, value: Symbol) -> Symbol:
+        """The factor with ``value`` in the binder's position."""
+        return apply_substitution(self.factor, {self.binder: value})
+
+
+#: The truth values, which a fact's binder ranges over.
+_TRUTH = Domain.of_structure(BOOLEAN)
+_TRUE, _FALSE = BOOLEAN.one, BOOLEAN.zero
+
+#: The values, the domain of a factor's arguments other than its binder.
+_VALUES = Domain.of_values()
+
+
+class _Lifting:
+    """Lifts a result's proofs into expectations over the program's variables.
+
+    A proof's atoms become tests of their variables' values, and every node it
+    makes is interned, so equal proofs become one formula and are compiled once.
+    """
+
+    def __init__(self, result: EngineResult) -> None:
+        """Read the disjunctions' variables off ``result``; facts are read as reached.
+
+        Raises:
+            ValueError: If a disjunction's values have no names, so no atom
+                asserts them.
+        """
+        self._labels = result.labels
+        self._variables: dict[Symbol, _Variable] = {}
+        for variable, occurrences in result.variables.items():
+            (occurrence,) = occurrences
+            self._add(
+                _disjunction(variable.name, variable.domain, occurrence, self._labels)
+            )
+        #: What each proof node became, by id, beside the node, which keeps its id.
+        self._lifted: dict[int, tuple[FormulaNode, FormulaNode]] = {}
+        #: Every node made, by what it is made of, which interns it.
+        self._made: dict[tuple, FormulaNode] = {}
+        #: The binders each node made tests, by node id.
+        self._tested: dict[int, frozenset[Symbol]] = {}
+
+    @property
+    def variables(self) -> list[_Variable]:
+        """Every variable a lifted proof may test."""
+        return list({id(v): v for v in self._variables.values()}.values())
+
+    def expectation(self, formula: FormulaNode) -> FormulaNode:
+        """The expectation of ``formula`` under the program's labels."""
+        body = self._lift(formula)
+        key = ("expectation", id(body))
+        if key not in self._made:
+            self._made[key] = self._expect(body)
+        return self._made[key]
+
+    def posterior(self, joint: FormulaNode, evidence: FormulaNode) -> FormulaNode:
+        """``joint`` divided by ``evidence``."""
+        key = ("posterior", id(joint), id(evidence))
+        if key not in self._made:
+            self._made[key] = BinaryOp(PROBABILITY.division, joint, evidence)
+        return self._made[key]
+
+    def labelling(self, compiler: Compiler) -> dict[tuple[str, int, str], AtomBuilder]:
+        """The builder of each factor's predicate: the variables' labelling function.
+
+        A label naming an atom ``compiler`` has a builder for is that builder's
+        value, and one it has none for is an input named after the atom.
+        """
+        keys: dict[tuple[str, int, str], list[_Variable]] = {}
+        for variable in self.variables:
+            key = (variable.factor[0], len(variable.factor) - 1, PROBABILITY.name)
+            keys.setdefault(key, []).append(variable)
+        return {
+            key: partial(_labelling, variables, compiler)
+            for key, variables in keys.items()
+        }
+
+    def _lift(self, formula: FormulaNode) -> FormulaNode:
+        """``formula`` with each atom a test of its variable's value.
+
+        Operands before operators, with an explicit stack: a proof can be a
+        chain of disjunctions thousands deep.
+        """
+        stack: list[tuple[FormulaNode, bool]] = [(formula, False)]
+        while stack:
+            node, ready = stack.pop()
+            if id(node) in self._lifted:
+                continue
+            if ready:
+                self._lifted[id(node)] = (node, self._lifted_node(node))
+                continue
+            stack.append((node, True))
+            match node:
+                case UnaryOp(_, operand):
+                    stack.append((operand, False))
+                case BinaryOp(_, lhs, rhs):
+                    stack.extend(((rhs, False), (lhs, False)))
+        return self._lifted[id(formula)][1]
+
+    def _lifted_node(self, node: FormulaNode) -> FormulaNode:
+        """``node`` lifted, its operands already lifted and interned.
+
+        Raises:
+            TypeError: If ``node`` is not an atom or an operator.
+        """
+        match node:
+            case Atom(atom):
+                return self._test(atom)
+            case UnaryOp(operator, operand):
+                lifted = self._lifted[id(operand)][1]
+                key = ("unary", operator, id(lifted))
+                made = self._made.get(key)
+                if made is None:
+                    made = self._made[key] = UnaryOp(operator, lifted)
+                    self._tested[id(made)] = self._tested[id(lifted)]
+                return made
+            case BinaryOp(operator, lhs, rhs):
+                left = self._lifted[id(lhs)][1]
+                right = self._lifted[id(rhs)][1]
+                key = ("binary", operator, id(left), id(right))
+                made = self._made.get(key)
+                if made is None:
+                    made = self._made[key] = BinaryOp(operator, left, right)
+                    below, above = self._tested[id(left)], self._tested[id(right)]
+                    self._tested[id(made)] = below if above <= below else below | above
+                return made
+        raise TypeError(f"A proof is built of atoms and operators, got {node!r}.")
+
+    def _test(self, atom: Symbol) -> FormulaNode:
+        """A random atom's test of its variable's value; a constant as it is."""
+        ground = cast("Symbol", atom[1])
+        if ground in (_TRUE, _FALSE):
+            return self._intern(("atom", atom), frozenset(), lambda: Atom(atom))
+        variable = self._variables.get(ground) or self._add(
+            _fact(ground, self._labels.get(ground, ground))
+        )
+        test = with_structure(
+            ("=", variable.binder, variable.atoms[ground]), BOOLEAN.name
+        )
+        return self._intern(
+            ("atom", test), frozenset((variable.binder,)), lambda: Atom(test)
+        )
+
+    def _intern(
+        self, key: tuple, tested: frozenset[Symbol], make: Callable[[], FormulaNode]
+    ) -> FormulaNode:
+        """The one node for ``key``, testing ``tested``, made the first time."""
+        node = self._made.get(key)
+        if node is None:
+            node = self._made[key] = make()
+            self._tested[id(node)] = tested
+        return node
+
+    def _expect(self, body: FormulaNode) -> Aggregation:
+        """The expectation of the lifted ``body`` over the variables it tests."""
+        binders = tuple(sorted(self._tested[id(body)], key=symbol_to_pretty_string))
+        if not binders:
+            return Aggregation("expectation", (), (), body)
+        distribution = reduce(
+            partial(BinaryOp, PROBABILITY.product),
+            (
+                Atom(with_structure(self._variables[binder].factor, PROBABILITY.name))
+                for binder in binders
+            ),
+        )
+        return Aggregation("expectation", binders, (distribution,), body)
+
+    def _add(self, variable: _Variable) -> _Variable:
+        """Record ``variable`` under its binder and every atom asserting its values."""
+        self._variables[variable.binder] = variable
+        for atom in variable.atoms:
+            self._variables[atom] = variable
+        return variable
+
+
+def _fact(atom: Symbol, label: Symbol) -> _Variable:
+    """The variable of the probabilistic fact ``atom``: whether it holds."""
+    binder = ("_" + symbol_to_pretty_string(atom),)
+    probability = _label(label)
+    return _Variable(
+        binder,
+        _TRUTH,
+        (*atom, binder),
+        {atom: _TRUE},
+        (_Label(probability.source, complement=True), probability),
     )
 
-    module = _lower(factory, boolean_lumps, result)
-    return _relabel_to_answers(module, _tag_answers(module, answers))
+
+def _disjunction(
+    name: Symbol,
+    domain: Domain,
+    occurrence: Symbol,
+    labels: dict[Symbol, Symbol],
+) -> _Variable:
+    """The variable of an annotated disjunction: which of its values holds.
+
+    Its factor is the atom asserting a value, with the binder in the value's
+    position, or, where the values are unrelated atoms, the variable's name
+    extended with the binder.
+    """
+    atoms = {apply_substitution(occurrence, {OPEN: v}): v for v in domain.values}
+    if occurrence == OPEN:
+        binder = ("_" + symbol_to_pretty_string(name),)
+        factor = (*name, binder)
+    else:
+        binder = ("_" + symbol_to_pretty_string(occurrence),)
+        factor = apply_substitution(occurrence, {OPEN: binder})
+    return _Variable(
+        binder,
+        domain,
+        factor,
+        atoms,
+        tuple(_label(labels.get(atom, atom)) for atom in atoms),
+    )
 
 
-def _compile_conditional(
-    result: EngineResult[FormulaNode],
-    factory: DeepLogModuleFactory,
+def _label(label: Symbol) -> _Label:
+    """What the program's ``label`` says a probability is.
+
+    Raises:
+        ValueError: If ``label`` is an atom in another algebra than probability.
+    """
+    if len(label) == 3 and label[0] == "_":
+        if label[2] != (PROBABILITY.name,):
+            raise ValueError(
+                f"The label {symbol_to_pretty_string(label)} is not a probability."
+            )
+        label = label[1]
+    if len(label) == 1:
+        try:
+            return _Label(float(label[0]))
+        except (TypeError, ValueError):
+            pass
+    return _Label(label)
+
+
+def _labelling(
+    variables: Sequence[_Variable],
+    compiler: Compiler,
+    atoms: Sequence[Symbol],
 ) -> DeepLogModule:
-    """Compile a conditional result (``result.evidence`` set) to ``P(q | e)``.
+    """The module labelling the factor atoms ``atoms``, a column named by each.
 
-    Each query answer carries its joint proof ``q∧e`` in ``result.formulas`` and
-    the shared evidence ``e`` in ``result.evidence``.
+    A factor atom with a value in its binder's position is labelled by that
+    value's label, and one with its binder there by the label of the value the
+    binder holds. The module declares that position's domain, its variable's.
 
-    The numerators and the denominator go through one batched
-    weighted-model-count and one call to
-    :func:`~deeplog.formula.deeplogmodulefactory.lower_circuit_nodes`, so each
-    predicate module appears once no matter how many answers there are. The
-    resulting N+1 outputs are divided by
-    :class:`~deeplog.module.ColumnwiseModule` using the probability
-    :class:`~deeplog.algebraic.Semifield`'s ``divide`` (clamped, so impossible
-    evidence stays finite). Only the answer columns are relabelled to their query
-    atoms, so the denominator is told apart by the positional name it kept.
+    Raises:
+        ValueError: If an atom asked for is no variable's factor.
     """
-    answers = tuple(result.formulas.keys())
-    lumps = _as_circuit_nodes(
-        (*result.formulas.values(), result.evidence),
-        "Conditional result formulas must be boolean circuit lumps.",
-    )
-
-    # The denominator is the last root, so it is the last output. Relabel only
-    # the answers; the evidence keeps the positional name the lowering gave it,
-    # which is already outside the user's atom space, so no reserved output name
-    # is needed to tell it apart.
-    lowered = _lower(factory, lumps, result)
-    # ``evidence`` is a root name minted by the lowering, so it is already
-    # labelled; the answers are bare grounder atoms and are labelled to match.
-    # ``ColumnwiseModule`` resolves its column groups by symbol, so the two
-    # spellings have to agree exactly.
-    evidence = list(get_all_symbols(lowered.get_output_shape()))[-1]
-    tagged = _tag_answers(lowered, answers)
-    joint = _relabel_to_answers(lowered, (*tagged, evidence))
-    return ColumnwiseModule(
-        PROBABILITY.division_fn,
-        joint,
-        tagged,
-        (evidence,),
-        name=PROBABILITY.division,
+    known: dict[Symbol, tuple[_Variable, int | None]] = {}
+    for variable in variables:
+        known[variable.factor] = (variable, None)
+        for position, value in enumerate(variable.domain.values):
+            known[variable.at(value)] = (variable, position)
+    factors = [without_structure(atom) for atom in atoms]
+    missing = [factor for factor in factors if factor not in known]
+    if missing:
+        raise ValueError(
+            f"{symbol_to_pretty_string(missing[0])} is not the factor of a variable "
+            "of this program."
+        )
+    table = _Table([known[factor] for factor in factors])
+    output = SymTensor(list(atoms))
+    gather = WrappedModule(table, SymTensor(table.inputs), output, name="labelling")
+    built = _label_modules(table.label_atoms, compiler)
+    return _Labels(
+        compose_modules([*built, gather], output) if built else gather,
+        {
+            factor[1:]: (variable.factor.index(variable.binder) - 1, variable.domain)
+            for factor, (variable, _) in known.items()
+        },
     )
 
 
-def _as_circuit_nodes(formulas: object, message: str) -> tuple[CircuitNode, ...]:
-    """Narrow engine-result formulas to circuit lumps, or raise ``message``."""
-    lumps = tuple(cast("tuple[FormulaNode, ...]", formulas))
-    if not all(isinstance(lump, CircuitNode) for lump in lumps):
-        raise TypeError(message)
-    return cast("tuple[CircuitNode, ...]", lumps)
+class _Labels(WrappedModule):
+    """Factor atoms' labels, declaring the domain of each binder's position."""
+
+    def __init__(
+        self,
+        module: DeepLogModule,
+        domains: dict[tuple[Symbol, ...], tuple[int, Domain]],
+    ) -> None:
+        """Wrap ``module``; ``domains`` gives each factor's binder position and domain."""
+        super().__init__(
+            module,
+            module.get_input_shape(),
+            module.get_output_shape(),
+            name="labelling",
+        )
+        self._domains = domains
+
+    def domains_of(self, arguments: tuple[Symbol, ...], /) -> tuple[Domain, ...]:
+        """The variable's domain at the binder's position, the values elsewhere."""
+        position, domain = self._domains[arguments]
+        return tuple(
+            domain if index == position else _VALUES for index in range(len(arguments))
+        )
 
 
-def _lower(
-    factory: DeepLogModuleFactory,
-    boolean_lumps: tuple[CircuitNode, ...],
-    result: EngineResult[FormulaNode],
-) -> DeepLogModule:
-    """Lower each boolean lump as the expectation of it — one compilation.
+def _label_modules(atoms: Sequence[Symbol], compiler: Compiler) -> list[DeepLogModule]:
+    """A module computing the label ``atoms`` ``compiler`` has builders for."""
+    grouped: dict[tuple[str, int, str], list[Symbol]] = {}
+    for atom in atoms:
+        grouped.setdefault((atom[0], len(atom) - 1, PROBABILITY.name), []).append(
+            with_structure(atom, PROBABILITY.name)
+        )
+    modules = []
+    for key, labelled in grouped.items():
+        builder = compiler.atom_builder(*key)
+        if builder is not None:
+            modules.append(builder(labelled))
+    return modules
 
-    The count is *deferred*, exactly as it is for an ``expectation`` the textual
-    language writes: each lump becomes a leaf of one probability circuit fed by
-    the aggregation counting it, and the lowering does every count at its single
-    site. What the engine knows and the count cannot derive — Definition 12's α
-    as a leaf mapping, and where each variable occurs — is handed to it there.
+
+class _Table(torch.nn.Module):
+    """Reads each factor atom's label off a bank of constants and label columns.
+
+    Its inputs are the label atoms' columns and the binders' positions, in that
+    order (:attr:`inputs`).
     """
-    # One factory, so every count's leaf lands in its one probability circuit.
-    counts = CircuitFactory()
-    deferred = [
-        counts.create_aggregation("expectation", [], (), lump) for lump in boolean_lumps
-    ]
-    return lower_circuit_nodes(
-        factory,
-        *deferred,
-        leaf_mapping=build_leaf_mapping(result.labels),
-        variables=result.variables,
-    )
+
+    _rows: torch.Tensor
+    _complements: torch.Tensor
+    _fixed: torch.Tensor
+    _bound: torch.Tensor
+
+    def __init__(self, evaluations: Sequence[tuple[_Variable, int | None]]) -> None:
+        """Lay out each evaluation's labels, one row of the bank per value."""
+        super().__init__()
+        constants: dict[float, None] = {}
+        atoms: dict[Symbol, None] = {}
+        binders: dict[Symbol, None] = {}
+        for variable, position in evaluations:
+            for label in _read(variable, position):
+                if isinstance(label.source, tuple):
+                    atoms.setdefault(label.source)
+                else:
+                    constants.setdefault(label.source)
+            if position is None:
+                binders.setdefault(variable.binder)
+        bank = {source: i for i, source in enumerate([*constants, *atoms])}
+        width = max(len(variable.labels) for variable, _ in evaluations)
+        rows = torch.zeros(len(evaluations), width, dtype=torch.long)
+        complements = torch.zeros(len(evaluations), width, dtype=torch.bool)
+        fixed = torch.zeros(len(evaluations), dtype=torch.long)
+        bound = torch.full((len(evaluations),), -1, dtype=torch.long)
+        binder_column = {binder: i for i, binder in enumerate(binders)}
+        for e, (variable, position) in enumerate(evaluations):
+            for value, label in enumerate(variable.labels):
+                if position is None or value == position:
+                    rows[e, value] = bank[label.source]
+                    complements[e, value] = label.complement
+            if position is None:
+                bound[e] = binder_column[variable.binder]
+            else:
+                fixed[e] = position
+        #: The label atoms read as columns, and then the binders read as positions.
+        self.label_atoms = list(atoms)
+        self.inputs = [
+            *(with_structure(atom, PROBABILITY.name) for atom in atoms),
+            *binders,
+        ]
+        #: Held exactly, and made a tensor in the dtype of the values they meet,
+        #: or the default dtype where those are positions alone.
+        self.constants = list(constants)
+        self.register_buffer("_rows", rows)
+        self.register_buffer("_complements", complements)
+        self.register_buffer("_fixed", fixed)
+        self.register_buffer("_bound", bound)
+
+    def forward(self, values: torch.Tensor) -> torch.Tensor:
+        """Each evaluation's label, one column per evaluation."""
+        batch = values.shape[0]
+        labels = len(self.label_atoms)
+        dtype = (
+            values.dtype if values.is_floating_point() else torch.get_default_dtype()
+        )
+        bank = torch.cat(
+            [
+                torch.tensor(self.constants, dtype=dtype, device=values.device).expand(
+                    batch, -1
+                ),
+                values[:, :labels],
+            ],
+            dim=1,
+        )
+        positions = self._fixed.expand(batch, -1).clone()
+        bound = self._bound >= 0
+        if bool(bound.any()):
+            binders = values[:, labels:][:, self._bound[bound]]
+            positions[:, bound] = binders.to(torch.long)
+        evaluation = torch.arange(len(self._fixed), device=values.device)
+        chosen = bank.gather(1, self._rows[evaluation, positions])
+        return torch.where(self._complements[evaluation, positions], 1 - chosen, chosen)
 
 
-def build_leaf_mapping(
-    labels: Mapping[Symbol, Symbol],
-) -> Callable[[Symbol], Symbol]:
-    """Build a boolean-to-probability leaf mapping directly from atom labels.
-
-    ``labels`` maps each labeled boolean atom (e.g. ``("a", ("x1",))``) to its
-    probability label atom (e.g. ``("nn1", ("x1",))``). The returned callable
-    rewrites a *bare* boolean leaf (the canonical identity a circuit exposes via
-    :meth:`~deeplog.circuit.circuit.Circuit.get_leaf_name`) to its matching
-    probability leaf. Leaves without an atom label are retagged to the
-    probability structure unchanged (they become probability inputs or
-    builder-backed leaves).
-
-    Building the mapping straight from ``labels`` keeps it unambiguous when
-    distinct atoms share arguments — ``a(x1)`` and ``b(x1)`` labeled by
-    ``nn1(x1)`` and ``nn2(x1)`` — which arguments alone cannot resolve.
-
-    A numeric label (e.g. ``0.6 :: fact``) maps to its constant symbol like any
-    other, and the target circuit folds it to a constant node.
-
-    Args:
-        labels: Maps boolean atoms to their probability label atoms.
-
-    Returns:
-        A callable mapping boolean leaf symbols to probability leaf symbols.
-    """
-    mapping: dict[Symbol, Symbol] = {
-        bool_atom: with_structure(prob_atom, "probability")
-        for bool_atom, prob_atom in labels.items()
-    }
-
-    def leaf_mapping(sym: Symbol) -> Symbol:
-        # ``sym`` is a bare boolean leaf; map it to its label or carry it into
-        # the probability structure unchanged.
-        return mapping.get(sym) or with_structure(sym, "probability")
-
-    return leaf_mapping
-
-
-def _tag_answers(
-    module: DeepLogModule, answers: tuple[Symbol, ...]
-) -> tuple[Symbol, ...]:
-    """Label each query answer atom with the algebra ``module``'s outputs carry.
-
-    The answers arrive as bare ground atoms from the grounder, while the columns
-    they rename are probability-valued. The renamed shape and every later
-    by-symbol lookup (``ColumnwiseModule``'s column groups, ``to_dict``) must
-    agree on the labelled spelling, so it is derived once, here.
-    """
-    structure = sole_structure(module.get_output_shape())
-    if structure is None:
-        raise ValueError("Lowered query module carries no algebraic structure.")
-    return tuple(with_structure(answer, structure) for answer in answers)
-
-
-def _relabel_to_answers(
-    module: DeepLogModule, answers: tuple[Symbol, ...]
-) -> DeepLogModule:
-    """Relabel ``module``'s positional outputs to their query answer atoms.
-
-    :func:`~deeplog.formula.deeplogmodulefactory.lower_circuit_nodes` names the N
-    co-resident roots positionally, in ``result.formulas`` order, which is
-    ``answers`` order; output ``i`` is redeclared as ``answers[i]`` so consumers
-    can index by name. The forward pass is unchanged.
-
-    ``answers`` must already be structure-labelled (see :func:`_tag_answers`),
-    since the relabel replaces the output symbols wholesale and a bare answer
-    would strip the algebra off a probability column.
-    """
-    if len(answers) != len(list(module.get_output_shape())):
-        raise ValueError("Expected one answer per lowered output.")
-    return WrappedModule(
-        module,
-        module.get_input_shape(),
-        SymTensor(list(answers)),
-        name="query_answers",
-    )
+def _read(variable: _Variable, position: int | None) -> Iterable[_Label]:
+    """The labels an evaluation at ``position`` reads: all of them for a binder."""
+    return variable.labels if position is None else (variable.labels[position],)

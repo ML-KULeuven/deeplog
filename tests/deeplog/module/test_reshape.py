@@ -9,8 +9,8 @@ import torch
 
 from deeplog import SymTensor
 from deeplog import TransformationNotPossible
-from deeplog import construct_transformation
 from deeplog.module.reshape import _IndexingTransform
+from deeplog.module.reshape import construct_transformation
 
 
 a, b = ("a",), ("b",)

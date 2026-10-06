@@ -16,29 +16,25 @@ Tests cover four layers:
   formulas are mutex-corrected by MV-SDD canonicalisation instead.
 """
 
+from functools import partial
 from typing import cast
 
 import pytest
 import torch
 
+from deeplog import Compiler
+from deeplog import NetworkPredicate
 from deeplog import to_dict
-from deeplog import to_module as circuit_to_module
-from deeplog.formula import DeepLogModuleFactory
-from deeplog.formula import SymbolicFormulaFactory
-from deeplog.formula.circuit_factory import CircuitFactory
-from deeplog.formula.predicates.builtin_predicates import get_network_predicate
-from deeplog.formula.strategies import transform_expectation_to_probability
-from deeplog.grounding import JanusGrounder
-from deeplog.grounding import SimpleGrounder
-from deeplog.grounding import str_to_rule
-from deeplog.grounding import str_to_rules
+from deeplog.grounding.prolog import JanusGrounder
+from deeplog.grounding.prolog import SimpleGrounder
+from deeplog.grounding.prolog import str_to_rule
+from deeplog.grounding.prolog import str_to_rules
 from deeplog.shape import get_all_symbols
 from deeplog.symbol import Symbol
 from deeplog.symbol import with_structure
 from deeplog.systems.deepproblog import KBestJanusGrounder
 from deeplog.systems.deepproblog import Solver
 from deeplog.systems.deepproblog import compile_to_module
-from deeplog.systems.deepproblog.compile import build_leaf_mapping
 from deeplog.systems.deepproblog.kbest.kbest import expand_annotated_disjunctions
 from deeplog.util import as_tuple
 from deeplog.variable import OPEN
@@ -102,7 +98,7 @@ def test_simple_ad_query(engine_class):
     """A query against one branch of an AD returns that branch's leaf."""
     engine = _make_engine(engine_class)
     program = tuple(str_to_rules("0.3::a; 0.7::b.\n?- a."))
-    result = engine.get_query_result(program, SymbolicFormulaFactory())
+    result = engine.get_query_result(program)
     assert ("a",) in result.formulas
     # The factory sees the unwrapped (inner) label, not the categorical wrapping.
     assert result.labels[("a",)] == ("0.3",)
@@ -118,7 +114,7 @@ def test_ad_mutex_within_proof(engine_class):
     """
     engine = _make_engine(engine_class)
     program = tuple(str_to_rules("0.3::a; 0.7::b.\n?- a, b."))
-    result = engine.get_query_result(program, SymbolicFormulaFactory())
+    result = engine.get_query_result(program)
     # The conflicting proof was dropped → no ground goal for `a, b`.
     assert (",", ("a",), ("b",)) not in result.formulas
     assert result.formulas == {}
@@ -133,7 +129,7 @@ def test_ad_in_rule_body(engine_class):
     ?- happy.
     """
     program = tuple(str_to_rules(code))
-    result = engine.get_query_result(program, SymbolicFormulaFactory())
+    result = engine.get_query_result(program)
     assert ("happy",) in result.formulas
     assert result.labels[("heads",)] == ("0.3",)
 
@@ -148,7 +144,7 @@ def test_multiple_independent_ads(engine_class):
     ?- a, c.
     """
     program = tuple(str_to_rules(code))
-    result = engine.get_query_result(program, SymbolicFormulaFactory())
+    result = engine.get_query_result(program)
     assert (",", ("a",), ("c",)) in result.formulas
 
 
@@ -158,7 +154,7 @@ def test_ad_branches_are_independent_proofs(engine_class):
     engine = _make_engine(engine_class)
     code = "0.2::p(a); 0.5::p(b); 0.3::p(c).\n?- p(X)."
     program = tuple(str_to_rules(code))
-    result = engine.get_query_result(program, SymbolicFormulaFactory())
+    result = engine.get_query_result(program)
     assert set(result.formulas.keys()) == {
         ("p", ("a",)),
         ("p", ("b",)),
@@ -178,11 +174,9 @@ def test_ad_engine_parity():
     ?- happy.
     """
     program = tuple(str_to_rules(code))
-    simple = Solver(SimpleGrounder()).get_query_result(
-        program, SymbolicFormulaFactory()
-    )
-    janus = Solver(JanusGrounder()).get_query_result(program, SymbolicFormulaFactory())
-    kbest = KBestJanusGrounder(k=10).get_query_result(program, SymbolicFormulaFactory())
+    simple = Solver(SimpleGrounder()).get_query_result(program)
+    janus = Solver(JanusGrounder()).get_query_result(program)
+    kbest = KBestJanusGrounder(k=10).get_query_result(program)
     assert set(simple.formulas) == set(janus.formulas) == set(kbest.formulas)
 
 
@@ -193,20 +187,10 @@ def test_ad_engine_parity():
 
 
 def _compile_for_probability(code: str):
-    """Knowledge-compile an AD program and count it in probability."""
+    """Compile an AD program's queries in probability, with its answers."""
     program = tuple(str_to_rules(code))
-    factory = CircuitFactory()
-    result = Solver(SimpleGrounder()).get_query_result(program, factory)
-    answers, nodes = zip(*result.formulas.items(), strict=True)
-    mod = circuit_to_module(
-        *transform_expectation_to_probability(
-            *nodes,
-            leaf_mapping=build_leaf_mapping(result.labels),
-            variables=result.variables,
-        ),
-        names=answers,
-    )
-    return mod, answers
+    result = Solver(SimpleGrounder()).get_query_result(program)
+    return compile_to_module(result, Compiler()), tuple(result.formulas)
 
 
 def test_ad_branch_probabilities_sum_to_one():
@@ -221,8 +205,8 @@ def test_ad_branch_probabilities_sum_to_one():
         ?- c.
         """
     )
-    assert list(mod.get_input_shape()) == []
-    out = mod(torch.zeros((1, 0)))
+    assert list(get_all_symbols(mod.get_input_shape())) == []
+    out = mod()
     out_by_query = dict(zip(answers, out[0].tolist(), strict=True))
     assert pytest.approx(out_by_query[("a",)], abs=1e-5) == 0.3
     assert pytest.approx(out_by_query[("b",)], abs=1e-5) == 0.5
@@ -242,8 +226,8 @@ def test_ad_residual_branch_probability():
         ?- b.
         """
     )
-    assert list(mod.get_input_shape()) == []
-    out = mod(torch.zeros((1, 0)))
+    assert list(get_all_symbols(mod.get_input_shape())) == []
+    out = mod()
     out_by_query = dict(zip(answers, out[0].tolist(), strict=True))
     assert pytest.approx(out_by_query[("a",)], abs=1e-5) == 0.3
     assert pytest.approx(out_by_query[("b",)], abs=1e-5) == 0.5
@@ -274,18 +258,9 @@ joint(c, y) :- c, y.
 
 def _compile_with_engine(engine, code: str):
     program = tuple(str_to_rules(code))
-    factory = CircuitFactory()
-    result = engine.get_query_result(program, factory)
-    answers, nodes = zip(*result.formulas.items(), strict=True)
-    mod = circuit_to_module(
-        *transform_expectation_to_probability(
-            *nodes,
-            leaf_mapping=build_leaf_mapping(result.labels),
-            variables=result.variables,
-        ),
-        names=answers,
-    )
-    out = mod(torch.zeros((1, 0)))
+    result = engine.get_query_result(program)
+    answers = tuple(result.formulas)
+    out = compile_to_module(result, Compiler())()
     return dict(zip(answers, out[0].tolist(), strict=True))
 
 
@@ -340,18 +315,8 @@ def test_janus_within_ad_conjunction_zeroed_by_mvsdd():
     ?- impossible.
     """
     program = tuple(str_to_rules(code))
-    factory = CircuitFactory()
-    result = Solver(JanusGrounder()).get_query_result(program, factory)
-    answers, nodes = zip(*result.formulas.items(), strict=True)
-    mod = circuit_to_module(
-        *transform_expectation_to_probability(
-            *nodes,
-            leaf_mapping=build_leaf_mapping(result.labels),
-            variables=result.variables,
-        ),
-        names=answers,
-    )
-    out = mod(torch.zeros((1, 0)))
+    result = Solver(JanusGrounder()).get_query_result(program)
+    out = compile_to_module(result, Compiler())()
     assert pytest.approx(float(out[0, 0]), abs=1e-5) == 0.0
 
 
@@ -376,8 +341,8 @@ def test_compile_to_module_enforces_the_ad_mutex(grounder_cls):
     ?- either.
     """
     program = tuple(str_to_rules(code))
-    result = Solver(grounder_cls()).get_query_result(program, CircuitFactory())
-    module = compile_to_module(result, DeepLogModuleFactory())
+    result = Solver(grounder_cls()).get_query_result(program)
+    module = compile_to_module(result, Compiler())
 
     # Constant labels are baked in, so the module takes no runtime input.
     assert list(module.get_input_shape()) == []
@@ -396,9 +361,7 @@ def test_compile_to_module_enforces_the_ad_mutex(grounder_cls):
 def _recognize(code: str):
     """Ground ``code`` and return the recognized variables."""
     program = tuple(str_to_rules(code))
-    return (
-        Solver(SimpleGrounder()).get_query_result(program, CircuitFactory()).variables
-    )
+    return Solver(SimpleGrounder()).get_query_result(program).variables
 
 
 def test_recognized_variable_has_a_domain_of_values_not_atoms():
@@ -492,17 +455,17 @@ def test_the_declaration_does_not_depend_on_what_was_reached():
     }
 
 
-def _neural_factory():
-    """A factory resolving ``m_digit(image, value)`` to the image's own column."""
+def _neural_compiler():
+    """A compiler resolving ``m_digit(image, value)`` to the image's own column."""
 
     class _Passthrough(torch.nn.Module):
         def forward(self, x):
             return x
 
-    return DeepLogModuleFactory(
+    return Compiler(
         atom_builders={
-            ("m_digit", 2, "probability"): get_network_predicate(
-                "m_digit", 2, "probability", _Passthrough()
+            ("m_digit", 2, "probability"): partial(
+                NetworkPredicate, module=_Passthrough()
             )
         }
     )
@@ -548,8 +511,8 @@ def test_a_neural_annotation_is_the_enumerated_disjunction():
 
     def probability(code):
         program = tuple(str_to_rules(code))
-        result = Solver(SimpleGrounder()).get_query_result(program, CircuitFactory())
-        module = compile_to_module(result, _neural_factory())
+        result = Solver(SimpleGrounder()).get_query_result(program)
+        module = compile_to_module(result, _neural_compiler())
         table = {("i1",): [0.2, 0.3, 0.5], ("i2",): [0.6, 0.1, 0.3]}
         # One batch row, one symbol (the image), whose value is its class scores.
         arguments = [

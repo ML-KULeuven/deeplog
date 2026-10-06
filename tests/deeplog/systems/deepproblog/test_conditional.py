@@ -5,23 +5,23 @@ Evidence is expressed with the integrity-constraint operator: ``:- body.``
 conditions the distribution on ``¬body`` (the dual of the ``?- q.`` query
 directive). So positive evidence ``e`` is written ``:- not(e).`` and negative
 evidence ``:- e.``. The engine builds, per answer, the joint ``q∧e`` and the
-shared evidence ``e``; :func:`compile_to_module` compiles all of them into one
-module and divides with a :class:`~deeplog.module.ColumnwiseModule` to obtain
-``P(q | e) = E[q∧e] / E[e]``.
+shared evidence ``e``; :func:`compile_to_module` compiles each answer as the
+division ``P(q | e) = E[q∧e] / E[e]``, every one dividing by the one expectation
+of the evidence.
 
-Numeric-constant labels (``0.6::burglary``) are baked into the compiled AC by
-the knowledge-compilation backend, so the alarm programs here have no runtime
-inputs at all — ``_evaluate`` feeds only the empty ``(batch, 0)`` channel and
-the declared probabilities below are informational, not supplied at forward time.
+Numeric-constant labels (``0.6::burglary``) are constants of the program's
+labelling function, so the alarm programs here have no runtime inputs at all —
+``_evaluate`` feeds only the empty ``(batch, 0)`` channel and the declared
+probabilities below are informational, not supplied at forward time.
 """
 
 import torch
 
-import deeplog.circuit.knowledge_compile.sdd as sdd
-from deeplog.formula import DeepLogModuleFactory
-from deeplog.formula.circuit_factory import CircuitFactory
-from deeplog.grounding import SimpleGrounder
-from deeplog.grounding import str_to_rules
+import deeplog.circuit.knowledge_compilation.sdd as sdd
+from deeplog import Compiler
+from deeplog import weighted_model_count
+from deeplog.grounding.prolog import SimpleGrounder
+from deeplog.grounding.prolog import str_to_rules
 from deeplog.shape import SymTensor
 from deeplog.shape import get_all_symbols
 from deeplog.symbol import without_structure
@@ -48,8 +48,8 @@ def _conditional_module(program_text: str):
     by the evidence when it is present.
     """
     program = tuple(str_to_rules(program_text))
-    result = Solver(SimpleGrounder()).get_query_result(program, CircuitFactory())
-    return result, compile_to_module(result, DeepLogModuleFactory())
+    result = Solver(SimpleGrounder()).get_query_result(program)
+    return result, compile_to_module(result, Compiler())
 
 
 def _evaluate(module, values: dict[str, float]) -> dict[str, float]:
@@ -200,25 +200,28 @@ def test_no_reserved_output_name_is_introduced():
 
 
 def test_shared_circuit_is_evaluated_once_for_all_answers():
-    """One forward evaluates the joint module once, not once per answer.
+    """One forward counts every answer and the evidence in one module run once.
 
-    This is what dividing *inside* a single module buys: N separately-lowered
-    numerators over a separately-lowered denominator would re-run the shared
-    circuit — and the predicate modules feeding it — for every answer.
+    Every answer divides by the same expectation of the evidence, and the
+    expectations are counted together, so N answers do not re-run the circuit,
+    or the predicate modules feeding it, N times.
     """
-    _, module = _conditional_module(
-        ALARM + ":- not(alarm).\n?- burglary.\n?- earthquake.\n?- alarm."
+    runs = []
+
+    def spying(nodes, lowering):
+        reports = weighted_model_count(nodes, lowering)
+        for module in {id(module): module for module, _ in reports}.values():
+            module.register_forward_hook(lambda *_: runs.append(len(nodes)))
+        return reports
+
+    program = tuple(
+        str_to_rules(ALARM + ":- not(alarm).\n?- burglary.\n?- earthquake.\n?- alarm.")
+    )
+    result = Solver(SimpleGrounder()).get_query_result(program)
+    module = compile_to_module(
+        result, Compiler(aggregation_builders={"expectation": spying})
     )
 
-    calls = []
-    inner = module._inner
-    original_forward = inner.forward
-
-    def counting_forward(*args, **kwargs):
-        calls.append(1)
-        return original_forward(*args, **kwargs)
-
-    inner.forward = counting_forward
     module()
 
-    assert sum(calls) == 1
+    assert runs == [4]

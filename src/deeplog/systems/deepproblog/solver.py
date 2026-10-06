@@ -6,7 +6,7 @@ a DeepProbLog program (splitting annotated disjunctions, moving rule labels to
 aux facts, stripping labels to a plain program plus an *open*-predicate set and
 label declarations), grounds every query / constraint through the grounder, and
 then builds the :class:`EngineResult` (labels / variables / evidence) by
-interpreting the ground leaves post-hoc.
+interpreting the leaves of the proof formulas post-hoc.
 """
 
 from __future__ import annotations
@@ -16,17 +16,20 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from dataclasses import field
 from functools import reduce
-from typing import TYPE_CHECKING
-from typing import TypeVar
 
+from deeplog import BOOLEAN
+from deeplog import OPEN
+from deeplog import Atom
+from deeplog import BinaryOp
+from deeplog import FormulaNode
 from deeplog import Symbol
+from deeplog import UnaryOp
 from deeplog import VariableAtoms
 from deeplog import apply_substitution
+from deeplog import calculate_mgu
 from deeplog import get_predicate
-from deeplog.grounding import ProofBuilder
 from deeplog.grounding.prolog import PrologGrounder
 from deeplog.grounding.prolog import RuleType
-from deeplog.grounding.prolog import calculate_mgu
 from deeplog.grounding.prolog import create_rule
 from deeplog.grounding.prolog import get_constraint_body
 from deeplog.grounding.prolog import is_constraint
@@ -39,23 +42,20 @@ from .ad import instantiate
 from .ad import split_annotated_disjunctions
 from .parser import get_atom
 from .parser import get_label
+from .proofs import FALSE
+from .proofs import conjoin
+from .proofs import disjoin
 from .transformation import remove_labeled_rules
 
 
-if TYPE_CHECKING:
-    from deeplog import DeepLogFormulaFactory
-
-
-F = TypeVar("F")
-
-
 @dataclass
-class EngineResult[F]:
+class EngineResult:
     """Result of proving a goal: proof formulas and the atom labels for them."""
 
     #: Maps ground goals to proof formulas (the boolean proof structure).
-    formulas: dict[Symbol, F]
-    #: Maps ground atom symbols to their probability labels.
+    formulas: dict[Symbol, FormulaNode]
+    #: Maps ground atom symbols to their probability labels, for the atoms of the
+    #: formulas and every atom asserting a value of one of :attr:`variables`.
     labels: dict[Symbol, Symbol] = field(default_factory=dict)
     #: The annotated disjunctions recognized in the ground atoms — where each
     #: variable occurs. Recognizing these is what makes the branches mutually
@@ -63,7 +63,7 @@ class EngineResult[F]:
     variables: VariableAtoms = field(default_factory=dict)
     #: The shared evidence formula ``e = ⋀ᵢ ¬(bodyᵢ)`` over the program's
     #: integrity constraints, or ``None`` when the program declares none.
-    evidence: F | None = None
+    evidence: FormulaNode | None = None
 
 
 def _detach_labels(
@@ -150,51 +150,45 @@ class Solver:
         """Register an additional builtin predicate on the underlying grounder."""
         self._grounder.add_builtin(functor, arity, builtin_function)
 
-    def get_result(
-        self,
-        program: tuple[RuleType, ...],
-        goal: Symbol,
-        factory: DeepLogFormulaFactory[F],
-    ) -> EngineResult[F]:
+    def get_result(self, program: tuple[RuleType, ...], goal: Symbol) -> EngineResult:
         """Prove a single ``goal`` and return its formulas + labels."""
         plain, open_predicates, declarations, variables = _detach_labels(program)
-        builder: ProofBuilder[F] = ProofBuilder(factory)
-        formulas = self._grounder.ground(plain, goal, builder, open_predicates)
+        formulas = self._grounder.ground(plain, goal, open_predicates)
+        leaves = _leaves(formulas.values())
+        instances = instantiate(variables, leaves)
         return EngineResult(
             formulas,
-            _reattach_labels(builder.leaves, declarations),
-            instantiate(variables, builder.leaves),
+            _reattach_labels([*leaves, *_values(instances)], declarations),
+            instances,
         )
 
-    def get_query_result(
-        self,
-        program: tuple[RuleType, ...],
-        factory: DeepLogFormulaFactory[F],
-    ) -> EngineResult[F]:
+    def get_query_result(self, program: tuple[RuleType, ...]) -> EngineResult:
         """Evaluate every query in ``program``, conditioned on its constraints.
 
         Each query's proof is ``P(q)``; when the program declares integrity
         constraints ``:- body.``, the result is conditioned on evidence
-        ``e = ⋀ᵢ ¬(bodyᵢ)`` and each query formula becomes ``q ∧ e``. One shared
-        :class:`~deeplog.grounding.ProofBuilder` drives every query and constraint
-        body, so all leaves co-reside in one source circuit.
+        ``e = ⋀ᵢ ¬(bodyᵢ)`` and each query formula becomes ``q ∧ e``, sharing
+        the one evidence formula.
         """
         plain, open_predicates, declarations, variables = _detach_labels(program)
-        builder: ProofBuilder[F] = ProofBuilder(factory)
-        evidence = self._build_evidence(plain, open_predicates, builder)
+        evidence = self._build_evidence(plain, open_predicates)
 
-        all_formulas: dict[Symbol, F] = {}
+        all_formulas: dict[Symbol, FormulaNode] = {}
         for query in filter(is_query, plain):
             for answer, formula in self._grounder.ground(
-                plain, query[2], builder, open_predicates
+                plain, query[2], open_predicates
             ).items():
                 all_formulas[answer] = (
-                    formula if evidence is None else builder.conjoin(formula, evidence)
+                    formula if evidence is None else conjoin(formula, evidence)
                 )
+        leaves = _leaves(
+            [*all_formulas.values(), *([] if evidence is None else [evidence])]
+        )
+        instances = instantiate(variables, leaves)
         return EngineResult(
             all_formulas,
-            _reattach_labels(builder.leaves, declarations),
-            instantiate(variables, builder.leaves),
+            _reattach_labels([*leaves, *_values(instances)], declarations),
+            instances,
             evidence,
         )
 
@@ -202,22 +196,49 @@ class Solver:
         self,
         plain: tuple[RuleType, ...],
         open_predicates: set[tuple[str, int]],
-        builder: ProofBuilder[F],
-    ) -> F | None:
+    ) -> FormulaNode | None:
         """Build the shared evidence formula ``e = ⋀ᵢ ¬(bodyᵢ)`` over all constraints.
 
-        Each integrity constraint ``:- body.`` contributes ``¬body``: the body is
-        grounded with the same ``builder`` (so its leaves co-reside with the query
-        proofs) and its proofs are OR-folded before negation. Returns ``None``
-        when the program has no constraints.
+        Each integrity constraint ``:- body.`` contributes ``¬body``, where the
+        body is the disjunction of its proofs. Returns ``None`` when the program
+        has no constraints.
         """
-        constraints = list(filter(is_constraint, plain))
-        if not constraints:
-            return None
-        evidence = builder.get_true()
-        for constraint in constraints:
+        negations = []
+        for constraint in filter(is_constraint, plain):
             body = get_constraint_body(constraint)
-            proofs = self._grounder.ground(plain, body, builder, open_predicates)
-            body_formula = reduce(builder.disjoin, proofs.values(), builder.get_false())
-            evidence = builder.conjoin(evidence, builder.negate(body_formula))
-        return evidence
+            proofs = self._grounder.ground(plain, body, open_predicates)
+            negations.append(UnaryOp("not", reduce(disjoin, proofs.values(), FALSE)))
+        return reduce(conjoin, negations) if negations else None
+
+
+_CONSTANTS = (BOOLEAN.one, BOOLEAN.zero)
+
+
+def _values(variables: VariableAtoms) -> list[Symbol]:
+    """The atoms asserting each value of ``variables``, where they occur."""
+    return [
+        apply_substitution(occurrence, {OPEN: value})
+        for variable, occurrences in variables.items()
+        for occurrence in occurrences
+        for value in variable.domain.values
+    ]
+
+
+def _leaves(formulas: Iterable[FormulaNode]) -> list[Symbol]:
+    """The ground atoms the leaves of ``formulas`` stand for, each once."""
+    leaves: dict[Symbol, None] = {}
+    seen: set[int] = set()
+    stack = list(formulas)
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        match node:
+            case Atom(("_", atom, ("boolean",))) if atom not in _CONSTANTS:
+                leaves[atom] = None
+            case UnaryOp(_, operand):
+                stack.append(operand)
+            case BinaryOp(_, lhs, rhs):
+                stack.extend((lhs, rhs))
+    return list(leaves)

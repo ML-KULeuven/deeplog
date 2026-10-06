@@ -14,6 +14,7 @@ node — see :func:`lower_klay`.
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,7 @@ import klay
 import torch
 from torch import nn
 
+from ...algebraic import BOOLEAN
 from ...module.wrappers import WrappedModule
 from ...shape import SymTensor
 from ..backends import circuit_roles
@@ -28,7 +30,7 @@ from ..backends import klay_semiring
 
 
 if TYPE_CHECKING:
-    from ...module import DeepLogModule
+    from ...module.deeplog_module import DeepLogModule
     from ...symbol import Symbol
     from ..circuit import Circuit
 
@@ -94,7 +96,9 @@ def lower_klay(
 ) -> DeepLogModule:
     """Lower a circuit to a Klay-backed torch module.
 
-    Every reachable leaf gets an input slot. So does every reachable
+    A boolean circuit's negations are pushed down to its atoms first, by De
+    Morgan's laws, since Klay negates only those. Every reachable leaf gets an
+    input slot. So does every reachable
     arbitrary-value constant node (``0.6`` in ``times(p, 0.6)``), because Klay
     has no constant primitive beyond ``true``/``false`` — but those slots are
     pre-filled with their values and dropped from the module's input shape, so
@@ -102,6 +106,8 @@ def lower_klay(
     arithmetically, so a constant node shared by several parents (they are
     deduplicated by value) multiplies once per use, as written.
     """
+    if circuit.structure is BOOLEAN:
+        circuit, roots = _negation_normal_form(circuit, roots, frontier or {})
     klay_circuit = klay.Circuit()
     node_to_klay: dict[int, klay.NodePtr] = {}
     root_ids = list(roots.keys())
@@ -109,7 +115,7 @@ def lower_klay(
     # Map leaf nodes to klay literals. Track the signed literal id alongside
     # the NodePtr so we can negate via klay's documented `literal_node(-id)`
     # path; klay has no negate primitive for compound nodes.
-    leaf_nodes = circuit.reachable_leaves(root_ids, frontier)
+    leaf_nodes = circuit._reachable_leaves(root_ids, frontier)
     leaf_ids = list(leaf_nodes.values())
     lit_id_of: dict[int, int] = {}
     for i, leaf_id in enumerate(leaf_ids):
@@ -129,7 +135,7 @@ def lower_klay(
     bound = {zero_id, one_id}
     constants = {
         symbol: node_id
-        for symbol, node_id in circuit.reachable_constants(root_ids, frontier).items()
+        for symbol, node_id in circuit._reachable_constants(root_ids, frontier).items()
         if node_id not in bound
     }
     constant_slot_values: dict[int, float] = {}
@@ -145,7 +151,7 @@ def lower_klay(
     _OR_TYPES = frozenset({roles["sum"]} if "sum" in roles else ())
     _AND_TYPES = frozenset({roles["product"]} if "product" in roles else ())
     negation = roles.get("negation")
-    absorbed, flat_children = circuit.flatten_chains(
+    absorbed, flat_children = circuit._flatten_chains(
         root_ids,
         frontier=frontier,
         chain_groups=[
@@ -154,7 +160,7 @@ def lower_klay(
         ],
     )
 
-    for node_id in circuit.iter_topological(root_ids, frontier):
+    for node_id in circuit._iter_topological(root_ids, frontier):
         if node_id in node_to_klay or node_id in absorbed:
             continue
 
@@ -258,3 +264,79 @@ def _wrap_with_constant_prefill(
         name=name,
         vmap=True,
     )
+
+
+def _negation_normal_form(
+    circuit: Circuit, roots: dict[int, Symbol], frontier: Mapping[int, Symbol]
+) -> tuple[Circuit, dict[int, Symbol]]:
+    """``roots`` rewritten so that a negation applies only to an atom, and their circuit.
+
+    An atom is a leaf, a constant or a ``frontier`` node; a negated identity is
+    the other identity. De Morgan's laws move a negation below a conjunction or
+    a disjunction, which holds in :data:`~deeplog.algebraic.BOOLEAN`. A subgraph
+    already in this form is its own rewrite. Where a node must be built, the
+    rewrite is built in a copy of ``circuit`` with the same node ids, and
+    ``circuit`` is left as it was.
+    """
+    product, sum_, negation = BOOLEAN.product, BOOLEAN.sum, BOOLEAN.negation
+    dual = {product: sum_, sum_: product}
+    identities = {circuit.one_node: BOOLEAN.zero, circuit.zero_node: BOOLEAN.one}
+    target = circuit
+
+    def writable() -> Circuit:
+        nonlocal target
+        if target is circuit:
+            target = copy.deepcopy(circuit, {id(BOOLEAN): BOOLEAN})
+        return target
+
+    def atom(node: int) -> bool:
+        return node in frontier or circuit.operation(node)[0] in ("leaf", "constant")
+
+    built: dict[tuple[int, bool], int] = {}
+    stack = [(root, True, False) for root in roots]
+    while stack:
+        node, positive, ready = stack.pop()
+        if (node, positive) in built:
+            continue
+        operation, below = circuit.operation(node)
+        if atom(node):
+            if positive:
+                built[(node, positive)] = node
+            elif node in identities:
+                built[(node, positive)] = writable().get_leaf_node(identities[node])
+            else:
+                built[(node, positive)] = writable().get_operator(negation)(node)
+            continue
+        if operation not in dual and operation != negation:
+            raise ValueError(
+                f"'{operation}' is not a connective of '{BOOLEAN.name}'; only "
+                f"'{product}', '{sum_}' and '{negation}' are."
+            )
+        if (
+            operation == negation
+            and positive
+            and atom(below[0])
+            and below[0] not in identities
+        ):
+            built[(node, positive)] = node
+            continue
+        polarity = not positive if operation == negation else positive
+        if not ready:
+            stack.append((node, positive, True))
+            stack.extend((operand, polarity, False) for operand in below)
+            continue
+        rewritten = [built[(operand, polarity)] for operand in below]
+        if operation == negation:
+            built[(node, positive)] = rewritten[0]
+        elif positive and rewritten == list(below):
+            built[(node, positive)] = node
+        else:
+            connective = operation if positive else dual[operation]
+            built[(node, positive)] = writable().get_operator(connective)(*rewritten)
+    normal: dict[int, Symbol] = {}
+    for root, name in roots.items():
+        node = built[(root, True)]
+        if node in normal:
+            node = writable().get_operator(product)(node)
+        normal[node] = name
+    return target, normal

@@ -13,7 +13,7 @@ ML practitioner path
 
    .. rst-class:: dl-section__lead
 
-      Use DeepLog Modules, shapes, and the formula parser to plug symbolic constraints into PyTorch pipelines without changing your modeling stack. Start with runnable cells and ship the first constraint-driven model quickly.
+      Use DeepLog Modules, shapes, and the formula parser to plug symbolic constraints into PyTorch training code without changing your modeling stack. Start with runnable cells and ship the first constraint-driven model quickly.
 
 .. rst-class:: dl-section__switch
 
@@ -23,7 +23,7 @@ ML practitioner path
    :caption: ML practitioner path
    :hidden:
 
-   paths/ml/shape
+   paths/ml/symbols_and_shapes
    paths/ml/deeplogmodule
    paths/ml/formula_to_module
    paths/ml/semantic_loss
@@ -47,13 +47,13 @@ ML practitioner path
 
    .. rubric:: Guided notebook flow
 
-   #. :doc:`Shapes <paths/ml/shape>` (⏱️ 10–15 min)
+   #. :doc:`Symbols and shapes <paths/ml/symbols_and_shapes>` (⏱️ 10 min)
 
-      Learn how shapes encode symbolic structure and how transformations are constructed automatically.
+      Name the entries of a tensor with symbols, and read a tensor back by those names.
 
    #. :doc:`DeepLog Module <paths/ml/deeplogmodule>` (⏱️ 10 min)
 
-      Run a minimal :class:`~deeplog.module.deeplog_module.DeepLogModule`, see input/output shapes, and understand how shape validation guards your pipeline.
+      Run a minimal :class:`~deeplog.module.deeplog_module.DeepLogModule`, see input/output shapes, and understand how shape validation guards your training code.
 
    #. :doc:`From Formulas to Modules <paths/ml/formula_to_module>` (⏱️ 10–20 min)
 

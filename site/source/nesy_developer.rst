@@ -23,11 +23,10 @@ NeSy developer path
    :caption: NeSy developer path
    :hidden:
 
-   paths/nesy/symbol
-   paths/nesy/shape
+   paths/nesy/symbols_and_shapes
    paths/nesy/predicates
-   paths/nesy/01_aggregation_basics
-   paths/nesy/03_free_variables_and_batching
+   paths/nesy/aggregation_basics
+   paths/nesy/free_variables_and_batching
    paths/nesy/formula_to_module
    paths/nesy/problog
    paths/nesy/deepproblog
@@ -51,23 +50,19 @@ NeSy developer path
 
    .. rubric:: Guided notebook flow
 
-   #. :doc:`Symbols <paths/nesy/symbol>` (⏱️ 10 min)
+   #. :doc:`Symbols and shapes <paths/nesy/symbols_and_shapes>` (⏱️ 10 min)
 
-      Define symbols and understand how they anchor symbolic layouts.
-
-   #. :doc:`Shapes <paths/nesy/shape>` (⏱️ 10–15 min)
-
-      Work with symbolic shapes and reshape paths.
+      Name terms, atoms and their algebras with symbols, and the entries of a tensor with a SymTensor.
 
    #. :doc:`DeepLog Predicates <paths/nesy/predicates>` (⏱️ 15–20 min)
 
       Connect symbolic atoms to executable tensor operations.
 
-   #. :doc:`Aggregation basics <paths/nesy/01_aggregation_basics>` (⏱️ 10 min)
+   #. :doc:`Aggregation basics <paths/nesy/aggregation_basics>` (⏱️ 10 min)
 
-      Learn the core aggregation syntax, domain enumeration, and module construction mechanics.
+      Learn the core aggregation syntax, domain enumeration, and expectations under a distribution.
 
-   #. :doc:`Free variables and batching <paths/nesy/03_free_variables_and_batching>` (⏱️ 10 min)
+   #. :doc:`Free variables and batching <paths/nesy/free_variables_and_batching>` (⏱️ 10 min)
 
       Free variables become module inputs.
 

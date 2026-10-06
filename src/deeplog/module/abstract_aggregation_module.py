@@ -7,10 +7,7 @@ import torch
 
 from ..shape import Shape
 from ..shape import SymTensor
-from ..shape import map_shape
 from ..symbol import Symbol
-from ..symbol import retag
-from ..symbol import without_structure
 from ..util import broadcast_tensors
 from .deeplog_module import DeepLogModule
 
@@ -27,17 +24,6 @@ class AbstractAggregationModule(DeepLogModule, ABC):
             raise ValueError("Aggregation requires at least one binder.")
         if len(variables) != len(domains):
             raise ValueError("Each variable needs a matching domain.")
-
-    @staticmethod
-    def _binder_output_shape(
-        name: str, variables: list[Symbol], child_output_shape: Shape
-    ) -> Shape:
-        """Wrap child output shape with the aggregation binder symbol."""
-        binder_symbol = ("binders", *variables)
-        return map_shape(
-            lambda x: retag((name, binder_symbol, without_structure(x)), x),
-            child_output_shape,
-        )
 
     @staticmethod
     def _remaining_input_shape(

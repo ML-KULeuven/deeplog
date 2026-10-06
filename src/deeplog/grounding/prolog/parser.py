@@ -13,7 +13,6 @@ from typing import cast
 from deeplog.symbol import Symbol
 from deeplog.symbol import get_term_variables
 from deeplog.symbol import parse_symbol
-from deeplog.symbol import split_list
 from deeplog.util import bracket_aware_split
 
 from .program import RuleType
@@ -113,6 +112,20 @@ def str_to_rules(code: str) -> Iterable[RuleType]:
     """Parse a plain-Prolog program; clauses may share a line."""
     for clause in iter_clauses(code):
         yield str_to_rule(clause)
+
+
+def split_list(term: Symbol) -> tuple[list[Symbol], Symbol]:
+    """Return the elements of the list ``term`` and the tail they end in.
+
+    A list is a ``cons``/``nil`` chain, so ``[a, b]`` is ``([a, b], nil)``,
+    ``[a | T]`` is ``([a], T)``, and a term that is not a list is
+    ``([], term)``.
+    """
+    elements: list[Symbol] = []
+    while len(term) == 3 and term[0] == "cons":
+        elements.append(term[1])
+        term = term[2]
+    return elements, term
 
 
 def symbol_to_prolog_str(symbol: Symbol) -> str:

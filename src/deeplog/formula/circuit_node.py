@@ -12,25 +12,40 @@ from collections.abc import Callable
 from collections.abc import Mapping
 from typing import cast
 
+from torch import Tensor
+
 from ..algebraic import AlgebraicStructure
 from ..circuit.circuit import Circuit
-from ..module import ColumnwiseModule
-from ..module import DeepLogModule
+from ..circuit.transform import transform_circuit
+from ..module.columnwise import ColumnwiseModule
+from ..module.deeplog_module import DeepLogModule
 from ..symbol import Symbol
 from ..symbol import with_structure
 from .ast import CircuitNode
 
 
 def lump_name(node: CircuitNode) -> Symbol:
-    """The name a lump is compiled under: its node id in its circuit.
+    """The name a lump's value is compiled under: its node id in its circuit.
 
-    Bare, because :func:`deeplog.circuit.lower.to_module` labels every root it
-    compiles with the circuit's own algebra. A site that has to *match* that
-    label -- a cast leaf, an expectation leaf -- wraps this with the circuit's
-    structure; let the two spellings drift apart and the leaf silently becomes an
-    external input instead of being fed.
+    Labelled with the circuit's algebra, as
+    :func:`~deeplog.circuit.lower.dispatch.to_module` labels every root it
+    compiles.
     """
-    return (f"{node.circuit.name}_n{node.node}",)
+    return with_structure((f"{node.circuit.name}_n{node.node}",), node.structure)
+
+
+def cast_name(structure: str, source: Symbol) -> Symbol:
+    """The name of the value named ``source``, cast into ``structure``.
+
+    Construction names a cast's leaf with it and lowering names the cast's
+    column with it, so the column feeds the leaf.
+    """
+    return with_structure(("transform", (structure,), source), structure)
+
+
+def _columns(columns: Tensor) -> Tensor:
+    """``columns`` as they are."""
+    return columns
 
 
 def _single_circuit(nodes: tuple[CircuitNode, ...]) -> Circuit:
@@ -52,9 +67,10 @@ def transform_nodes(
 ) -> tuple[CircuitNode, ...]:
     """Transform one or more co-resident ``CircuitNode`` roots."""
     circuit = _single_circuit(nodes)
-    new_circuit, node_map = circuit.transform(
-        [n.node for n in nodes],
+    new_circuit, node_map = transform_circuit(
+        circuit,
         target_structure,
+        [n.node for n in nodes],
         operator_mapping=operator_mapping,
         leaf_mapping=leaf_mapping,
     )
@@ -106,7 +122,7 @@ def to_module(
     structure = circuit.structure.name
     compiled = tuple(with_structure(roots[n.node], structure) for n in node_roots)
     return ColumnwiseModule(
-        lambda columns: columns,
+        _columns,
         module,
         compiled,
         names=tuple(with_structure(name, structure) for name in names),

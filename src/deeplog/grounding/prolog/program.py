@@ -73,11 +73,6 @@ def is_query(symbol: Symbol) -> bool:
     return len(symbol) == 3 and symbol[0] == "?-" and symbol[1] == FalseSymbol
 
 
-def create_constraint(body_atoms: list[str] | list[Symbol]) -> RuleType:
-    """Create an integrity constraint ``false :- b1 , ... , bm``."""
-    return create_rule([], body_atoms)
-
-
 def is_constraint(symbol: Symbol) -> bool:
     """Return true if ``symbol`` is a rule with a false head."""
     return is_rule(symbol) and symbol[1] == FalseSymbol

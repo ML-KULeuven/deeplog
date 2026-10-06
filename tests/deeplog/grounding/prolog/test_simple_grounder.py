@@ -2,27 +2,21 @@
 """Plain-Prolog grounder tests — zero ProbLog / probability involvement.
 
 These pin down the grounder contract in isolation: it takes a plain program, a
-goal, a :class:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory`,
-and a set of *open* predicates, and returns a boolean proof structure per ground
-answer. Open-predicate facts become leaf atoms; every other fact collapses to
-``true``. No ``::``, no labels, no annotated disjunctions.
-
-The factory is :class:`~deeplog.formula.ast_factory.AstFactory`, so each proof
-is asserted as the formula the grounder built rather than as its rendering.
+goal and a set of *open* predicates, and returns a boolean proof formula per
+ground answer. Open-predicate facts become leaf atoms; every other fact collapses
+to ``true``. No ``::``, no labels, no annotated disjunctions.
 """
 
 import math
 
 import pytest
 
+from deeplog import Atom
+from deeplog import BinaryOp
 from deeplog.algebraic import BOOLEAN
-from deeplog.formula import AstFactory
-from deeplog.formula import Atom
-from deeplog.formula import BinaryOp
-from deeplog.formula import SymbolicFormulaFactory
-from deeplog.grounding import JanusGrounder
-from deeplog.grounding import SimpleGrounder
-from deeplog.grounding import UnknownPredicateException
+from deeplog.grounding.prolog import JanusGrounder
+from deeplog.grounding.prolog import SimpleGrounder
+from deeplog.grounding.prolog import UnknownPredicateException
 from deeplog.grounding.prolog import str_to_rules
 from deeplog.symbol import is_variable
 from deeplog.symbol import parse_symbol
@@ -45,9 +39,7 @@ def _grounders():
 def test_open_fact_becomesleaf(grounder):
     """An open predicate's fact is emitted as a boolean leaf atom."""
     program = tuple(str_to_rules("a.\nq :- a.\n?- q."))
-    result = grounder.ground(
-        program, parse_symbol("q"), AstFactory(), open_predicates={("a", 0)}
-    )
+    result = grounder.ground(program, parse_symbol("q"), open_predicates={("a", 0)})
     assert result == {("q",): leaf("a")}
 
 
@@ -56,9 +48,7 @@ def test_closed_fact_collapses_to_true(grounder):
     """A closed (non-open) fact contributes ``true`` and folds away."""
     program = tuple(str_to_rules("a.\nb.\nq :- a, b.\n?- q."))
     # `a` is open (a leaf), `b` is closed (true) → q's proof is just the a-leaf.
-    result = grounder.ground(
-        program, parse_symbol("q"), AstFactory(), open_predicates={("a", 0)}
-    )
+    result = grounder.ground(program, parse_symbol("q"), open_predicates={("a", 0)})
     assert result == {("q",): leaf("a")}
 
 
@@ -66,9 +56,7 @@ def test_closed_fact_collapses_to_true(grounder):
 def test_explicit_true_goal_is_the_identity_of_conjunction(grounder):
     """``true`` in a body contributes nothing; it must not zero the conjunction."""
     program = tuple(str_to_rules("a.\nq :- true, a.\n?- q."))
-    result = grounder.ground(
-        program, parse_symbol("q"), AstFactory(), open_predicates={("a", 0)}
-    )
+    result = grounder.ground(program, parse_symbol("q"), open_predicates={("a", 0)})
     assert result == {("q",): leaf("a")}
 
 
@@ -79,7 +67,6 @@ def test_disjunction_over_clauses(grounder):
     result = grounder.ground(
         program,
         parse_symbol("q"),
-        AstFactory(),
         open_predicates={("a", 0), ("b", 0)},
     )
     assert set(operands(result[("q",)], "or")) == {leaf("a"), leaf("b")}
@@ -92,7 +79,6 @@ def test_variable_query_enumerates_answers(grounder):
     result = grounder.ground(
         program,
         parse_symbol("p(X)"),
-        AstFactory(),
         open_predicates={("p", 1)},
     )
     assert set(result.keys()) == {("p", ("1",)), ("p", ("2",))}
@@ -102,7 +88,7 @@ def test_variable_query_enumerates_answers(grounder):
 def test_default_open_set_is_empty(grounder):
     """With no open predicates every fact is closed → the proof is ``true``."""
     program = tuple(str_to_rules("a.\nq :- a.\n?- q."))
-    result = grounder.ground(program, parse_symbol("q"), AstFactory())
+    result = grounder.ground(program, parse_symbol("q"))
     # No leaves at all: q reduces to the boolean-true constant atom, which bakes
     # to 1 downstream.
     assert result == {("q",): TRUE}
@@ -112,7 +98,7 @@ def test_default_open_set_is_empty(grounder):
 def test_unknown_predicate_raises(grounder):
     program = tuple(str_to_rules("?- missing."))
     with pytest.raises(UnknownPredicateException):
-        grounder.ground(program, parse_symbol("missing"), AstFactory())
+        grounder.ground(program, parse_symbol("missing"))
 
 
 @pytest.mark.parametrize("grounder", _grounders())
@@ -124,7 +110,6 @@ def test_builtin_binds_and_never_leaks_aleaf(grounder):
     result = grounder.ground(
         program,
         parse_symbol("r(X)"),
-        AstFactory(),
         open_predicates={("p", 1)},
     )
     assert set(result.keys()) == {("r", ("0",)), ("r", ("1",)), ("r", ("2",))}
@@ -140,7 +125,6 @@ def test_open_predicate_defined_by_rule(grounder):
     result = grounder.ground(
         program,
         parse_symbol("q(X)"),
-        AstFactory(),
         open_predicates={("a", 1)},
     )
     assert result == {
@@ -156,7 +140,6 @@ def test_open_rule_body_conjoins_withleaf(grounder):
     result = grounder.ground(
         program,
         parse_symbol("q(X)"),
-        AstFactory(),
         open_predicates={("a", 1), ("b", 1)},
     )
     assert result == {("q", ("0",)): BinaryOp("and", leaf("a(0)"), leaf("b(0)"))}
@@ -170,7 +153,6 @@ def test_open_rule_nonground_head_raises(grounder):
         grounder.ground(
             program,
             parse_symbol("q"),
-            AstFactory(),
             open_predicates={("a", 1)},
         )
 
@@ -188,7 +170,7 @@ def test_recursive_rules_reach_every_answer(grounder):
             """
         )
     )
-    result = grounder.ground(program, parse_symbol("connected(X,Y)"), AstFactory())
+    result = grounder.ground(program, parse_symbol("connected(X,Y)"))
     connected = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3)]
     assert set(result) == {("connected", (str(x),), (str(y),)) for x, y in connected}
 
@@ -196,7 +178,7 @@ def test_recursive_rules_reach_every_answer(grounder):
 @pytest.mark.parametrize("grounder", _grounders())
 def test_answer_substitutes_through_nested_terms(grounder):
     program = tuple(str_to_rules("fact(t(1,2,X), t(2,1,X))."))
-    result = grounder.ground(program, parse_symbol("fact(t(1,2,3), Z)"), AstFactory())
+    result = grounder.ground(program, parse_symbol("fact(t(1,2,3), Z)"))
     assert set(result) == {
         ("fact", ("t", ("1",), ("2",), ("3",)), ("t", ("2",), ("1",), ("3",)))
     }
@@ -214,7 +196,7 @@ def test_added_builtin_binds_its_arguments(grounder):
             yield {}
 
     grounder.add_builtin("square", 2, square)
-    result = grounder.ground((), parse_symbol("square(2,X)"), AstFactory())
+    result = grounder.ground((), parse_symbol("square(2,X)"))
     assert result == {parse_symbol("square(2,4)"): TRUE}
 
 
@@ -237,12 +219,10 @@ def test_a_builtin_belongs_to_the_grounder_that_added_it(grounder_type):
     with_square.add_builtin("square", 2, square)
 
     with pytest.raises(UnknownPredicateException):
-        without.ground(program, goal, AstFactory())
-    assert set(with_square.ground(program, goal, AstFactory())) == {
-        parse_symbol("q(9)")
-    }
+        without.ground(program, goal)
+    assert set(with_square.ground(program, goal)) == {parse_symbol("q(9)")}
     with pytest.raises(UnknownPredicateException):
-        without.ground(program, goal, AstFactory())
+        without.ground(program, goal)
 
 
 @pytest.mark.parametrize("grounder", _grounders())
@@ -259,42 +239,11 @@ def test_list_terms_unify_through_rules(grounder):
     abc = ("cons", ("a",), ("cons", ("b",), ("cons", ("c",), ("nil",))))
     bc = abc[2]
 
-    heads = grounder.ground(program, parse_symbol("head([a,b,c], H)"), AstFactory())
-    tails = grounder.ground(program, parse_symbol("tail([a,b,c], T)"), AstFactory())
+    heads = grounder.ground(program, parse_symbol("head([a,b,c], H)"))
+    tails = grounder.ground(program, parse_symbol("tail([a,b,c], T)"))
 
     assert set(heads) == {("head", abc, ("a",))}
     assert set(tails) == {("tail", abc, bc)}
-
-
-@pytest.mark.skipif(not JanusGrounder.is_available(), reason="janus_swi not installed")
-def test_query_ignores_a_builder_an_earlier_query_left_behind():
-    """A query that ended early must not steer the next query's aggregation.
-
-    The Janus engine hands its tabled lattice aggregation a factory through a
-    global fact, since the aggregation's arity has no room for one, and a query
-    that ends early -- here, one that raises -- leaves that fact asserted. The
-    next query must still aggregate through its own builder. Only two runs with
-    *different* factories can tell the difference, and the fact is cleared first
-    so it is this leak being read, not one queued up by an earlier test.
-    """
-    import janus_swi as janus
-
-    janus.query_once("retractall(deeplog_janus_grounder:factory(_))")
-    grounder = JanusGrounder()
-    with pytest.raises(UnknownPredicateException):
-        grounder.ground(
-            tuple(str_to_rules("?- missing.")), parse_symbol("missing"), AstFactory()
-        )
-
-    program = tuple(str_to_rules("s :- m.\ns :- n.\nm.\nn.\n?- s."))
-    result = grounder.ground(
-        program,
-        parse_symbol("s"),
-        SymbolicFormulaFactory(),
-        open_predicates={("m", 0), ("n", 0)},
-    )
-
-    assert set(result[("s",)].split(" or ")) == {"m_boolean", "n_boolean"}
 
 
 def test_a_goal_that_calls_itself_says_so():
@@ -308,25 +257,33 @@ def test_a_goal_that_calls_itself_says_so():
         )
     )
     with pytest.raises(RecursionError, match="which is the same call"):
-        SimpleGrounder().ground(program, parse_symbol("edge(a,c)"), AstFactory())
+        SimpleGrounder().ground(program, parse_symbol("edge(a,c)"))
 
 
 def test_a_rule_that_calls_itself_says_so():
     program = tuple(str_to_rules("p :- p."))
     with pytest.raises(RecursionError, match="Proving p calls p"):
-        SimpleGrounder().ground(program, parse_symbol("p"), AstFactory())
+        SimpleGrounder().ground(program, parse_symbol("p"))
 
 
 def test_a_call_that_grows_its_term_is_proved():
     """Recursion that is not a variant of its caller terminates and is left alone."""
     program = tuple(str_to_rules("nat(0).\nnat(s(X)) :- nat(X)."))
-    result = SimpleGrounder().ground(
-        program, parse_symbol("nat(s(s(0)))"), AstFactory()
-    )
+    result = SimpleGrounder().ground(program, parse_symbol("nat(s(s(0)))"))
     assert set(result) == {("nat", ("s", ("s", ("0",))))}
 
 
 def test_a_call_under_negation_is_checked_too():
     program = tuple(str_to_rules("q :- not(p).\np :- p."))
     with pytest.raises(RecursionError, match="Proving p calls p"):
-        SimpleGrounder().ground(program, parse_symbol("q"), AstFactory())
+        SimpleGrounder().ground(program, parse_symbol("q"))
+
+
+@pytest.mark.parametrize("grounder", _grounders())
+def test_an_answer_two_clauses_prove_is_proved_by_either(grounder):
+    """No proof of an answer is dropped: they are disjoined."""
+    program = tuple(str_to_rules("b.\nc.\na :- b.\na :- c.\n?- a."))
+    result = grounder.ground(
+        program, parse_symbol("a"), open_predicates={("b", 0), ("c", 0)}
+    )
+    assert result == {("a",): BinaryOp(BOOLEAN.sum, leaf("b"), leaf("c"))}

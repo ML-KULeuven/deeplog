@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tomllib
 from pathlib import Path
 
 
@@ -67,7 +68,8 @@ def rewrite_switchers(site_root: Path, base_url: str, root_ref: str) -> None:
 def main() -> None:
     """Rewrite switcher.json across the published site."""
     site_root = Path(os.environ["STATIC_SITE_DIR"])
-    base_url = os.environ["DOCS_BASE_URL"]
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    base_url = tomllib.loads(pyproject.read_text())["project"]["urls"]["Documentation"]
     root_ref = os.environ["SMV_ROOT_REF"]
     rewrite_switchers(site_root, base_url, root_ref)
 

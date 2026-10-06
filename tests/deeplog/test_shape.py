@@ -7,11 +7,11 @@ import torch
 from deeplog import ShapeMismatchException
 from deeplog import SymTensor
 from deeplog import get_all_symbols
-from deeplog import map_shape
-from deeplog import sole_structure
-from deeplog import structures
 from deeplog import to_dict
 from deeplog import with_structure
+from deeplog.shape import map_shape
+from deeplog.shape import sole_structure
+from deeplog.shape import structures
 
 
 a, b, c, d = ("a",), ("b",), ("c",), ("d",)

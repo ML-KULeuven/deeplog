@@ -1,5 +1,9 @@
 #  Copyright (c) 2024-2026. KU Leuven
-"""Public package surface for DeepLog."""
+"""DeepLog's public API: stating a model, compiling it, running it and extending it.
+
+The other public namespaces are :mod:`deeplog.circuit`, for algebraic circuits,
+and one package per grounder under :mod:`deeplog.grounding`.
+"""
 
 from .algebraic import BOOLEAN
 from .algebraic import LOGPROBABILITY
@@ -10,148 +14,137 @@ from .algebraic import Algebra
 from .algebraic import AlgebraicStructure
 from .algebraic import Semifield
 from .algebraic import Semiring
-from .algebraic import get_algebraic_structure
-from .algebraic import register_structure
-from .circuit import Circuit
-from .circuit import transform_circuit
-from .formula import AggregationBuilder
-from .formula import Arguments
-from .formula import AstFactory
-from .formula import AtomBuilder
-from .formula import CircuitFactory
-from .formula import CircuitNode
-from .formula import DeepLogFormulaFactory
-from .formula import DeepLogModuleFactory
-from .formula import EqualityPredicate
-from .formula import FormulaNode
-from .formula import LogProbabilityPredicate
-from .formula import NetworkPredicate
-from .formula import Predicate
-from .formula import ProbabilityPredicate
-from .formula import SumsPredicate
-from .formula import SymbolicFormulaFactory
-from .formula import TransformationBuilder
-from .formula import get_network_predicate
-from .formula import parse_dimacs_cnf
-from .formula import parse_formula
-from .formula import parse_formula_to_module
-from .formula import structure_of
-from .formula import to_module
-from .formula import transform_nodes
-from .formula import with_structure
-from .module import AggregationModule
-from .module import DeepLogModule
-from .module import ModuleCircuit
-from .module import Sequential
-from .module import SupportsToModule
-from .module import TransformationNotPossible
-from .module import WrappedModule
-from .module import compose_modules
-from .module import construct_transformation
-from .module import reshape
-from .module import simplify_module
+from .formula.ast import Aggregation
+from .formula.ast import Atom
+from .formula.ast import BinaryOp
+from .formula.ast import FormulaNode
+from .formula.ast import Transformation
+from .formula.ast import UnaryOp
+from .formula.dimacs_parser import parse_dimacs_cnf
+from .formula.lowering.builder_protocols import AggregationBuilder
+from .formula.lowering.builder_protocols import AtomBuilder
+from .formula.lowering.builder_protocols import DeclaresDomains
+from .formula.lowering.builder_protocols import TransformationBuilder
+from .formula.lowering.compiler import Compiler
+from .formula.lowering.expectation import enumeration
+from .formula.lowering.expectation import sampling
+from .formula.lowering.expectation import score_function
+from .formula.lowering.expectation import weighted_model_count
+from .formula.lowering.lowering import Lowering
+from .formula.lowering.reduction import reduction
+from .formula.predicates.builtin_predicates import EqualityPredicate
+from .formula.predicates.builtin_predicates import LogProbabilityPredicate
+from .formula.predicates.builtin_predicates import NetworkPredicate
+from .formula.predicates.builtin_predicates import ProbabilityPredicate
+from .formula.predicates.predicate import Predicate
+from .formula.text_parser_lark import parse_formula
+from .formula.text_parser_lark import parse_formula_to_module
+from .module.deeplog_module import DeepLogModule
+from .module.module_circuit import compose_modules
+from .module.reshape import TransformationNotPossible
+from .module.reshape import reshape
+from .module.sequential import Sequential
+from .module.wrappers import WrappedModule
 from .shape import Shape
 from .shape import ShapeMismatchException
 from .shape import SymbolDict
 from .shape import SymTensor
 from .shape import SymTensorLike
 from .shape import get_all_symbols
-from .shape import map_shape
-from .shape import sole_structure
-from .shape import structures
 from .shape import to_dict
 from .symbol import Symbol
 from .symbol import apply_substitution
+from .symbol import calculate_mgu
 from .symbol import flatten_symbol
 from .symbol import get_predicate
 from .symbol import get_term_variables
 from .symbol import is_variable
 from .symbol import parse_symbol
-from .symbol import split_list
+from .symbol import structure_of
 from .symbol import symbol_to_pretty_string
+from .symbol import symbol_to_str
 from .symbol import to_symbol
+from .symbol import with_structure
+from .symbol import without_structure
 from .variable import OPEN
 from .variable import Domain
-from .variable import SymbolicDomain
-from .variable import TensorDomain
 from .variable import Variable
 from .variable import VariableAtoms
 
 
 __all__ = [
-    "MPE",
-    "OPEN",
-    "REAL",
-    "AggregationBuilder",
-    "Arguments",
-    "AtomBuilder",
-    "DeepLogFormulaFactory",
-    "FormulaNode",
-    "NetworkPredicate",
-    "SupportsToModule",
-    "SymTensorLike",
-    "SymbolDict",
-    "TransformationBuilder",
-    "VariableAtoms",
-    "AggregationModule",
-    "Algebra",
-    "AlgebraicStructure",
-    "apply_substitution",
-    "BOOLEAN",
-    "Circuit",
-    "CircuitFactory",
-    "CircuitNode",
-    "compose_modules",
-    "construct_transformation",
-    "DeepLogModule",
-    "DeepLogModuleFactory",
-    "Domain",
-    "EqualityPredicate",
-    "flatten_symbol",
-    "get_algebraic_structure",
-    "get_all_symbols",
-    "sole_structure",
-    "structures",
-    "TensorDomain",
-    "Variable",
-    "get_network_predicate",
-    "get_predicate",
-    "structure_of",
-    "get_term_variables",
-    "is_variable",
-    "LOGPROBABILITY",
-    "LogProbabilityPredicate",
-    "map_shape",
-    "ModuleCircuit",
-    "parse_dimacs_cnf",
-    "parse_formula",
-    "parse_formula_to_module",
-    "PROBABILITY",
-    "Predicate",
-    "ProbabilityPredicate",
-    "reshape",
-    "register_structure",
-    "Semifield",
-    "Semiring",
-    "SymbolicDomain",
-    "Sequential",
-    "Shape",
-    "ShapeMismatchException",
-    "simplify_module",
-    "split_list",
-    "parse_symbol",
-    "SumsPredicate",
+    # Symbols
     "Symbol",
-    "SymbolicFormulaFactory",
-    "AstFactory",
+    "parse_symbol",
+    "symbol_to_str",
     "symbol_to_pretty_string",
-    "SymTensor",
-    "to_dict",
-    "to_module",
-    "to_symbol",
-    "transform_circuit",
-    "transform_nodes",
-    "TransformationNotPossible",
     "with_structure",
+    "structure_of",
+    "without_structure",
+    # Terms
+    "is_variable",
+    "get_predicate",
+    "get_term_variables",
+    "flatten_symbol",
+    "to_symbol",
+    "apply_substitution",
+    "calculate_mgu",
+    # Formulas
+    "FormulaNode",
+    "Atom",
+    "UnaryOp",
+    "BinaryOp",
+    "Transformation",
+    "Aggregation",
+    "parse_formula",
+    "parse_dimacs_cnf",
+    # Algebras
+    "AlgebraicStructure",
+    "Semiring",
+    "Semifield",
+    "Algebra",
+    "BOOLEAN",
+    "PROBABILITY",
+    "LOGPROBABILITY",
+    "REAL",
+    "MPE",
+    # What atoms mean
+    "Predicate",
+    "NetworkPredicate",
+    "EqualityPredicate",
+    "ProbabilityPredicate",
+    "LogProbabilityPredicate",
+    "AtomBuilder",
+    "DeclaresDomains",
+    # Domains and variables
+    "Domain",
+    "OPEN",
+    "Variable",
+    "VariableAtoms",
+    # Aggregations and casts
+    "AggregationBuilder",
+    "TransformationBuilder",
+    "Lowering",
+    "reduction",
+    "weighted_model_count",
+    "enumeration",
+    "sampling",
+    "score_function",
+    # Compiling
+    "Compiler",
+    "parse_formula_to_module",
+    # Modules
+    "DeepLogModule",
+    "SymTensor",
+    "SymTensorLike",
+    "Shape",
+    "SymbolDict",
+    "reshape",
+    "to_dict",
+    "get_all_symbols",
     "WrappedModule",
+    "compose_modules",
+    "Sequential",
+    "ShapeMismatchException",
+    "TransformationNotPossible",
 ]

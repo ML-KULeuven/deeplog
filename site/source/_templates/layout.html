@@ -1,0 +1,17 @@
+{%- extends "!layout.html" %}
+
+{#- The landing page's title names the project itself, so it takes no " — DeepLog". #}
+{%- block htmltitle %}
+{%- if pagename == root_doc %}
+<title>{{ title|striptags|e }}</title>
+{%- else %}
+{{ super() }}
+{%- endif %}
+{%- endblock htmltitle %}
+
+{%- block extrahead %}
+{{ super() }}
+{%- if pagename == root_doc %}
+<script type="application/ld+json">{{ structured_data|tojson }}</script>
+{%- endif %}
+{%- endblock extrahead %}

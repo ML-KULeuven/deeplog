@@ -1,16 +1,21 @@
 #  Copyright (c) 2024-2026. KU Leuven
-"""Tests for the compile_to_module pipeline."""
+"""Tests for compile_to_module."""
 
+import pytest
 import torch
 
-from deeplog.formula import DeepLogModuleFactory
-from deeplog.formula.circuit_factory import CircuitFactory
-from deeplog.grounding import SimpleGrounder
-from deeplog.grounding import str_to_rules
+from deeplog import Compiler
+from deeplog import Domain
+from deeplog import Predicate
+from deeplog import SymTensor
+from deeplog import enumeration
+from deeplog import reshape
+from deeplog import sampling
+from deeplog.grounding.prolog import SimpleGrounder
+from deeplog.grounding.prolog import str_to_rules
 from deeplog.shape import get_all_symbols
 from deeplog.systems.deepproblog import Solver
 from deeplog.systems.deepproblog import compile_to_module
-from deeplog.systems.deepproblog.compile import build_leaf_mapping
 from deeplog.util import as_tuple
 
 
@@ -30,11 +35,11 @@ def test_compile_produces_module():
         )
     )
 
-    # The engine builds each query's boolean circuit with a CircuitFactory; a
-    # separate DeepLogModuleFactory lowers those CircuitNodes to a module.
-    result = engine.get_query_result(program, CircuitFactory())
+    # The engine grounds each query to a boolean formula; compile_to_module
+    # lifts it to an expectation and the Compiler constructs and lowers it.
+    result = engine.get_query_result(program)
 
-    module = compile_to_module(result, DeepLogModuleFactory())
+    module = compile_to_module(result, Compiler())
     assert module is not None
 
     output_symbols = list(module.get_output_shape())
@@ -53,31 +58,34 @@ def test_multiple_atoms_share_arguments():
     """)
     )
 
-    result = engine.get_query_result(program, CircuitFactory())
+    result = engine.get_query_result(program)
 
-    module = compile_to_module(result, DeepLogModuleFactory())
-    assert module is not None
+    module = reshape(
+        compile_to_module(result, Compiler()),
+        input=SymTensor(
+            [("_", (name, ("x1",)), ("probability",)) for name in ("nn1", "nn2")]
+        ),
+    )
+
+    # Each atom reads its own label: P(c) = P(a) * P(b).
+    torch.testing.assert_close(
+        module(torch.tensor([[0.8, 0.5]])), torch.tensor([[0.4]])
+    )
 
 
-def test_compile_transforms_boolean_lump_to_probability():
-    """compile_to_module routes each boolean lump through the WMC transform.
+def test_compile_transforms_a_boolean_formula_to_probability():
+    """compile_to_module counts each boolean formula into probability.
 
     The result is a probability-backed module (the structural guarantee that
     replaces the old per-call ``create_aggregation`` routing and its runtime
     non-probability check).
     """
-    from deeplog.formula.ast import FormulaNode
+    from deeplog import Atom
     from deeplog.systems.deepproblog import EngineResult
 
-    # The engine result is a boolean CircuitNode lump (built with a
-    # CircuitFactory); compile_to_module transforms it to probability in a
-    # single batch and lowers it with a DeepLogModuleFactory.
-    result: EngineResult[FormulaNode] = EngineResult(
-        formulas={("a",): CircuitFactory().create_atom(("_", ("a",), ("boolean",)))},
-        labels={},
-    )
+    result = EngineResult(formulas={("a",): Atom(("_", ("a",), ("boolean",)))})
 
-    module = compile_to_module(result, DeepLogModuleFactory())
+    module = compile_to_module(result, Compiler())
     assert len(list(module.get_output_shape())) == 1
 
 
@@ -101,8 +109,8 @@ def test_numeric_constants_are_baked_not_inputs():
         """
         )
     )
-    result = engine.get_query_result(program, CircuitFactory())
-    module = compile_to_module(result, DeepLogModuleFactory())
+    result = engine.get_query_result(program)
+    module = compile_to_module(result, Compiler())
 
     # Every leaf was a numeric constant, so nothing remains a runtime input --
     # not even the empty channel, since there is no tensor to declare.
@@ -131,8 +139,8 @@ def test_constants_bake_but_neural_labels_stay_inputs():
         """
         )
     )
-    result = engine.get_query_result(program, CircuitFactory())
-    module = compile_to_module(result, DeepLogModuleFactory())
+    result = engine.get_query_result(program)
+    module = compile_to_module(result, Compiler())
 
     inputs = list(get_all_symbols(module.get_input_shape()))
     # The constant `a` is baked away; the neural leaf `nn1(x1)` stays an input.
@@ -166,8 +174,8 @@ def test_baked_module_is_called_with_no_inputs():
         """
         )
     )
-    result = engine.get_query_result(program, CircuitFactory())
-    module = compile_to_module(result, DeepLogModuleFactory())
+    result = engine.get_query_result(program)
+    module = compile_to_module(result, Compiler())
 
     assert list(get_all_symbols(module.get_input_shape())) == []
     out = module()  # no inputs at all — not even the empty (batch, 0) channel
@@ -194,69 +202,189 @@ def test_compile_multiple_queries():
         )
     )
 
-    # Both queries' (structurally identical) proofs co-reside in one boolean
-    # source circuit (built with a CircuitFactory), and stay two distinct outputs.
-    result = engine.get_query_result(program, CircuitFactory())
+    # Both queries' (structurally identical) proofs stay two distinct outputs.
+    result = engine.get_query_result(program)
 
     assert len(result.formulas) == 2
-    module = compile_to_module(result, DeepLogModuleFactory())
+    module = compile_to_module(result, Compiler())
     assert module is not None
 
     output_symbols = list(module.get_output_shape())
     assert len(output_symbols) == 2
 
 
-def test_leaf_mapping_maps_a_labeled_atom_to_its_probability_label():
-    labels = {
-        ("digit", ("i1",), ("0",)): ("classifier", ("i1",), ("0",)),
-        ("digit", ("i1",), ("1",)): ("classifier", ("i1",), ("1",)),
-    }
-    mapping = build_leaf_mapping(labels)
-    assert mapping(("digit", ("i1",), ("0",))) == (
-        "_",
-        ("classifier", ("i1",), ("0",)),
-        ("probability",),
-    )
-    assert mapping(("digit", ("i1",), ("1",))) == (
-        "_",
-        ("classifier", ("i1",), ("1",)),
-        ("probability",),
-    )
+class _Constant(Predicate):
+    """``nn1(X)`` in probability, 0.25 for every ``X``."""
+
+    def __init__(self, atoms):
+        super().__init__(atoms, (Domain.of_values(),))
+
+    def resolve_argument(self, symbol, index):
+        return 0.0
+
+    def forward_predicate(self, x):
+        return torch.full(x.shape[:1], 0.25)
 
 
-def test_leaf_mapping_keeps_atoms_sharing_arguments_apart():
-    """a(x1) and b(x1) share arguments; the labels disambiguate them.
+def test_a_label_naming_an_atom_with_a_builder_is_its_value():
+    """A label is an atom's value: computed by its builder when there is one."""
+    program = tuple(str_to_rules("nn1(x1) :: a(x1).\n?- a(x1)."))
+    result = Solver(SimpleGrounder()).get_query_result(program)
 
-    A by-arguments heuristic cannot resolve this — both atoms and both
-    labels collide on arguments alone — but the label map is exact.
-    """
-    labels = {
-        ("a", ("x1",)): ("nn1", ("x1",)),
-        ("b", ("x1",)): ("nn2", ("x1",)),
-    }
-    mapping = build_leaf_mapping(labels)
-    assert mapping(("a", ("x1",))) == (
-        "_",
-        ("nn1", ("x1",)),
-        ("probability",),
-    )
-    assert mapping(("b", ("x1",))) == (
-        "_",
-        ("nn2", ("x1",)),
-        ("probability",),
+    module = compile_to_module(
+        result, Compiler(atom_builders={("nn1", 1, "probability"): _Constant})
     )
 
+    assert list(get_all_symbols(module.get_input_shape())) == []
+    torch.testing.assert_close(module(), torch.tensor([[0.25]]))
 
-def test_leaf_mapping_retags_an_unlabeled_leaf_to_probability():
-    mapping = build_leaf_mapping({("a", ("x1",)): ("nn1", ("x1",))})
-    # An unlabeled boolean leaf keeps its atom, retagged as probability.
-    assert mapping(("fact", ("y",))) == (
-        "_",
-        ("fact", ("y",)),
-        ("probability",),
+
+def test_an_unlabelled_atom_weighs_by_its_own_value_in_probability():
+    """An atom without a label is a fact whose probability is supplied, as itself."""
+    from deeplog import Atom
+    from deeplog.systems.deepproblog import EngineResult
+
+    result = EngineResult(formulas={("a",): Atom(("_", ("a",), ("boolean",)))})
+
+    module = compile_to_module(result, Compiler())
+
+    assert list(get_all_symbols(module.get_input_shape())) == [
+        ("_", ("a",), ("probability",))
+    ]
+    torch.testing.assert_close(module(torch.tensor([[0.3]])), torch.tensor([[0.3]]))
+
+
+def test_a_random_atom_whose_predicate_has_a_builder_is_refused():
+    """The program's labels are its random atoms' labelling function; a caller's
+    builder for the same predicate would be a second one."""
+    program = tuple(str_to_rules("0.5::a(x1).\n?- a(x1)."))
+    result = Solver(SimpleGrounder()).get_query_result(program)
+
+    with pytest.raises(ValueError, match="already registered for a/2"):
+        compile_to_module(
+            result, Compiler(atom_builders={("a", 2, "probability"): _Constant})
+        )
+
+
+_ALARM = """
+0.1::burglary. 0.2::earthquake.
+0.3::c(1); 0.5::c(2); 0.2::c(3).
+alarm :- burglary. alarm :- earthquake, c(2).
+?- alarm.
+"""
+
+
+def test_every_value_of_a_disjunction_is_labelled():
+    """The proofs reach ``c(2)`` alone, yet its variable ranges over all three."""
+    result = Solver(SimpleGrounder()).get_query_result(tuple(str_to_rules(_ALARM)))
+
+    assert {("c", ("1",)), ("c", ("3",))} <= result.labels.keys()
+
+
+@pytest.mark.parametrize(
+    "builder", [enumeration, sampling(20_000)], ids=["enumeration", "sampling"]
+)
+def test_a_disjunction_the_proofs_reach_in_part_is_weighed_whole(builder):
+    """Enumerating or sampling reads every value's label, reached or not."""
+    torch.manual_seed(0)
+    result = Solver(SimpleGrounder()).get_query_result(tuple(str_to_rules(_ALARM)))
+
+    module = compile_to_module(
+        result, Compiler(aggregation_builders={"expectation": builder})
+    )
+
+    assert module.get_input_shape() == ()
+    # 0.1 + 0.9 * 0.2 * 0.5
+    torch.testing.assert_close(module(), torch.tensor([[0.19]]), atol=0.01, rtol=0)
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [None, enumeration, sampling(40_000)],
+    ids=["counted", "enumeration", "sampling"],
+)
+def test_a_disjunction_whose_labels_sum_below_one_may_choose_no_branch(builder):
+    """``0.2::c(r); 0.5::c(g).`` leaves 0.3 to neither, where ``c(r)`` is false."""
+    torch.manual_seed(0)
+    program = "0.2::c(r); 0.5::c(g). q :- not(c(r)). ?- q."
+    result = Solver(SimpleGrounder()).get_query_result(tuple(str_to_rules(program)))
+    builders = {} if builder is None else {"expectation": builder}
+
+    module = compile_to_module(result, Compiler(aggregation_builders=builders))
+
+    torch.testing.assert_close(module(), torch.tensor([[0.8]]), atol=0.01, rtol=0)
+
+
+def test_a_program_predicate_shadows_a_default_builder():
+    """``0.3::p(a).`` extends ``p/1`` to ``p/2``, the default ``p`` builder's key."""
+    program = "0.3::p(a). q :- p(a). ?- q."
+    result = Solver(SimpleGrounder()).get_query_result(tuple(str_to_rules(program)))
+
+    torch.testing.assert_close(
+        compile_to_module(result, Compiler())(), torch.tensor([[0.3]])
     )
 
 
-def test_leaf_mapping_without_labels_retags_everything():
-    mapping = build_leaf_mapping({})
-    assert mapping(("a",)) == ("_", ("a",), ("probability",))
+def test_a_compiled_program_saves_and_loads(tmp_path):
+    result = Solver(SimpleGrounder()).get_query_result(tuple(str_to_rules(_ALARM)))
+    module = compile_to_module(result, Compiler())
+
+    torch.save(module, tmp_path / "module.pt")
+
+    torch.testing.assert_close(
+        torch.load(tmp_path / "module.pt", weights_only=False)(), module()
+    )
+
+
+_CONSTRAINED = """
+0.3::a. 0.6::b. 0.2::c(1); 0.5::c(2); 0.3::c(3).
+x :- a, c(1). x :- b, c(2). y :- a; b.
+:- a, b.
+?- x. ?- y. ?- c(2).
+"""
+
+
+@pytest.mark.parametrize(
+    "builder", [enumeration, sampling(40_000)], ids=["enumeration", "sampling"]
+)
+def test_a_constraint_over_several_atoms_is_enumerated_and_sampled(builder):
+    """The evidence ``not(a and b)`` negates a conjunction, which Klay could not."""
+    torch.manual_seed(0)
+    result = Solver(SimpleGrounder()).get_query_result(
+        tuple(str_to_rules(_CONSTRAINED))
+    )
+
+    counted = compile_to_module(result, Compiler())()
+    other = compile_to_module(
+        result, Compiler(aggregation_builders={"expectation": builder})
+    )()
+
+    torch.testing.assert_close(other, counted, atol=0.02, rtol=0)
+
+
+def test_a_program_is_counted(monkeypatch):
+    """The labelling declares each variable's domain, so counting reads its values."""
+    pytest.importorskip("pymvsdd")
+    import deeplog.circuit.knowledge_compilation.mvsdd as mvsdd
+    import deeplog.circuit.knowledge_compilation.sdd as sdd
+
+    calls = []
+    for module, name in [(sdd, "compile_sdd"), (mvsdd, "compile_mvsdd")]:
+        original = getattr(module, name)
+        monkeypatch.setattr(
+            module,
+            name,
+            lambda *args, original=original, **kwargs: (
+                calls.append(1) or original(*args, **kwargs)
+            ),
+        )
+    program = str_to_rules(
+        "0.6::burglary.\n0.3::earthquake.\nalarm :- burglary.\n"
+        "alarm :- earthquake.\n?- alarm."
+    )
+    result = Solver(SimpleGrounder()).get_query_result(program)
+
+    module = compile_to_module(result, Compiler())
+
+    assert calls == [1]
+    torch.testing.assert_close(module(), torch.tensor([[1 - 0.4 * 0.7]]))

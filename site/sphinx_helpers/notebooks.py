@@ -12,13 +12,12 @@ import nbformat
 #  Copyright (c) 2024-2026. KU Leuven
 
 _PATH_STEPS = {
-    "ml": ["shape", "deeplogmodule", "formula_to_module", "semantic_loss"],
+    "ml": ["symbols_and_shapes", "deeplogmodule", "formula_to_module", "semantic_loss"],
     "nesy": [
-        "symbol",
-        "shape",
+        "symbols_and_shapes",
         "predicates",
-        "01_aggregation_basics",
-        "03_free_variables_and_batching",
+        "aggregation_basics",
+        "free_variables_and_batching",
         "formula_to_module",
         "problog",
         "deepproblog",

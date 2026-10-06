@@ -46,31 +46,18 @@ automatically, but the low-level API is available when you need full control.
 written — its operators mean what the structure's ``operator_fns`` say they
 mean.
 
-CircuitNode
-~~~~~~~~~~~
-
-:class:`~deeplog.formula.CircuitNode` wraps a node ID together with its circuit.
-Use the companion free functions to compile or transform one or more nodes:
-
-.. code-block:: python
-
-   from deeplog.formula import CircuitNode, to_module
-
-   node = CircuitNode(circuit, or_node)
-   module = to_module(node, names=(("or_root",),))
-
-   # Convert multiple nodes at once
-   module = to_module(node_a, node_b, names=(("a",), ("b",)))
-
 Circuit transformation
 ----------------------
 
 .. versionadded:: 2.2.0
 
 The ``transform_circuit`` function converts a circuit from one algebraic structure to
-another by rebuilding each node with the target structure's operators. This is
-the mechanism behind the ``expectation`` aggregation operator, which transforms
-boolean proof circuits into the probability semiring.
+another by rebuilding each node with the target structure's operators. The map
+is exact only insofar as the source's operators mean in the target what they
+meant in the source: reading a boolean ``or`` as a semiring sum needs a
+deterministic, decomposable circuit, which is what
+:func:`~deeplog.circuit.knowledge_compilation.dispatch.knowledge_compile`
+produces.
 
 Basic usage
 ~~~~~~~~~~~
@@ -78,7 +65,6 @@ Basic usage
 .. code-block:: python
 
    from deeplog.circuit import Circuit, transform_circuit
-   from deeplog.formula import CircuitNode
 
    # Build a boolean circuit
    bool_circuit = Circuit("boolean")
@@ -144,44 +130,25 @@ distinguish boolean atoms from their probability counterparts:
        leaf_mapping=bool_to_prob,
    )
 
-Batch transformation with transform_nodes
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Several roots at once
+~~~~~~~~~~~~~~~~~~~~~
 
-:func:`~deeplog.formula.transform_nodes` transforms multiple
-:class:`~deeplog.formula.CircuitNode` objects from the same circuit in a single
-pass:
+``roots`` may name several nodes of the same circuit. They are transformed in a
+single pass, so a subgraph they share is traversed once, and ``node_map`` holds
+each of them:
 
 .. code-block:: python
 
-   from deeplog.formula import CircuitNode, transform_nodes
-
-   node_a = CircuitNode(bool_circuit, root_a)
-   node_b = CircuitNode(bool_circuit, root_b)
-
-   transformed = transform_nodes(
-       node_a, node_b,
-       target_structure="probability",
+   prob_circuit, node_map = transform_circuit(
+       bool_circuit, "probability", roots=[root_a, root_b]
    )
-   # transformed is a tuple of CircuitNodes in the new circuit
-
-This is more efficient than transforming each node individually because the
-shared subgraph is only traversed once.
-
-Per-node transformation
-~~~~~~~~~~~~~~~~~~~~~~~
-
-Transforming one :class:`~deeplog.formula.CircuitNode` is the one-argument case
-of :func:`~deeplog.formula.transform_nodes`:
-
-.. code-block:: python
-
-   (prob_node,) = transform_nodes(bool_node, target_structure="probability")
-   module = to_module(prob_node, names=(("result",),))
+   module = prob_circuit.to_module(
+       {node_map[root_a]: ("a",), node_map[root_b]: ("b",)}
+   )
 
 .. seealso::
 
    - :doc:`deeplog_language` for the formula language that compiles to circuits.
-   - :doc:`examples/circuits` for runnable circuit construction examples.
-   - :doc:`examples/circuit_transformation` for a runnable circuit transformation tutorial.
+   - :doc:`examples/circuits` for runnable circuits, including a weighted model count.
 
 .. |rarr| unicode:: U+2192

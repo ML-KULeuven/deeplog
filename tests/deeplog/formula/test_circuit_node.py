@@ -4,8 +4,8 @@
 import pytest
 import torch
 
-from deeplog import to_module
 from deeplog.formula.circuit_factory import CircuitFactory
+from deeplog.formula.circuit_node import to_module
 from deeplog.shape import SymTensor
 from deeplog.symbol import with_structure
 

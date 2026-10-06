@@ -15,6 +15,7 @@ from ..shape import Shape
 from ..shape import SymTensor
 from ..shape import get_all_symbols
 from ..symbol import Symbol
+from ..symbol import symbol_to_pretty_string
 from ..util import as_tuple
 from .deeplog_module import DeepLogModule
 from .reshape import construct_transformation
@@ -35,20 +36,23 @@ def _get_missing_transformations(
     ) | set(input_tensors)
     missing_symtensors = all_inputs - all_outputs
 
+    #: The first output, in ``all_outputs``' order, holding each symbol.
+    producer: dict[Symbol, SymTensor] = {}
+    for output in all_outputs:
+        for symbol in output:
+            producer.setdefault(symbol, output)
+
     all_transformation_inputs: list[tuple[list[SymTensor], SymTensor]] = []
     transformations = []
     for symtensor in missing_symtensors:
         transformation_inputs: list[SymTensor] = []
         for symbol in symtensor:
-            for output in all_outputs:
-                if symbol in output:
-                    transformation_inputs.append(output)
-                    break
-            else:
+            if symbol not in producer:
                 raise ValueError(
                     f"Symbol {symbol} required by {symtensor} is not produced by "
                     f"any module or provided as an external input."
                 )
+            transformation_inputs.append(producer[symbol])
         all_transformation_inputs.append((transformation_inputs, symtensor))
 
     for inputs, tensor in all_transformation_inputs:
@@ -60,8 +64,10 @@ def _get_missing_transformations(
     return transformations
 
 
-def _external_shape(symbol: Symbol, modules: Iterable[DeepLogModule]) -> SymTensor:
-    """The shape to declare for ``symbol`` as an external input of a circuit.
+def _external_shapes(
+    symbols: Iterable[Symbol], modules: Iterable[DeepLogModule]
+) -> tuple[SymTensor, ...]:
+    """The shape to declare for each of ``symbols`` as an external input of a circuit.
 
     A one-symbol tensor has two spellings — ``SymTensor([symbol])`` and the
     scalar ``SymTensor(symbol)``, which differ because a symbol is itself a
@@ -72,11 +78,13 @@ def _external_shape(symbol: Symbol, modules: Iterable[DeepLogModule]) -> SymTens
     them changes the tensor's rank. Where nothing consumes the symbol alone
     there is no consumer to agree with, and the one-element spelling stands.
     """
+    alone: dict[Symbol, SymTensor] = {}
     for module in modules:
         for shape in as_tuple(module.get_input_shape()):
-            if tuple(get_all_symbols(shape)) == (symbol,):
-                return shape
-    return SymTensor([symbol])
+            held = tuple(get_all_symbols(shape))
+            if len(held) == 1:
+                alone.setdefault(held[0], shape)
+    return tuple(alone.get(symbol, SymTensor([symbol])) for symbol in symbols)
 
 
 def build_module_graph(modules: list[DeepLogModule]) -> dict[int, set[int]]:
@@ -107,32 +115,32 @@ class ModuleCircuit(DeepLogModule):
         self,
         modules: Iterable[DeepLogModule],
         output_shape: Shape,
+        input_shape: Shape | None = None,
     ):
-        """Assemble a circuit of modules and compute ordering/transformations."""
+        """Assemble a circuit of modules and compute ordering/transformations.
+
+        The circuit's inputs are ``input_shape``, which must hold no symbol a
+        module produces; without it, they are the symbols no module produces,
+        one tensor each, in the order ``modules`` first read them.
+        """
         all_modules = list(modules)
 
-        input_symbols = set(
-            get_all_symbols(m.get_input_shape() for m in all_modules)
-        ) - set(get_all_symbols(m.get_output_shape() for m in all_modules))
-        input_tensors = tuple(_external_shape(i, all_modules) for i in input_symbols)
+        if input_shape is None:
+            produced = set(get_all_symbols(m.get_output_shape() for m in all_modules))
+            input_symbols = [
+                symbol
+                for symbol in dict.fromkeys(
+                    get_all_symbols(m.get_input_shape() for m in all_modules)
+                )
+                if symbol not in produced
+            ]
+            input_shape = _external_shapes(input_symbols, all_modules)
+        input_tensors = as_tuple(input_shape)
         transform_modules = _get_missing_transformations(
             input_tensors, all_modules, as_tuple(output_shape)
         )
-        super().__init__(input_tensors, output_shape)
+        super().__init__(input_shape, output_shape)
         all_modules += transform_modules
-
-        all_outputs: set[SymTensor] = set(input_tensors) | {SymTensor([])}
-        for m in all_modules:
-            all_outputs |= set(as_tuple(m.get_output_shape()))
-        all_inputs: set[SymTensor] = set()
-        for m in all_modules:
-            all_inputs |= set(as_tuple(m.get_input_shape()))
-        missing = all_inputs - all_outputs
-        if missing:
-            raise ValueError(
-                f"The following tensors are required as input but have no producer: "
-                f"{missing}"
-            )
 
         sorted_indices = list(
             TopologicalSorter(build_module_graph(all_modules)).static_order()
@@ -166,18 +174,42 @@ class ModuleCircuit(DeepLogModule):
 def compose_modules(
     modules: Iterable[DeepLogModule],
     output_shape: Shape,
+    input_shape: Shape | None = None,
 ) -> DeepLogModule:
-    """Compose modules into one module producing ``output_shape``.
+    """Compose modules into one module taking ``input_shape`` and producing ``output_shape``.
 
-    A single module is reshaped to ``output_shape``, and returned as it is when
-    it already produces it; several become a :class:`ModuleCircuit`, which
-    orders them by what each one's inputs need and inserts the transformations
-    between them.
+    Each symbol is produced by at most one module. The composed module's inputs
+    are the symbols no module produces. ``input_shape`` lays them out, and must
+    hold each of them and none a module produces; without it, each is a tensor of
+    its own, in the order the modules first read them. A single module is
+    reshaped to the requested shapes, and returned as it is when it already has
+    them; several become a :class:`ModuleCircuit`, which orders them by what each
+    one's inputs need and inserts the transformations between them.
+
+    Raises:
+        ValueError: If no module is given, two modules produce one symbol, or
+            ``input_shape`` holds a symbol a module produces.
     """
     modules = list(modules)
     if len(modules) == 0:
         raise ValueError("At least one module is required to compose_modules.")
+    produced: set[Symbol] = set()
+    for module in modules:
+        made = list(get_all_symbols(module.get_output_shape()))
+        if twice := [symbol for symbol in made if symbol in produced]:
+            raise ValueError(
+                f"Two modules produce {symbol_to_pretty_string(twice[0])}; a "
+                "composition reads each symbol from one module, so name their "
+                "outputs apart."
+            )
+        produced.update(made)
+    if input_shape is not None:
+        if clash := [s for s in get_all_symbols(input_shape) if s in produced]:
+            raise ValueError(
+                f"input_shape holds {clash}, which the modules produce; a symbol "
+                "is either an input of the composed module or produced in it."
+            )
     if len(modules) == 1:
-        return reshape(modules[0], output=output_shape)
+        return reshape(modules[0], input=input_shape, output=output_shape)
     # TODO: potential optimization. If dependency graph is linear, return a sequential.
-    return ModuleCircuit(modules, output_shape)
+    return ModuleCircuit(modules, output_shape, input_shape)

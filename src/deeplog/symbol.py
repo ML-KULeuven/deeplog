@@ -3,7 +3,7 @@
 A module that provides the Symbol type.
 """
 
-from collections.abc import Callable
+from collections import deque
 from collections.abc import Iterable
 from collections.abc import Mapping
 from itertools import chain
@@ -143,8 +143,18 @@ def get_term_variables(symbol: Symbol) -> Iterable[Symbol]:
 
 
 infix_functors = {":-", "?-", "::", ";", ",", "is", "_"}
-associative_infix_functors = {",", ";"}  # used to determine if brackets are needed
+associative_infix_functors = {",", ";"}  # chain to the right, as Prolog's xfy
 infix_parse_order = [":-", "?-", "::", ";", ",", "is", "_"]
+
+#: Each infix functor's priority, the higher the more loosely it binds, as
+#: ``infix_parse_order`` splits on the loosest first.
+_infix_priority = {
+    functor: len(infix_parse_order) - position
+    for position, functor in enumerate(infix_parse_order)
+}
+#: The loosest priority an argument is written without brackets, just below
+#: that of ``,``, which separates the arguments.
+_argument_priority = _infix_priority[","] - 1
 
 
 def _split_infix_parts(
@@ -208,11 +218,29 @@ def _parse_infix(symbol_str: str) -> Symbol | None:
     return None
 
 
+def _closing_bracket(text: str, opening: int) -> int | None:
+    """The position of the bracket closing the one at ``opening``, or ``None``."""
+    depth = 0
+    for position in range(opening, len(text)):
+        if text[position] in "([":
+            depth += 1
+        elif text[position] in ")]":
+            depth -= 1
+            if depth == 0:
+                return position
+    return None
+
+
 def parse_symbol(symbol_str: str) -> Symbol:
     """
     A simple parsing function for turning strings into symbols.
     :param symbol_str: The string to parse into a symbol.
     :return: The parsed symbol.
+    Brackets group as in Prolog: ``(a;b),c`` is a conjunction whose first
+    operand is a disjunction, and ``f((a,b))`` is ``f`` of one ``,`` term.
+
+    :raises ValueError: If a term's arguments are not closed, text follows the
+        bracket closing them, or brackets enclose nothing.
     """
     symbol_str = symbol_str.strip()
     if symbol_str == "_":
@@ -225,11 +253,20 @@ def parse_symbol(symbol_str: str) -> Symbol:
     first_bracket = symbol_str.find("(")
     if first_bracket == -1:
         return (symbol_str,)
-    final_bracket = symbol_str.rfind(")")
-    if final_bracket == -1:
+    final_bracket = _closing_bracket(symbol_str, first_bracket)
+    if final_bracket is None:
         raise ValueError(f"No closing bracket found while parsing {symbol_str}.")
+    if final_bracket != len(symbol_str) - 1:
+        raise ValueError(
+            f"{symbol_str!r} continues after the bracket closing its arguments. "
+            "An alphabetic infix functor, or `_`, is written with spaces around it."
+        )
     functor = symbol_str[:first_bracket]
     args_str = symbol_str[first_bracket + 1 : final_bracket]
+    if not functor:
+        if not args_str.strip():
+            raise ValueError(f"{symbol_str!r} brackets nothing.")
+        return parse_symbol(args_str)
     args = tuple(bracket_aware_split(args_str, ","))
     return functor, *(parse_symbol(a) for a in args)
 
@@ -257,40 +294,33 @@ def symbol_to_str(symbol: Symbol) -> str:
     Output round-trips through :func:`parse_symbol` and fits inside the Lark
     grammar's ``SYMBOL`` token (no whitespace). Infix functors that would
     otherwise merge into adjacent identifiers (alphabetic functors like ``is``,
-    and ``_``) are still surrounded by spaces; the rest are written tight.
+    and ``_``) are still surrounded by spaces; the rest are written tight. An
+    operand is bracketed as Prolog brackets it, where its functor binds more
+    loosely than its place allows: ``f((a,b))``, ``(a;b),c`` and ``(a,b),c``.
 
     Use :func:`symbol_to_pretty_string` for human-readable, always-spaced output.
     """
     functor = symbol[0]
     if len(symbol) == 1:
         return functor
-    needs_space = functor.isalnum() or functor == "_"
-    sep = f" {functor} " if needs_space else functor
-    if functor in associative_infix_functors:
-        parts = list(flatten_symbol(symbol, functor))
-        return sep.join(symbol_to_str(p) for p in parts)
     if functor in infix_functors and len(symbol) == 3:
-        lhs = symbol_to_str(symbol[1])
-        rhs = symbol_to_str(symbol[2])
+        needs_space = functor.isalnum() or functor == "_"
+        sep = f" {functor} " if needs_space else functor
+        priority = _infix_priority[functor]
+        chained = functor in associative_infix_functors
+        lhs = _operand_str(symbol[1], priority - 1)
+        rhs = _operand_str(symbol[2], priority if chained else priority - 1)
         return f"{lhs}{sep}{rhs}"
-    args = ",".join(symbol_to_str(s) for s in symbol[1:])
+    args = ",".join(_operand_str(s, _argument_priority) for s in symbol[1:])
     return f"{functor}({args})"
 
 
-def replace_in_symbol(
-    symbol: Symbol, func: Callable[[Symbol], Symbol | None]
-) -> Symbol:
-    """
-    A function to recursively replace symbols in the given symbol.
-    :param symbol: The symbol to perform replacement in.
-    :param func: The function that returns the replacement for the given symbol. If the symbol is not to be replaced,
-    it should return None.
-    :return: The symbol with all (potentially recursive) replacements.
-    """
-    replace = func(symbol)
-    if replace is not None:
-        return replace
-    return symbol[0], *(replace_in_symbol(s, func) for s in symbol[1:])
+def _operand_str(symbol: Symbol, priority: int) -> str:
+    """``symbol`` written where at most ``priority`` binds without brackets."""
+    text = symbol_to_str(symbol)
+    if len(symbol) == 3 and _infix_priority.get(symbol[0], 0) > priority:
+        return f"({text})"
+    return text
 
 
 def symbol_to_pretty_string(symbol: Symbol) -> str:
@@ -364,18 +394,48 @@ def apply_substitution(term: Symbol, substitution: Mapping[Symbol, Symbol]) -> S
     return term[0], *substituted_args
 
 
-def split_list(term: Symbol) -> tuple[list[Symbol], Symbol]:
-    """Return the elements of the list ``term`` and the tail they end in.
+def _replace_all_occurrences(
+    queue: deque[tuple[Symbol, Symbol]], substitution: dict[Symbol, Symbol]
+) -> deque[tuple[Symbol, Symbol]]:
+    return deque(
+        (apply_substitution(lhs, substitution), apply_substitution(rhs, substitution))
+        for lhs, rhs in queue
+    )
 
-    A list is a ``cons``/``nil`` chain, so ``[a, b]`` is ``([a, b], nil)``,
-    ``[a | T]`` is ``([a], T)``, and a term that is not a list is
-    ``([], term)``.
+
+def calculate_mgu(term1: Symbol, term2: Symbol) -> dict[Symbol, Symbol] | None:
+    """Return the most general unifier of ``term1`` and ``term2``, or ``None``.
+
+    The unifier is the substitution ``s`` with
+    ``apply_substitution(term1, s) == apply_substitution(term2, s)`` that every
+    other such substitution refines. ``None`` means the terms do not unify.
+    Variables are identified by name, so every ``_`` is the same variable.
+
+    There is no occurs check. Unifying a variable with a term containing it is
+    not supported: it may raise :class:`RecursionError`, or return a substitution
+    :func:`apply_substitution` cannot apply.
     """
-    elements: list[Symbol] = []
-    while len(term) == 3 and term[0] == "cons":
-        elements.append(term[1])
-        term = term[2]
-    return elements, term
+    queue: deque[tuple[Symbol, Symbol]] = deque([(term1, term2)])
+    substitution: dict[Symbol, Symbol] = {}
+    while queue:
+        lhs, rhs = queue.popleft()
+        if is_variable(rhs) and not is_variable(lhs):
+            queue.appendleft((rhs, lhs))
+        elif is_variable(lhs):
+            if lhs == rhs:
+                continue
+            new_sub = {lhs: rhs}
+            substitution = {
+                k: apply_substitution(v, new_sub) for k, v in substitution.items()
+            }
+            substitution.update(new_sub)
+            queue = _replace_all_occurrences(queue, new_sub)
+        else:
+            if get_predicate(lhs) != get_predicate(rhs):
+                return None
+            queue.extend(zip(lhs[1:], rhs[1:], strict=True))
+
+    return substitution
 
 
 def _parse_list(list_str: str) -> Symbol:

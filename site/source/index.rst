@@ -3,10 +3,14 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-.. title:: DeepLog
+.. title:: DeepLog: the PyTorch for neurosymbolic AI
 
 
 :html_theme.sidebar_secondary.remove:
+:og:description: DeepLog is the PyTorch for neurosymbolic AI: state the logic, and DeepLog compiles it into a differentiable PyTorch module that runs on the GPU.
+
+.. meta::
+   :description: DeepLog is the PyTorch for neurosymbolic AI: state the logic, and DeepLog compiles it into a differentiable PyTorch module that runs on the GPU.
 
 
 .. raw:: html
@@ -25,7 +29,8 @@
    </div>
    <div class="text-container">
    <div class="hero-subtitle">DTAI LAB</div>
-   <div class="hero-title">DeepLog</div>
+   <h1 class="hero-title">DeepLog</h1>
+   <p class="hero-tagline">The PyTorch for neurosymbolic AI</p>
    </div>
    </div>
    <div class="button-container">
@@ -57,7 +62,7 @@
    .. grid-item::
       :child-align: center
 
-      .. button-ref:: autoapi/index
+      .. button-ref:: public_api
          :color: info
          :shadow:
          :align: center
@@ -109,3 +114,4 @@
    tutorial
    deeplog_language
    resources
+   public_api

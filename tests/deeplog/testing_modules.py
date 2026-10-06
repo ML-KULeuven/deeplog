@@ -8,6 +8,9 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from deeplog import Domain
+from deeplog import Predicate
+
 
 class IndexClassifier(nn.Module):
     """
@@ -74,3 +77,20 @@ class IndexClassifier(nn.Module):
         )
         probs.scatter_(1, indices.unsqueeze(-1), self.peak_probability)
         return probs
+
+
+#: The truth values, ``false`` at position 0 and ``true`` at 1.
+TRUTH = Domain.of(["false", "true"])
+
+#: The values, read as they are.
+VALUES = Domain.of_values()
+
+
+class Forecast(Predicate[torch.Tensor]):
+    """``forecast(Rain)``: rain with probability 0.2, over the truth values."""
+
+    def __init__(self, atoms):
+        super().__init__(atoms, (TRUTH,))
+
+    def forward_predicate(self, rain: torch.Tensor) -> torch.Tensor:
+        return torch.where(rain == 1, 0.2, 0.8)

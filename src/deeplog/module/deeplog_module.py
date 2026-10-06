@@ -6,7 +6,6 @@ A module containing the DeepLogModule class and functions for constructing DeepL
 from __future__ import annotations
 
 import os
-from typing import Protocol
 
 from torch import nn
 
@@ -36,15 +35,7 @@ def _validate_output_shape(module: DeepLogModule, args: tuple, output: object) -
         raise ShapeMismatchException(module.get_output_shape(), out, (module, "output"))  # pyright: ignore[reportArgumentType]
 
 
-class SupportsToModule(Protocol):
-    """A protocol that specifies that this can be turned into a DeepLogModule"""
-
-    def to_module(self) -> DeepLogModule:
-        """Return a DeepLogModule that implements the functionality of this object."""
-        ...
-
-
-class DeepLogModule(nn.Module, SupportsToModule):
+class DeepLogModule(nn.Module):
     """
     A class that extends Torch modules to include information about its input and output shape."""
 
@@ -99,7 +90,3 @@ class DeepLogModule(nn.Module, SupportsToModule):
     def replace_output_shape(self, new_output_shape: Shape) -> None:
         """Replace the declared output shape without adding transformations."""
         self._output_shape = new_output_shape
-
-    def to_module(self) -> DeepLogModule:
-        """Returns the module itself"""
-        return self

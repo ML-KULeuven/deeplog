@@ -71,10 +71,8 @@ def klay_semiring(structure: AlgebraicStructure) -> tuple[str, bool]:
         raise ValueError(
             f"No Klay semiring is registered for structure '{structure.name}', so "
             f"Klay cannot evaluate it: Klay applies a fixed semiring and never "
-            f"consults 'operator_fns'. Register one with register_klay_semiring() "
-            f"if a Klay semiring implements this structure's product and sum, or "
-            f"compile through select_backend(), which routes an unregistered "
-            f"structure to the generic evaluator and honours 'operator_fns'."
+            f"consults 'operator_fns'. Circuit.to_module routes it to the generic "
+            f"evaluator, which honours 'operator_fns'."
         ) from None
 
 

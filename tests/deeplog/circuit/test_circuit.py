@@ -5,7 +5,8 @@ import pytest
 import torch
 
 from deeplog.circuit import Circuit
-from deeplog.circuit.knowledge_compile import knowledge_compile
+from deeplog.circuit import knowledge_compile
+from deeplog.circuit import transform_circuit
 
 
 class TestCircuitConstruction:
@@ -40,7 +41,7 @@ class TestCircuitConstruction:
         """Leaves are stored bare; the tag is re-appended on the way out.
 
         ``get_leaf_name`` exposes the bare canonical identity, while the boundary
-        views (``leaf_nodes``, ``reachable_leaves``) re-append the circuit's own
+        views (``leaf_nodes``, ``_reachable_leaves``) re-append the circuit's own
         structure tag — so a predicate leaf still matches its module by shape.
         """
         circuit = Circuit("boolean")
@@ -48,7 +49,7 @@ class TestCircuitConstruction:
 
         assert circuit.get_leaf_name(node) == ("digit", ("i1",))
         assert list(circuit.leaf_nodes) == [("_", ("digit", ("i1",)), ("boolean",))]
-        assert list(circuit.reachable_leaves([node])) == [
+        assert list(circuit._reachable_leaves([node])) == [
             ("_", ("digit", ("i1",)), ("boolean",))
         ]
 
@@ -136,6 +137,66 @@ class TestCircuitToModule:
             output = module(torch.tensor([inputs], dtype=torch.float32))
             assert output[0].item() == pytest.approx(expected)
 
+    def test_a_negated_compound_lowers(self):
+        """Not (a and (b or not c)): negation pushed down to the atoms."""
+        circuit = Circuit("boolean")
+        a, b, c = [circuit.get_leaf_node((x,)) for x in "abc"]
+        and_op, or_op = circuit.get_operator("and"), circuit.get_operator("or")
+        not_op = circuit.get_operator("not")
+        result = not_op(and_op(a, or_op(b, not_op(c))))
+        module = circuit.to_module({result: ("result",)})
+
+        rows = torch.tensor(
+            [[x, y, z] for x in (0.0, 1.0) for y in (0.0, 1.0) for z in (0.0, 1.0)]
+        )
+        expected = [float(not (x and (y or not z))) for x, y, z in rows.tolist()]
+        assert module(rows).flatten().tolist() == expected
+
+    def test_roots_whose_negations_cancel_keep_their_columns(self):
+        """Not not a is a: two roots on one node are still two columns."""
+        circuit = Circuit("boolean")
+        a = circuit.get_leaf_node(("a",))
+        not_op = circuit.get_operator("not")
+        module = circuit.to_module({not_op(not_op(a)): ("twice",), a: ("once",)})
+
+        torch.testing.assert_close(
+            module(torch.tensor([[1.0], [0.0]])), torch.tensor([[1.0, 1.0], [0.0, 0.0]])
+        )
+
+    def test_the_negation_of_an_identity_is_the_other(self):
+        circuit = Circuit("boolean")
+        a = circuit.get_leaf_node(("a",))
+        true = circuit.get_leaf_node(("true",))
+        result = circuit.get_operator("not")(circuit.get_operator("or")(a, true))
+        module = circuit.to_module({result: ("result",)})
+
+        torch.testing.assert_close(
+            module(torch.tensor([[1.0], [0.0]])), torch.tensor([[0.0], [0.0]])
+        )
+
+    def test_lowering_leaves_the_circuit_as_it_was(self):
+        """Pushing negations down adds no node to the circuit, however often it is lowered."""
+        circuit = Circuit("boolean")
+        a, b = [circuit.get_leaf_node((x,)) for x in "ab"]
+        true = circuit.get_leaf_node(("true",))
+        and_op, or_op = circuit.get_operator("and"), circuit.get_operator("or")
+        result = circuit.get_operator("not")(and_op(a, or_op(b, true)))
+        nodes = {node: circuit.operation(node) for node in circuit._graph}
+
+        for _ in range(2):
+            circuit.to_module({result: ("result",)})
+
+        assert {node: circuit.operation(node) for node in circuit._graph} == nodes
+
+    def test_a_complement_of_a_sum_in_probability_is_refused(self):
+        """De Morgan does not hold for probability's complement."""
+        circuit = Circuit("probability")
+        a, b = [circuit.get_leaf_node((x,)) for x in "ab"]
+        result = circuit.get_operator("negate")(circuit.get_operator("plus")(a, b))
+
+        with pytest.raises(ValueError, match="can only negate literals"):
+            circuit.to_module({result: ("result",)})
+
     @pytest.mark.parametrize("counted", [False, True])
     def test_to_module_input_shape_scoped_to_roots(self, counted):
         """A sub-root compile only takes the leaves reachable from its roots.
@@ -155,8 +216,8 @@ class TestCircuitToModule:
             # ``c`` is carried across too, so it stays an unrelated leaf of the
             # circuit being compiled rather than being left behind.
             compiled, compiled_map = knowledge_compile(circuit, [result, c])
-            circuit, node_map = compiled.transform(
-                [compiled_map[result], compiled_map[c]], "probability"
+            circuit, node_map = transform_circuit(
+                compiled, "probability", [compiled_map[result], compiled_map[c]]
             )
             result, structure = node_map[compiled_map[result]], "probability"
         module = circuit.to_module({result: ("result",)})
@@ -301,7 +362,7 @@ class TestGenericEvaluator:
         through construct_transformation just like any other generic module.
         """
         from deeplog import Sequential
-        from deeplog import construct_transformation
+        from deeplog.module.reshape import construct_transformation
         from deeplog.shape import SymTensor
 
         circuit, _ = self._make_fuzzy_circuit()
@@ -341,7 +402,9 @@ class TestModelCountVsAsWritten:
         x = boolean.get_leaf_node(("a",))
         y = boolean.get_leaf_node(("b",))
         conjunction = boolean.get_operator("and")(x, y)
-        counted_circuit, node_map = boolean.transform([conjunction], "probability")
+        counted_circuit, node_map = transform_circuit(
+            boolean, "probability", [conjunction]
+        )
         counted = counted_circuit.to_module({node_map[conjunction]: ("result",)})(
             inputs
         )
@@ -369,8 +432,8 @@ class TestModelCountVsAsWritten:
         x = boolean.get_leaf_node(("a",))
         conjunction = boolean.get_operator("and")(x, x)
         compiled, compiled_map = knowledge_compile(boolean, [conjunction])
-        counted_circuit, node_map = compiled.transform(
-            [compiled_map[conjunction]], "probability"
+        counted_circuit, node_map = transform_circuit(
+            compiled, "probability", [compiled_map[conjunction]]
         )
 
         counted = counted_circuit.to_module(

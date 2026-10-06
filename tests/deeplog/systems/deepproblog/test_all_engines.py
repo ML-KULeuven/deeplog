@@ -2,15 +2,14 @@
 
 import pytest
 
-from deeplog import to_module
-from deeplog.formula import AstFactory
-from deeplog.formula import SymbolicFormulaFactory
+from deeplog.formula.ast import fold
 from deeplog.formula.circuit_factory import CircuitFactory
-from deeplog.grounding import JanusGrounder
-from deeplog.grounding import SimpleGrounder
-from deeplog.grounding import UnknownPredicateException
-from deeplog.grounding import str_to_rule
-from deeplog.grounding import str_to_rules
+from deeplog.formula.circuit_node import to_module
+from deeplog.grounding.prolog import JanusGrounder
+from deeplog.grounding.prolog import SimpleGrounder
+from deeplog.grounding.prolog import UnknownPredicateException
+from deeplog.grounding.prolog import str_to_rule
+from deeplog.grounding.prolog import str_to_rules
 from deeplog.symbol import parse_symbol
 from deeplog.symbol import symbol_to_pretty_string
 from deeplog.symbol import with_structure
@@ -38,9 +37,9 @@ class TestEngines:
                 "?- not(a).",
             ]
         )
-        result = engine.get_query_result(program, SymbolicFormulaFactory())
+        result = engine.get_query_result(program)
         formula = result.formulas[("not", ("a",))]
-        assert formula == "not a_boolean"
+        assert str(formula) == "not a_boolean"
         assert result.labels[("a",)] == ("la",)
 
     def test_identical_conjunction(self, engine_class):
@@ -49,7 +48,7 @@ class TestEngines:
         program = tuple({str_to_rule("?-a,a.")})
         facts = tuple({str_to_rule("la::a.")})
 
-        result = engine.get_query_result(program + facts, SymbolicFormulaFactory())
+        result = engine.get_query_result(program + facts)
         assert len(result.formulas) == 1 and (",", ("a",), ("a",)) in result.formulas
         # The label is recorded once per atom, so a ∧ a carries la (not la×la);
         # the idempotent conjunction collapses to a under WMC.
@@ -61,11 +60,11 @@ class TestEngines:
         program = tuple({str_to_rule("a:-b,c."), str_to_rule("?-a.")})
         facts = tuple({str_to_rule("lb::b."), str_to_rule("lc::c.")})
 
-        result = engine.get_query_result(program + facts, SymbolicFormulaFactory())
+        result = engine.get_query_result(program + facts)
         assert len(result.formulas) == 1 and ("a",) in result.formulas
 
         with pytest.raises(UnknownPredicateException):
-            engine.get_query_result(program, SymbolicFormulaFactory())
+            engine.get_query_result(program)
 
     def test_variable_in_query(self, engine_class):
         engine = engine_class()
@@ -77,20 +76,18 @@ class TestEngines:
             }
         )
 
-        result = engine.get_query_result(program, SymbolicFormulaFactory())
+        result = engine.get_query_result(program)
         assert set(result.formulas) == {("a", ("0",)), ("a", ("1",))}
 
     def test_rule_with_label(self, engine_class):
         engine = engine_class()
         program = tuple({str_to_rule("classifier(X) :: output(X) :- between(0,9,X).")})
-        result = engine.get_result(
-            program, parse_symbol("output(X)"), SymbolicFormulaFactory()
-        )
+        result = engine.get_result(program, parse_symbol("output(X)"))
         assert len(result.formulas) == 10
         for i in range(10):
             formula = result.formulas[("output", (str(i),))]
             # Labeled rule is rewritten to aux fact: classifier(X) :: aux0(X).
-            assert formula == f"aux0({i})_boolean"
+            assert str(formula) == f"aux0({i})_boolean"
             # The label for the auxiliary atom maps back to the classifier annotation
             assert result.labels[("aux0", (str(i),))] == ("classifier", (str(i),))
 
@@ -104,7 +101,7 @@ class TestEngines:
         ?- a(input(0)).
         """
         program = tuple(str_to_rules(code))
-        result = engine.get_query_result(program, AstFactory())
+        result = engine.get_query_result(program)
         assert len(result.formulas) == 1
         sym_query, formula = list(result.formulas.items())[0]
         assert symbol_to_pretty_string(sym_query) == "a(input(0))"
@@ -127,7 +124,7 @@ class TestEngines:
                ?- a(input(0)).
                """
         program = tuple(str_to_rules(code))
-        result = engine.get_query_result(program, AstFactory())
+        result = engine.get_query_result(program)
         assert len(result.formulas) == 1
         sym_query, formula = list(result.formulas.items())[0]
         assert symbol_to_pretty_string(sym_query) == "a(input(0))"
@@ -145,9 +142,10 @@ class TestEngines:
         engine = engine_class()
         program = tuple(str_to_rules(program_code))
 
-        factory = CircuitFactory()
-        result = engine.get_query_result(program, factory)
-        answers, nodes = zip(*result.formulas.items(), strict=True)
+        result = engine.get_query_result(program)
+        answers, formulas = zip(*result.formulas.items(), strict=True)
+        factory, built = CircuitFactory(), {}
+        nodes = [fold(formula, factory, memo=built) for formula in formulas]
         module = to_module(
             *nodes,
             names=answers,

@@ -132,9 +132,9 @@ Set up locally and ship a small change end-to-end:
 
 - Create a virtualenv, activate it, then install dev deps: `python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"` (add `[examples]` or `[site]` if you need notebooks/docs).
 - Install git hooks: `pre-commit install`.
-- Run a focused test before and after your change: `PYTHONPATH=src pytest tests/deeplog/<area>/test_<something>.py` (add `-m "not slow"` to skip slow tests). For larger edits, run `PYTHONPATH=src pytest`.
-- If you touch types, run `pyright` (config lives in `pyrightconfig.json`).
-- Follow existing patterns: Python 3.12 typing, use the `as_tuple` helper for shape handling, and keep formatting/lint clean (Black/Ruff via pre-commit).
+- Run a focused test before and after your change: `PYTHONPATH=src pytest tests/deeplog/<area>/test_<something>.py`. For larger edits, run `PYTHONPATH=src pytest`.
+- If you touch types, run `pyright` (config lives in `pyproject.toml`, under `[tool.pyright]`).
+- Follow existing patterns: Python 3.12 typing, use the `as_tuple` helper for shape handling, and keep formatting/lint clean (Ruff via pre-commit).
 - Open or reference the related GitHub issue and list the commands you ran (pytest, pre-commit, pyright) so maintainers can reproduce the change.
 
 ### Improving The Documentation
@@ -159,6 +159,14 @@ DEEPLOG_FAST_DEV_RUN=1 pytest examples/  # one batch per fit, the way CI runs th
 
 Needs the `examples` and `tests` extras (`pip install -e ".[examples,tests]"`).
 
+To open the notebooks as `.ipynb`, in Jupyter or PyCharm, sync them:
+
+```bash
+jupytext --sync examples/*.md
+```
+
+Jupytext pairs each `examples/<name>.md` with an `examples/<name>.ipynb`, which git ignores and which keeps the outputs. A sync carries the newer file's cells into the other, so run it after editing either one, and after a checkout or pull changes a `.md`. If both changed since the last sync, the older one's edits are lost. Jupyter syncs a pair on every save; PyCharm saves only the `.ipynb`.
+
 No cell may be tagged `raises-exception`: running the notebook would pass it whatever it raised. A cell that demonstrates an error catches that exception itself. `tests/test_examples.py` refuses the tag.
 
 On the docs site, every notebook has an **Open in Colab** badge under its title. It opens the notebook as released at the version in `pyproject.toml`, from that tag on the GitHub mirror. There, each notebook is also an `.ipynb`, with one more code cell before its first, which installs the same version (`pydeeplog[examples]==<version>`) when DeepLog is not importable.
@@ -181,7 +189,7 @@ pre-commit run --all-files
 pre-commit run <hook_id> --all-files
 ```
 
-Please run `pytest` before submitting changes. Static type checking is configured via Pyright (`pyrightconfig.json`); run `pyright` if your editor does not. Match the existing formatting defaults and surrounding style when making edits.
+Please run `pytest` before submitting changes. Static type checking is configured via Pyright (`pyproject.toml`, under `[tool.pyright]`); run `pyright` if your editor does not. Match the existing formatting defaults and surrounding style when making edits.
 
 
 ## Attribution

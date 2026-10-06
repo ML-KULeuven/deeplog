@@ -1,6 +1,8 @@
 sphinx
 sphinx-autoapi
 sphinx-multiversion
+sphinx-sitemap
+sphinxext-opengraph
 pydata-sphinx-theme==0.16.1
 myst-nb
 sphinx-design==0.6.1

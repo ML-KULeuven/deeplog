@@ -12,8 +12,9 @@ import pytest
 from deeplog.algebraic import BOOLEAN
 from deeplog.algebraic import PROBABILITY
 from deeplog.circuit.circuit import Circuit
-from deeplog.formula import SymbolicFormulaFactory
+from deeplog.circuit.fold import fold_circuit
 from deeplog.formula.deeplogformulafactory import DeepLogFormulaFactory
+from deeplog.formula.symbolic_factory import SymbolicFormulaFactory
 
 
 def _circuit() -> tuple[Circuit, int, int]:
@@ -37,7 +38,7 @@ def test_a_circuit_folds_through_the_formula_algebra():
     """
     circuit, root, _ = _circuit()
 
-    built = circuit.fold([root], SymbolicFormulaFactory())
+    built = fold_circuit(circuit, [root], SymbolicFormulaFactory())
 
     assert built[root] == "(a_boolean and b_boolean) or (not a_boolean)"
 
@@ -57,7 +58,7 @@ def test_a_shared_node_is_built_once():
             built.append(atom)
             return super().create_atom(atom)
 
-    result = circuit.fold([root], _Counting())
+    result = fold_circuit(circuit, [root], _Counting())
 
     # ``a`` feeds both the conjunction and the negation, but is built once.
     assert built.count(("_", ("a",), ("boolean",))) == 1
@@ -77,7 +78,7 @@ def test_a_numeric_constant_folds_as_an_atom():
         circuit.get_leaf_node(("p",)), circuit.get_leaf_node(("0.6",))
     )
 
-    assert circuit.fold([root], SymbolicFormulaFactory())[root] == (
+    assert fold_circuit(circuit, [root], SymbolicFormulaFactory())[root] == (
         "p_probability times 0.6_probability"
     )
 
@@ -89,7 +90,7 @@ def test_a_circuit_only_algebra_says_what_a_circuit_cannot_hold():
     to embed, so an algebra written for one raises rather than inventing an
     answer — and names itself, since the caller reached it by mistake.
     """
-    from deeplog.circuit.knowledge_compile.diagram import DiagramAlgebra
+    from deeplog.circuit.knowledge_compilation.diagram import DiagramAlgebra
 
     algebra = DiagramAlgebra(BOOLEAN, {})
 
@@ -126,15 +127,15 @@ def test_the_same_algebra_compiles_an_ast_and_a_circuit():
 
     ``DiagramAlgebra`` is a ``DeepLogFormulaFactory``, so nothing distinguishes
     the two sources to it: ``deeplog.formula.ast.fold`` drives it over a tree and
-    ``Circuit.fold`` over a graph, and the same formula compiles to the same
+    ``fold_circuit`` over a graph, and the same formula compiles to the same
     diagram either way. What is *not* shared is the pre-pass — a manager must be
     sized before its first literal exists, so each source collects its own atoms.
     """
     from pysdd.sdd import SddManager
 
-    from deeplog.circuit.knowledge_compile.diagram import DiagramAlgebra
+    from deeplog.circuit.knowledge_compilation.diagram import DiagramAlgebra
     from deeplog.formula.ast import fold
-    from deeplog.formula.text_parser_lark import parse_formula_to_ast
+    from deeplog.formula.text_parser_lark import parse_formula
     from deeplog.symbol import with_structure
 
     text = "(a_boolean and b_boolean) or (not a_boolean)"
@@ -144,10 +145,12 @@ def test_the_same_algebra_compiles_an_ast_and_a_circuit():
         for variable, name in enumerate((("a",), ("b",)), start=1)
     }
 
-    from_ast = fold(parse_formula_to_ast(text), DiagramAlgebra(BOOLEAN, literals))
+    from_ast = fold(parse_formula(text), DiagramAlgebra(BOOLEAN, literals))
 
     circuit, root, _ = _circuit()
-    from_circuit = circuit.fold([root], DiagramAlgebra(BOOLEAN, literals))[root]
+    from_circuit = fold_circuit(circuit, [root], DiagramAlgebra(BOOLEAN, literals))[
+        root
+    ]
 
     # The manager canonicalises, so equal formulas *are* the same diagram node.
     assert from_ast.id == from_circuit.id

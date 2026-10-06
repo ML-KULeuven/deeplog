@@ -1,7 +1,7 @@
 #  Copyright (c) 2024-2026. KU Leuven
 
-from deeplog.grounding import str_to_rule
-from deeplog.grounding import str_to_rules
+from deeplog.grounding.prolog import str_to_rule
+from deeplog.grounding.prolog import str_to_rules
 from deeplog.systems.deepproblog.parser import get_fact_atom
 from deeplog.systems.deepproblog.parser import get_fact_label
 from deeplog.systems.deepproblog.transformation import remove_labeled_rules

@@ -223,6 +223,15 @@ body.homepage {
     font-weight: 700;
     font-family: "Space Grotesk", "Inter", "Work Sans", sans-serif;
     letter-spacing: -0.015em;
+    color: inherit;
+    margin: 0;
+}
+
+.hero-tagline {
+    font-family: "Space Grotesk", "Inter", "Work Sans", sans-serif;
+    font-size: clamp(1rem, 1.8vw, 1.35rem);
+    opacity: 0.9;
+    margin: 0;
 }
 
 .hero-description-block {

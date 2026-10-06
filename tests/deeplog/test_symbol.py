@@ -6,7 +6,6 @@ from deeplog.grounding.prolog import create_fact
 from deeplog.grounding.prolog import create_query
 from deeplog.grounding.prolog import create_rule
 from deeplog.symbol import parse_symbol
-from deeplog.symbol import split_list
 from deeplog.symbol import symbol_to_pretty_string
 from deeplog.symbol import symbol_to_str
 
@@ -33,6 +32,22 @@ def test_space_in_symbol_str():
 def test_no_closing_bracket():
     with pytest.raises(ValueError):
         parse_symbol("parentOf(an,bob")
+
+
+@pytest.mark.parametrize(
+    "symbol_str", ["even(Digit)_boolean", "f(a)g(b)", "f(a))", "f(a) b"]
+)
+def test_text_after_the_arguments_is_refused(symbol_str):
+    with pytest.raises(ValueError, match="continues after the bracket"):
+        parse_symbol(symbol_str)
+
+
+def test_spaced_label_after_the_arguments():
+    assert parse_symbol("even(Digit) _ boolean") == (
+        "_",
+        ("even", ("Digit",)),
+        ("boolean",),
+    )
 
 
 def test_list_literal_symbol():
@@ -63,22 +78,33 @@ def test_empty_list():
     assert parse_symbol("[]") == ("nil",)
 
 
-@pytest.mark.parametrize(
-    ("symbol_str", "elements", "tail"),
-    [
-        ("[a,b]", ["a", "b"], "[]"),
-        ("[a,[b,c],d|T]", ["a", "[b,c]", "d"], "T"),
-        ("[]", [], "[]"),
-        ("f(a)", [], "f(a)"),
-    ],
-    ids=["list", "nested list with a tail", "empty list", "not a list"],
-)
-def test_split_list(symbol_str, elements, tail):
-    """A list splits into its elements and the tail they end in."""
-    assert split_list(parse_symbol(symbol_str)) == (
-        [parse_symbol(element) for element in elements],
-        parse_symbol(tail),
-    )
+bracketed_examples = [
+    ("f((a,b))", ("f", (",", ("a",), ("b",)))),
+    ("f((a;b))", ("f", (";", ("a",), ("b",)))),
+    ("f(a is b)", ("f", ("is", ("a",), ("b",)))),
+    ("(a;b),c", (",", (";", ("a",), ("b",)), ("c",))),
+    ("(a,b),c", (",", (",", ("a",), ("b",)), ("c",))),
+    ("a,b;c", (";", (",", ("a",), ("b",)), ("c",))),
+    ("a:-(b;c),d", (":-", ("a",), (",", (";", ("b",), ("c",)), ("d",)))),
+    ("(a is b) is c", ("is", ("is", ("a",), ("b",)), ("c",))),
+]
+
+
+@pytest.mark.parametrize(["symbol_str", "symbol"], bracketed_examples)
+def test_brackets_group_and_are_written_as_in_prolog(symbol_str, symbol):
+    """The text is SWI-Prolog's ``writeq`` of the term, up to spaces around ``is``."""
+    assert parse_symbol(symbol_str) == symbol
+    assert symbol_to_str(symbol) == symbol_str
+
+
+def test_redundant_brackets_are_dropped():
+    assert parse_symbol("f(((a)))") == ("f", ("a",))
+
+
+@pytest.mark.parametrize("symbol_str", ["()", "f(())"])
+def test_empty_brackets_are_refused(symbol_str):
+    with pytest.raises(ValueError, match="brackets nothing"):
+        parse_symbol(symbol_str)
 
 
 def test_infix_functor_parsing():

@@ -1,16 +1,17 @@
-API Reference
-=============
+Internals
+=========
 
-Browse the DeepLog API. Start with a curated set of high-level modules,
-or view the full API in the sidebar. Every exported name also appears together,
-with its signature and docstring, on the :doc:`one-page public API </public_api>`.
+Every DeepLog module, including the machinery behind the
+:doc:`public API </public_api>`. Only the names the public API lists are stable:
+anything else documented here may change in any release.
 
 {# Configure which modules appear in the quick-jump table #}
 {% set quickjump_ids = [
-    'deeplog',
+    'deeplog.formula',
+    'deeplog.circuit',
     'deeplog.module',
+    'deeplog.grounding',
     'deeplog.systems',
-    'deeplog.util',
 ] %}
 
 .. list-table:: Quick jumps
@@ -35,7 +36,6 @@ with its signature and docstring, on the :doc:`one-page public API </public_api>
    :hidden:
    :titlesonly:
 
-   /public_api
    {% for page in pages|selectattr("is_top_level_object") %}
    {{ page.include_path }}
    {% endfor %}

@@ -21,19 +21,27 @@ _INTRO = """\
 Public API
 ==========
 
-Every name exported by a DeepLog package, with its signature and docstring, on
-one page. Names appear under the package they are first exported from, so a name
-re-exported for convenience elsewhere is documented once. For the full module
-tree, including internals, see the :doc:`API reference <autoapi/index>`.
+Every name DeepLog's public packages export, with its signature and docstring,
+on one page. These are the names a release keeps stable. Names appear under the
+package they are first exported from, so a name re-exported for convenience
+elsewhere is documented once. For every module, including the machinery behind
+these names, see the :doc:`internals <autoapi/index>`.
 """
 
 
 def _public_packages(root: ModuleType) -> list[ModuleType]:
-    """Return ``root`` and every public subpackage declaring ``__all__``."""
+    """Return ``root`` and every public subpackage declaring ``__all__``.
+
+    The systems declare the surface they use themselves, but they are outside
+    the stability promise (:mod:`deeplog.systems`), so they are left out.
+    """
     modules = [root]
+    systems = f"{root.__name__}.systems"
     for info in pkgutil.walk_packages(root.__path__, f"{root.__name__}."):
-        if info.ispkg and not any(
-            part.startswith("_") for part in info.name.split(".")
+        if (
+            info.ispkg
+            and not any(part.startswith("_") for part in info.name.split("."))
+            and not (info.name == systems or info.name.startswith(systems + "."))
         ):
             modules.append(importlib.import_module(info.name))
     return sorted(

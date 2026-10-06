@@ -81,14 +81,6 @@ class Graph:
         """Return the node with the given ID."""
         return self._nodes[node_id]
 
-    def get_nodes_by_type(self, node_type: str) -> list[int]:
-        """Return all node IDs with the given node type in insertion order."""
-        return [
-            node_id
-            for node_id, node in self._nodes.items()
-            if node.node_type == node_type
-        ]
-
     def __len__(self) -> int:
         """Return the number of nodes in the graph."""
         return len(self._nodes)
@@ -133,16 +125,6 @@ class Graph:
             for child in reversed(node.children):
                 if child not in visited:
                     stack.append((child, False))
-
-    def iter_reverse_topological(self, roots: list[int]) -> Iterator[int]:
-        """Iterate over nodes in reverse topological order (roots first).
-
-        Args:
-            roots: List of root node IDs to start traversal from.
-
-        Yields node IDs such that all parents are yielded before their children.
-        """
-        return reversed(list(self.iter_topological(roots)))
 
     def flatten_chains(
         self,

@@ -33,17 +33,6 @@ class TestGraphLeafNodes:
         assert leaf3 == 2
         assert len(graph) == 3
 
-    def test_get_nodes_by_type(self):
-        graph = Graph({"leaf", "and"})
-        leaf1 = graph.add_leaf()
-        leaf2 = graph.add_leaf()
-        internal = graph.add_node("and", (leaf1, leaf2))
-        leaves = graph.get_nodes_by_type("leaf")
-        assert leaf1 in leaves
-        assert leaf2 in leaves
-        assert internal not in leaves
-        assert len(leaves) == 2
-
 
 class TestGraphInternalNodes:
     def test_add_node_binary(self):

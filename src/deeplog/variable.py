@@ -6,10 +6,11 @@ Two consumers read that declaration: an aggregation enumerates its binder's
 domain to substitute each value into the body, and knowledge compilation sizes
 one compiler variable per declared domain.
 
-A domain is either *symbolic* — an ordered tuple of value names, whose position
-is the value's identity — or a *tensor* of values that have no names of their
-own, such as images. Each answers only the view it has: asking a tensor domain
-for its value names raises rather than inventing them.
+A domain is *symbolic*, an ordered tuple of value names, whose position is the
+value's identity; a *tensor* of values that have no names of their own; or the
+open domain of *values*, such as numbers or images, which is never enumerated.
+Each answers only the view it has: asking a tensor domain for its value names
+raises rather than inventing them.
 
 A variable is linked to the atoms it occurs in, not to atoms per value: see
 :data:`VariableAtoms`.
@@ -36,7 +37,7 @@ class Domain(ABC):
     """The values a variable ranges over, in value order."""
 
     @staticmethod
-    def of(values: Iterable[Symbol | str | int]) -> SymbolicDomain:
+    def of(values: Iterable[Symbol | str | int]) -> Domain:
         """A domain of named values, in the given order."""
         return SymbolicDomain(
             tuple(
@@ -46,12 +47,21 @@ class Domain(ABC):
         )
 
     @staticmethod
-    def of_tensor(values: Tensor) -> TensorDomain:
+    def of_tensor(values: Tensor) -> Domain:
         """A domain whose values are the rows of ``values`` and have no names."""
         return TensorDomain(values)
 
     @staticmethod
-    def of_structure(structure: AlgebraicStructure) -> SymbolicDomain:
+    def of_values() -> Domain:
+        """The open domain of values without names, such as numbers or images.
+
+        It is never enumerated, so a variable over it is free: the caller gives
+        it its value.
+        """
+        return ValueDomain()
+
+    @staticmethod
+    def of_structure(structure: AlgebraicStructure) -> Domain:
         """The domain a variable associated with ``structure`` inherits.
 
         Raises:
@@ -124,9 +134,24 @@ class SymbolicDomain(Domain):
 
 @dataclass(frozen=True, eq=False)
 class TensorDomain(Domain):
-    """A domain whose values are the rows of a tensor and carry no names."""
+    """A domain whose values are the rows of a tensor and carry no names.
+
+    Two tensor domains are equal when they hold equal values in the same order.
+    """
 
     tensor: Tensor
+
+    def __eq__(self, other: object) -> bool:
+        """Whether ``other`` is a tensor domain of equal values, in the same order."""
+        if not isinstance(other, TensorDomain):
+            return NotImplemented
+        return self.tensor.shape == other.tensor.shape and bool(
+            (self.tensor == other.tensor.to(self.tensor.device)).all()
+        )
+
+    def __hash__(self) -> int:
+        """The hash of the values' shape, which equal domains share."""
+        return hash(tuple(self.tensor.shape))
 
     def __len__(self) -> int:
         """The number of values in the domain."""
@@ -135,6 +160,33 @@ class TensorDomain(Domain):
     def as_tensor(self) -> Tensor:
         """The values themselves."""
         return self.tensor
+
+
+@dataclass(frozen=True)
+class ValueDomain(Domain):
+    """The open domain of values without names, which is never enumerated."""
+
+    def __len__(self) -> int:
+        """Never returns.
+
+        Raises:
+            ValueError: Always, since the values are not enumerated.
+        """
+        raise ValueError(_NOT_ENUMERATED)
+
+    def as_tensor(self) -> Tensor:
+        """Never returns.
+
+        Raises:
+            ValueError: Always, since the values are not enumerated.
+        """
+        raise ValueError(_NOT_ENUMERATED)
+
+
+_NOT_ENUMERATED = (
+    "The domain of values is not enumerated: a variable over it is free, given "
+    "its value by the caller, so no aggregation can bind it."
+)
 
 
 @dataclass(frozen=True)

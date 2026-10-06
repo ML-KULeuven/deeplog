@@ -52,7 +52,7 @@ DeepLog learning roadmap
 DeepLog can be learned along two complementary narratives:
 
 - **Symbolic wrapper around Torch** — start with symbols, shapes, and :class:`~deeplog.module.deeplog_module.DeepLogModule` to add semantic validation to PyTorch workflows.
-- **Tensorizing DeepLog formulas** — learn the language, predicates, and compilation pipeline that turns logic into executable modules.
+- **Tensorizing DeepLog formulas** — learn the language, predicates, and compilation that turns logic into executable modules.
 
 Use the sections below to follow either track or mix and match.
 
@@ -60,19 +60,12 @@ DeepLog Modules (symbolic wrapper around Torch)
 +++++++++++++++++++++++++++++++++++++++++++++++
 Build the core intuition: Symbols → SymTensor → DeepLogModule.
 
-.. card:: Symbols
-    :link: examples/symbol
+.. card:: Symbols and shapes
+    :link: examples/symbols_and_shapes
     :link-type: doc
 
-    One of the core components of DeepLog is the Symbol, which is used to identify anything of symbolic nature.
-
-.. card:: SymTensor
-    :link: examples/shape
-    :link-type: doc
-
-    One of the main concepts of DeepLog is the :class:`~deeplog.shape.SymTensor`, which carries symbolic information
-    about the input and output of modules. The following notebook explains the basic structure
-    and shows how to transform_circuit between shapes.
+    A symbol names a term, an atom or a value and its algebra; a :class:`~deeplog.shape.SymTensor` names
+    every entry of a tensor, and the shapes modules declare are made of them.
 
 .. card:: DeepLogModule
     :link: examples/deeplogmodule
@@ -85,7 +78,7 @@ Build the core intuition: Symbols → SymTensor → DeepLogModule.
     :link: examples/composition
     :link-type: doc
 
-    Learn how to combine DeepLog Modules using Sequential and ModuleCircuit, explore automatic shape transformations, and handle missing producers.
+    Learn how to combine DeepLog Modules using Sequential and compose_modules, explore automatic shape transformations, and handle missing producers.
 
 .. card:: Circuits
     :link: examples/circuits
@@ -112,13 +105,13 @@ How DeepLog formulas map to tensors and executable modules.
     Learn how DeepLog predicates connect symbolic atoms to executable tensor operations, enabling the evaluation of logical formulas within DeepLog.
 
 .. card:: Aggregation basics
-    :link: examples/01_aggregation_basics
+    :link: examples/aggregation_basics
     :link-type: doc
 
-    Learn the aggregation syntax, finite domains, and how DeepLog builds aggregation modules.
+    Learn the aggregation syntax, finite domains, aggregation operators, and expectations under a distribution.
 
 .. card:: Free variables and batching
-    :link: examples/03_free_variables_and_batching
+    :link: examples/free_variables_and_batching
     :link-type: doc
 
     Free variables become module inputs.
@@ -128,24 +121,18 @@ How DeepLog formulas map to tensors and executable modules.
     :link: examples/formula_to_module
     :link-type: doc
 
-    Learn how symbolic formulas are compiled into DeepLog modules and how the resulting modules plug into differentiable pipelines.
+    Learn how symbolic formulas are compiled into DeepLog modules and how the resulting modules plug into differentiable training code, and how an expectation is counted, enumerated or sampled.
 
-.. card:: The Formula AST and its Rewrites
-    :link: examples/ast_and_rewrites
+.. card:: The Formula AST
+    :link: examples/formula_ast
     :link-type: doc
 
-    Look inside the parse-to-module pipeline: the materialized AST and how to read it, building one with ``AstFactory``, and the ``recognize_expectation`` pass that turns a hand-written weighted model count into an expectation.
+    The tree a formula becomes: how to read it, how to build it from Python, and the proofs a grounder returns as the same kind of tree.
 
 
 Extending DeepLog
 +++++++++++++++++
-Advanced features for custom algebraic structures and circuit operations.
-
-.. card:: Circuit Transformation
-    :link: examples/circuit_transformation
-    :link-type: doc
-
-    Transform circuits between algebraic structures with automatic operator mapping, leaf remapping, and batch transformation.
+Advanced features for custom algebraic structures.
 
 .. card:: Logic Tensor Networks (LTN)
     :link: examples/ltn
@@ -162,19 +149,19 @@ End-to-end tutorials showing DeepLog in applied settings.
     :link: examples/semantic_loss
     :link-type: doc
 
-    This tutorial shows how to include DeepLog in a normal ML pipeline by implementing the Semantic Loss framework in DeepLog with an exactly-one constraint.
+    This tutorial shows how to include DeepLog in a normal ML training loop by implementing the Semantic Loss framework in DeepLog with an exactly-one constraint.
 
 .. card:: DeepProbLog
     :link: examples/deepproblog
     :link-type: doc
 
-    Neural predicates: a fact's probability comes from a network instead of a constant. Builds up from a tiny example to a full DeepProbLog workflow where two MNIST digits are jointly classified and summed — an end-to-end neurosymbolic example.
+    Neural predicates: a fact's probability comes from a network instead of a constant. Builds up from a tiny example to a full DeepProbLog workflow where two MNIST digits are jointly classified and summed — an end-to-end neurosymbolic example, counted exactly or estimated by sampling.
 
 
 .. seealso::
 
    - :doc:`getstarted` ‒ installation paths and a 30-second hello-world snippet.
-   - :doc:`autoapi/index` ‒ API reference for DeepLog modules, shapes, and engines used throughout the notebooks.
+   - :doc:`public_api` ‒ API reference for DeepLog modules, shapes, and engines used throughout the notebooks.
 
 .. toctree::
    :caption: Learning paths
@@ -187,19 +174,17 @@ End-to-end tutorials showing DeepLog in applied settings.
    :caption: More notebooks
    :hidden:
 
-   examples/shape
+   examples/symbols_and_shapes
    examples/deeplogmodule
    examples/composition
    examples/formula_to_module
-   examples/ast_and_rewrites
+   examples/formula_ast
    examples/semantic_loss
-   examples/symbol
    examples/predicates
    examples/problog
    examples/deepproblog
    examples/circuits
    examples/language
-   examples/01_aggregation_basics
-   examples/03_free_variables_and_batching
-   examples/circuit_transformation
+   examples/aggregation_basics
+   examples/free_variables_and_batching
    examples/ltn

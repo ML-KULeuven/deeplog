@@ -21,9 +21,10 @@ from sphinx_helpers.switcher import configure_version_switcher
 project = "DeepLog"
 copyright = "2026, KU Leuven"
 author = "KU Leuven"
-release = tomllib.loads(
+package = tomllib.loads(
     (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text()
-)["project"]["version"]
+)["project"]
+release = package["version"]
 
 # -- General configuration ---------------------------------------------------
 
@@ -43,6 +44,8 @@ extensions = [
     "sphinx_design",
     "sphinx_copybutton",
     "sphinx_multiversion",
+    "sphinx_sitemap",
+    "sphinxext.opengraph",
 ]
 
 
@@ -106,12 +109,6 @@ nitpick_ignore_regex = [
 nitpick_ignore = [
     ("py:class", "Ellipsis"),  # from `tuple[X, ...]`
     ("py:class", "_Step"),
-    # Private types referenced from public-looking places (intentional).
-    ("py:class", "_DeepLogCircuitNode"),
-    (
-        "py:class",
-        "deeplog.formula.deeplogmodulefactory.deeplogmodulefactory._DeepLogCircuitNode",
-    ),
     # numpy typing aliases that aren't in numpy's intersphinx inventory.
     ("py:class", "NDArray"),
     ("py:class", "numpy.typing.ArrayLike"),
@@ -120,6 +117,7 @@ nitpick_ignore = [
     # External/private implementation types referenced from docstrings.
     ("py:class", "klay.Circuit"),
     ("py:obj", "_LabelProbabilityPredicate"),
+    ("py:obj", "_ValueHashed"),
     ("py:class", "_StructureCast"),
     ("py:data", "_CAST_FUNCTIONS"),
     ("py:func", "_compile_conditional"),
@@ -135,12 +133,14 @@ myst_enable_extensions = [
 pygments_style = "sphinx"
 html_title = "DeepLog"
 html_theme = "pydata_sphinx_theme"
-html_baseurl = os.environ.get("DOCS_BASE_URL", "")
+html_baseurl = package["urls"]["Documentation"]
 html_static_path = ["_static"]
 html_show_sphinx = False
 html_show_sourcelink = False
 html_permalinks = False  # Disable permalinks (the # symbol next to headers)
 html_favicon = "_static/images/favicon.ico"
+# Google Search Console verifies the site by the file in _extra, at the site's root.
+html_extra_path = ["_extra"]
 # nb_execution_cache_path = str(Path(__file__).parent.parent / "build")
 
 graphviz_output_format = "svg"
@@ -174,7 +174,35 @@ html_theme_options = {
     "show_prev_next": True,
 }
 
-html_context = {"default_mode": "light"}
+html_context = {
+    "default_mode": "light",
+    # The schema.org record _templates/layout.html puts on the landing page.
+    "structured_data": {
+        "@context": "https://schema.org",
+        "@type": "SoftwareSourceCode",
+        "name": project,
+        "description": package["description"],
+        "url": package["urls"]["Documentation"],
+        "codeRepository": package["urls"]["Repository"],
+        "sameAs": [f"https://pypi.org/project/{package['name']}/"],
+        "programmingLanguage": "Python",
+        "license": f"https://spdx.org/licenses/{package['license']['text']}.html",
+        "author": [
+            {"@type": "Organization", "name": a["name"]} for a in package["authors"]
+        ],
+        "citation": {
+            "@type": "ScholarlyArticle",
+            "name": "DeepLog: A Software Framework for Modular Neurosymbolic AI",
+            "url": "https://doi.org/10.24963/ijcai.2026/980",
+        },
+    },
+}
+
+# A page's sitemap entry and Open Graph URL are its path under html_baseurl, which
+# set_site_url hands both extensions; the site has no language or version prefix.
+sitemap_url_scheme = "{link}"
+sitemap_excludes = ["search.html", "genindex.html", "py-modindex.html", "_modules/*"]
+ogp_image = "_static/images/deeplog.png"
 
 
 # Whitelist pattern for tags (set to None to ignore all tags)
@@ -225,10 +253,22 @@ nb_execution_timeout = int(os.environ.get("NB_EXECUTION_TIMEOUT", "300"))
 nb_execution_raise_on_error = False
 
 
+def set_site_url(app, config):
+    """Root the sitemap and the Open Graph URLs at ``html_baseurl``.
+
+    Both extensions append a page's path to their site URL, so it ends in a slash.
+    """
+    # A config-inited hook, not an assignment above: -D html_baseurl=... applies
+    # after this file runs.
+    if config.html_baseurl:
+        config.site_url = config.ogp_site_url = config.html_baseurl.rstrip("/") + "/"
+
+
 def setup(app):
     """Set up the build environment."""
     app.add_config_value("smv_root_ref", smv_root_ref, "env")
     app.connect("config-inited", configure_version_switcher)
+    app.connect("config-inited", set_site_url)
     app.connect("builder-inited", write_example_notebooks)
     app.connect("builder-inited", write_public_api)
     app.connect("autodoc-process-docstring", drop_borrowed_docstring)

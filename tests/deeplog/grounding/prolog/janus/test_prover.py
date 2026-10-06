@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from deeplog.grounding.prolog import JANUS_AVAILABLE
 from deeplog.grounding.prolog import JanusProver
 from deeplog.grounding.prolog import UnknownPredicateException
+from deeplog.grounding.prolog.janus.prover import JANUS_AVAILABLE
 from deeplog.symbol import parse_symbol
 
 

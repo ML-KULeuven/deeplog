@@ -1,20 +1,23 @@
 #  Copyright (c) 2024-2026. KU Leuven
 """Tests for :class:`KBestJanusGrounder`."""
 
+from functools import partial
+
 import pytest
 import torch
 
-from deeplog.formula import AstFactory
-from deeplog.formula import BinaryOp
-from deeplog.formula import SymbolicFormulaFactory
-from deeplog.formula import UnaryOp
-from deeplog.formula.predicates.builtin_predicates import get_network_predicate
-from deeplog.grounding import JanusGrounder
-from deeplog.grounding import UnknownPredicateException
-from deeplog.grounding import str_to_rules
+from deeplog import BinaryOp
+from deeplog import Compiler
+from deeplog import NetworkPredicate
+from deeplog import UnaryOp
+from deeplog.grounding.prolog import JanusGrounder
+from deeplog.grounding.prolog import UnknownPredicateException
+from deeplog.grounding.prolog import str_to_rules
+from deeplog.symbol import parse_symbol
 from deeplog.systems.deepproblog import KBestJanusGrounder
 from deeplog.systems.deepproblog import NeuralPredicateEvaluator
 from deeplog.systems.deepproblog import Solver
+from deeplog.systems.deepproblog import compile_to_module
 
 # White-box: ProbabilisticFactory is k-best-internal (not public API); the two
 # scalar-probability tests below reach into it directly by module path.
@@ -59,20 +62,20 @@ def test_heuristic_must_be_known():
 
 def test_k1_picks_highest_probability():
     program = tuple(str_to_rules(PROGRAM_THREE_FACTS))
-    result = KBestJanusGrounder(k=1).get_query_result(program, SymbolicFormulaFactory())
-    assert _single_formula(result) == "a_boolean"
+    result = KBestJanusGrounder(k=1).get_query_result(program)
+    assert str(_single_formula(result)) == "a_boolean"
 
 
 def test_k2_picks_top_two():
     program = tuple(str_to_rules(PROGRAM_THREE_FACTS))
-    result = KBestJanusGrounder(k=2).get_query_result(program, SymbolicFormulaFactory())
-    assert _single_formula(result) == "a_boolean or b_boolean"
+    result = KBestJanusGrounder(k=2).get_query_result(program)
+    assert str(_single_formula(result)) == "a_boolean or b_boolean"
 
 
 def test_kge_all_matches_full_enumeration():
     program = tuple(str_to_rules(PROGRAM_THREE_FACTS))
-    kbest = KBestJanusGrounder(k=10).get_query_result(program, AstFactory())
-    janus = Solver(JanusGrounder()).get_query_result(program, AstFactory())
+    kbest = KBestJanusGrounder(k=10).get_query_result(program)
+    janus = Solver(JanusGrounder()).get_query_result(program)
     # Same set of ground goals, same disjunctive content (order may differ
     # because JanusGrounder's tabled disjoin is bottom-up while KBest folds
     # top-down by probability).
@@ -81,6 +84,42 @@ def test_kge_all_matches_full_enumeration():
         assert sorted(operands(kbest.formulas[goal], "or"), key=repr) == sorted(
             operands(janus.formulas[goal], "or"), key=repr
         )
+
+
+ALARM = """
+0.6::burglary.
+0.3::earthquake.
+alarm :- burglary.
+alarm :- earthquake.
+"""
+
+
+def test_evidence_conditions_as_the_exact_grounder_does():
+    """With k covering every proof, P(burglary | alarm) = 0.6 / (1 - 0.4 * 0.7)."""
+    program = tuple(str_to_rules(ALARM + ":- not(alarm).\n?- burglary."))
+
+    kbest = compile_to_module(
+        KBestJanusGrounder(k=10).get_query_result(program), Compiler()
+    )
+    exact = compile_to_module(
+        Solver(JanusGrounder()).get_query_result(program), Compiler()
+    )
+
+    torch.testing.assert_close(kbest(), exact())
+    torch.testing.assert_close(kbest(), torch.tensor([[0.6 / (1 - 0.4 * 0.7)]]))
+
+
+def test_get_result_grounds_a_goal_as_the_exact_grounder_does():
+    program = tuple(str_to_rules(ALARM))
+    goal = parse_symbol("alarm")
+
+    kbest = KBestJanusGrounder(k=10).get_result(program, goal)
+    exact = Solver(JanusGrounder()).get_result(program, goal)
+
+    assert kbest.formulas == exact.formulas
+    torch.testing.assert_close(
+        compile_to_module(kbest, Compiler())(), torch.tensor([[1 - 0.4 * 0.7]])
+    )
 
 
 def test_conjunction_in_rule_body():
@@ -94,18 +133,18 @@ def test_conjunction_in_rule_body():
     """
     program = tuple(str_to_rules(code))
     # Top proof: c (P=0.5). Second: a,b (P=0.09). k=1 should keep only c.
-    result = KBestJanusGrounder(k=1).get_query_result(program, SymbolicFormulaFactory())
-    assert _single_formula(result) == "c_boolean"
+    result = KBestJanusGrounder(k=1).get_query_result(program)
+    assert str(_single_formula(result)) == "c_boolean"
     # k=2 should include both proofs.
-    result = KBestJanusGrounder(k=2).get_query_result(program, SymbolicFormulaFactory())
-    assert _single_formula(result) == "c_boolean or (a_boolean and b_boolean)"
+    result = KBestJanusGrounder(k=2).get_query_result(program)
+    assert str(_single_formula(result)) == "c_boolean or (a_boolean and b_boolean)"
 
 
 def test_unknown_predicate_raises():
     code = "?-missing."
     program = tuple(str_to_rules(code))
     with pytest.raises(UnknownPredicateException):
-        KBestJanusGrounder(k=1).get_query_result(program, SymbolicFormulaFactory())
+        KBestJanusGrounder(k=1).get_query_result(program)
 
 
 def test_a_builtin_belongs_to_the_grounder_that_added_it():
@@ -120,11 +159,11 @@ def test_a_builtin_belongs_to_the_grounder_that_added_it():
     with_square.add_builtin("square", 2, square)
 
     with pytest.raises(UnknownPredicateException):
-        without.get_query_result(program, SymbolicFormulaFactory())
-    result = with_square.get_query_result(program, SymbolicFormulaFactory())
+        without.get_query_result(program)
+    result = with_square.get_query_result(program)
     assert set(result.formulas) == {("q", ("9",))}
     with pytest.raises(UnknownPredicateException):
-        without.get_query_result(program, SymbolicFormulaFactory())
+        without.get_query_result(program)
 
 
 def test_negation_hoists_single_rv():
@@ -133,8 +172,8 @@ def test_negation_hoists_single_rv():
     code = """0.3::a.
 ?-not(a)."""
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=1).get_query_result(program, SymbolicFormulaFactory())
-    assert _single_formula(result) == "not a_boolean"
+    result = KBestJanusGrounder(k=1).get_query_result(program)
+    assert str(_single_formula(result)) == "not a_boolean"
 
 
 def test_negation_over_deterministic_goal_no_split():
@@ -146,8 +185,8 @@ unsat :- between(1, 0, _).
 q :- not(unsat), a.
 ?-q."""
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=1).get_query_result(program, SymbolicFormulaFactory())
-    assert _single_formula(result) == "a_boolean"
+    result = KBestJanusGrounder(k=1).get_query_result(program)
+    assert str(_single_formula(result)) == "a_boolean"
 
 
 def test_negation_respects_prior_commitment():
@@ -163,9 +202,9 @@ def test_negation_respects_prior_commitment():
     ?-q.
     """
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=5).get_query_result(program, SymbolicFormulaFactory())
+    result = KBestJanusGrounder(k=5).get_query_result(program)
     # Only the second rule should survive; its formula is the negated leaf.
-    assert _single_formula(result) == "not a_boolean"
+    assert str(_single_formula(result)) == "not a_boolean"
 
 
 def test_consistency_naf_then_positive_same_rv():
@@ -178,7 +217,7 @@ def test_consistency_naf_then_positive_same_rv():
 q :- not(a), a.
 ?-q."""
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=5).get_query_result(program, SymbolicFormulaFactory())
+    result = KBestJanusGrounder(k=5).get_query_result(program)
     assert result.formulas == {}
 
 
@@ -190,7 +229,7 @@ def test_consistency_positive_then_naf_same_rv():
 q :- a, not(a).
 ?-q."""
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=5).get_query_result(program, SymbolicFormulaFactory())
+    result = KBestJanusGrounder(k=5).get_query_result(program)
     assert result.formulas == {}
 
 
@@ -201,16 +240,16 @@ def test_double_negation_equals_positive():
     code = """0.3::a.
 ?-not(not(a))."""
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=5).get_query_result(program, SymbolicFormulaFactory())
-    assert _single_formula(result) == "a_boolean"
+    result = KBestJanusGrounder(k=5).get_query_result(program)
+    assert str(_single_formula(result)) == "a_boolean"
 
 
 def test_triple_negation_equals_single_negation():
     code = """0.3::a.
 ?-not(not(not(a)))."""
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=5).get_query_result(program, SymbolicFormulaFactory())
-    assert _single_formula(result) == "not a_boolean"
+    result = KBestJanusGrounder(k=5).get_query_result(program)
+    assert str(_single_formula(result)) == "not a_boolean"
 
 
 def test_negation_over_deterministically_succeeding_predicate_kills_branch():
@@ -221,7 +260,7 @@ g :- between(0, 0, _).
 q :- not(g), a.
 ?-q."""
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=1).get_query_result(program, SymbolicFormulaFactory())
+    result = KBestJanusGrounder(k=1).get_query_result(program)
     assert result.formulas == {}
 
 
@@ -233,7 +272,7 @@ def test_negation_over_unknown_predicate_raises():
     code = "?-not(missing)."
     program = tuple(str_to_rules(code))
     with pytest.raises(UnknownPredicateException):
-        KBestJanusGrounder(k=1).get_query_result(program, SymbolicFormulaFactory())
+        KBestJanusGrounder(k=1).get_query_result(program)
 
 
 def test_negation_of_disjunction():
@@ -246,7 +285,7 @@ ab :- a.
 ab :- b.
 ?-not(ab)."""
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=10).get_query_result(program, AstFactory())
+    result = KBestJanusGrounder(k=10).get_query_result(program)
     conjuncts = operands(_single_formula(result), "and")
     assert sorted(conjuncts, key=repr) == sorted(
         [UnaryOp("not", leaf("a")), UnaryOp("not", leaf("b"))], key=repr
@@ -263,7 +302,7 @@ def test_negation_of_conjunction():
 ab :- a, b.
 ?-not(ab)."""
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=10).get_query_result(program, AstFactory())
+    result = KBestJanusGrounder(k=10).get_query_result(program)
     disjuncts = operands(_single_formula(result), "or")
     assert sorted(disjuncts, key=repr) == sorted(
         [
@@ -284,8 +323,8 @@ def test_negation_over_existential():
 some_p :- p(_).
 ?-not(some_p)."""
     program = tuple(str_to_rules(code))
-    kbest = KBestJanusGrounder(k=10).get_query_result(program, SymbolicFormulaFactory())
-    janus = Solver(JanusGrounder()).get_query_result(program, SymbolicFormulaFactory())
+    kbest = KBestJanusGrounder(k=10).get_query_result(program)
+    janus = Solver(JanusGrounder()).get_query_result(program)
     assert set(kbest.formulas.keys()) == set(janus.formulas.keys())
 
 
@@ -296,8 +335,8 @@ def test_negation_only_proof_kept_at_low_probability():
     code = """0.9::a.
 ?-not(a)."""
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=1).get_query_result(program, SymbolicFormulaFactory())
-    assert _single_formula(result) == "not a_boolean"
+    result = KBestJanusGrounder(k=1).get_query_result(program)
+    assert str(_single_formula(result)) == "not a_boolean"
 
 
 def test_repeated_naf_shares_assignment():
@@ -308,7 +347,7 @@ def test_repeated_naf_shares_assignment():
 q :- not(a), not(a).
 ?-q."""
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=5).get_query_result(program, AstFactory())
+    result = KBestJanusGrounder(k=5).get_query_result(program)
     assert len(result.formulas) == 1
     # One negated leaf and nothing else: a second hoist would conjoin a second.
     assert list(operands(_single_formula(result), "and")) == [UnaryOp("not", leaf("a"))]
@@ -322,7 +361,7 @@ q :- a.
 q :- not(a).
 ?-q."""
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=10).get_query_result(program, AstFactory())
+    result = KBestJanusGrounder(k=10).get_query_result(program)
     disjuncts = operands(_single_formula(result), "or")
     assert sorted(disjuncts, key=repr) == sorted(
         [leaf("a"), UnaryOp("not", leaf("a"))], key=repr
@@ -340,8 +379,8 @@ def test_negation_top_k_matches_full_enumeration():
     ?-q.
     """
     program = tuple(str_to_rules(code))
-    kbest = KBestJanusGrounder(k=10).get_query_result(program, AstFactory())
-    janus = Solver(JanusGrounder()).get_query_result(program, AstFactory())
+    kbest = KBestJanusGrounder(k=10).get_query_result(program)
+    janus = Solver(JanusGrounder()).get_query_result(program)
     assert set(kbest.formulas.keys()) == set(janus.formulas.keys())
     for goal in kbest.formulas:
         assert sorted(operands(kbest.formulas[goal], "or"), key=repr) == sorted(
@@ -359,7 +398,7 @@ def test_between_binds_variable():
     ?-output(X).
     """
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=5).get_query_result(program, SymbolicFormulaFactory())
+    result = KBestJanusGrounder(k=5).get_query_result(program)
     assert set(result.formulas.keys()) == {
         ("output", ("0",)),
         ("output", ("1",)),
@@ -382,18 +421,14 @@ def test_geometric_mean_ordering():
     ?-goal.
     """
     program = tuple(str_to_rules(code))
-    pp = KBestJanusGrounder(k=1, heuristic="pp").get_query_result(
-        program, SymbolicFormulaFactory()
-    )
-    gm = KBestJanusGrounder(k=1, heuristic="gm").get_query_result(
-        program, SymbolicFormulaFactory()
-    )
-    assert _single_formula(pp) == "p_boolean"
-    assert _single_formula(gm) == "q_boolean and r_boolean"
+    pp = KBestJanusGrounder(k=1, heuristic="pp").get_query_result(program)
+    gm = KBestJanusGrounder(k=1, heuristic="gm").get_query_result(program)
+    assert str(_single_formula(pp)) == "p_boolean"
+    assert str(_single_formula(gm)) == "q_boolean and r_boolean"
 
 
 def test_engine_factory_scalar_probability_for_numeric_label():
-    factory = ProbabilisticFactory(SymbolicFormulaFactory())
+    factory = ProbabilisticFactory()
     assert factory.get_scalar_probability(("0.25",)) == pytest.approx(0.25)
 
 
@@ -401,7 +436,7 @@ def test_engine_factory_scalar_probability_raises_on_unresolvable_label():
     # Heuristic ranking requires a probability; a label that's neither a
     # numeric constant nor resolvable by the wrapped factory is a bug, not
     # a neutral case.
-    factory = ProbabilisticFactory(SymbolicFormulaFactory())
+    factory = ProbabilisticFactory()
     with pytest.raises(ValueError):
         factory.get_scalar_probability(("tag",))
 
@@ -423,8 +458,11 @@ def test_map_inference_returns_best_proof():
     ?-wet.
     """
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=1).get_query_result(program, SymbolicFormulaFactory())
-    assert _single_formula(result) == "sprinkler_boolean and wet_from_sprinkler_boolean"
+    result = KBestJanusGrounder(k=1).get_query_result(program)
+    assert (
+        str(_single_formula(result))
+        == "sprinkler_boolean and wet_from_sprinkler_boolean"
+    )
     # The MAP explanation uses two facts; its probability is the product of
     # their labels and must equal the argmax over both branches.
     labels = result.labels
@@ -455,15 +493,13 @@ def test_categorical_with_tensor_input():
     evaluator = NeuralPredicateEvaluator(
         tensors={("img1",): torch.tensor([0.1, 0.6, 0.1, 0.1, 0.1])},
         atom_builders={
-            ("classifier", 2, "probability"): get_network_predicate(
-                "classifier", 2, "probability", _DummyClassifier()
+            ("classifier", 2, "probability"): partial(
+                NetworkPredicate, module=_DummyClassifier()
             ),
         },
     )
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=1).get_query_result(
-        program, SymbolicFormulaFactory(), evaluator=evaluator
-    )
+    result = KBestJanusGrounder(k=1).get_query_result(program, evaluator=evaluator)
     # Top-1 proof: rook (the index-1 entry, score 0.6) — selection alone
     # demonstrates the heuristic correctly read the network output. The
     # leaf is keyed directly on the AD branch's head atom; the network
@@ -471,7 +507,8 @@ def test_categorical_with_tensor_input():
     # categorical wrapping by the engine before reaching the factory).
     assert set(result.formulas.keys()) == {("class", ("img1",), ("rook",))}
     assert (
-        result.formulas[("class", ("img1",), ("rook",))] == "class(img1,rook)_boolean"
+        str(result.formulas[("class", ("img1",), ("rook",))])
+        == "class(img1,rook)_boolean"
     )
     assert result.labels[("class", ("img1",), ("rook",))] == (
         "classifier",
@@ -493,48 +530,68 @@ def test_naf_over_categorical_two_branch():
     # `?- not(a).` over `0.3::a; 0.7::b.` triggers the categorical hoist:
     # 3 heap children spawn (a-pos, b-pos, none); the a-pos child fails
     # itself because committing `a` makes `not(a)` false. The two
-    # surviving children produce: leaf(b) and the single "RV took none"
-    # MV literal.
+    # surviving children produce leaf(b) and "none of the branches".
     code = """
     0.3::a; 0.7::b.
     ?- not(a).
     """
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=10).get_query_result(
-        program, SymbolicFormulaFactory()
-    )
+    result = KBestJanusGrounder(k=10).get_query_result(program)
     assert set(result.formulas.keys()) == {("not", ("a",))}
-    formula_str = str(result.formulas[("not", ("a",))])
-    # b-positive child survives — its MV literal is a regular indicator
-    # tagged ``_boolean``; the AD-specific (cat_id, value) info lives in
-    # ``result.variables``, not in the leaf string.
-    assert "b_boolean" in formula_str
-    # "none" child survives — single MV literal for the residual outcome,
-    # named ``@cat_none(@cat_id_N)``.
-    assert "@cat_none" in formula_str
+    # The AD-specific (cat_id, value) info lives in ``result.variables``, not
+    # in the leaves.
+    assert sorted(operands(_single_formula(result), "or"), key=repr) == sorted(
+        [leaf("b"), UnaryOp("not", BinaryOp("or", leaf("a"), leaf("b")))], key=repr
+    )
 
 
 def test_naf_over_categorical_three_branch():
     # 3-branch AD: 4 heap children spawn (a, b, c, none); only a-pos
     # fails on re-resolution. The surviving disjunction includes b, c,
-    # and the single "none"-outcome MV literal.
+    # and "none of the branches", which names every branch.
     code = """
     0.2::a; 0.5::b; 0.3::c.
     ?- not(a).
     """
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=10).get_query_result(
-        program, SymbolicFormulaFactory()
-    )
-    formula_str = str(result.formulas[("not", ("a",))])
-    assert "b_boolean" in formula_str
-    assert "c_boolean" in formula_str
-    # The "none" outcome is now a single MV literal, not a conjunction
-    # of negated branches.
-    assert "@cat_none" in formula_str
-    # And the engine records it as the variable's last value.
+    result = KBestJanusGrounder(k=10).get_query_result(program)
+    disjuncts = list(operands(_single_formula(result), "or"))
+    assert leaf("b") in disjuncts
+    assert leaf("c") in disjuncts
+    (none,) = [d for d in disjuncts if isinstance(d, UnaryOp)]
+    assert list(operands(none.operand, "or")) == [leaf("a"), leaf("b"), leaf("c")]
+    # The variable's values are the branches; none of them holding is its
+    # missing outcome, which no value names.
     ((variable, _),) = result.variables.items()
-    assert variable.domain.values[-1][0] == "@cat_none"
+    assert variable.domain.values == (("a",), ("b",), ("c",))
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "0.3::a; 0.7::b.\n?- not(a).",
+        "0.2::a; 0.5::b; 0.3::c.\n?- not(a).",
+        "0.3::a; 0.5::b.\nq :- not(a), not(b).\n?- q.",
+        "0.3::a; 0.5::b.\nq :- a.\nq :- not(b).\n?- q.",
+    ],
+    ids=["two branches", "three branches", "none of them", "positive or negated"],
+)
+def test_naf_over_categorical_compiles_as_the_exact_grounder_does(code):
+    """None of a disjunction's branches holding is its missing outcome.
+
+    The compiled module reads no input for it and weighs it as the mass the
+    branches leave.
+    """
+    program = tuple(str_to_rules(code))
+    kbest = compile_to_module(
+        KBestJanusGrounder(k=10).get_query_result(program), Compiler()
+    )
+    exact = compile_to_module(
+        Solver(JanusGrounder()).get_query_result(program), Compiler()
+    )
+
+    assert kbest.get_input_shape() == ()
+    torch.testing.assert_close(kbest(), exact())
 
 
 def test_naf_in_rule_body_with_positive_ad_branch():
@@ -549,9 +606,7 @@ def test_naf_in_rule_body_with_positive_ad_branch():
     ?- goal.
     """
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=10).get_query_result(
-        program, SymbolicFormulaFactory()
-    )
+    result = KBestJanusGrounder(k=10).get_query_result(program)
     assert set(result.formulas.keys()) == {("goal",)}
     assert str(result.formulas[("goal",)]) == "b_boolean"
 
@@ -566,8 +621,6 @@ def test_naf_over_non_categorical_still_works():
     ?- q.
     """
     program = tuple(str_to_rules(code))
-    result = KBestJanusGrounder(k=10).get_query_result(
-        program, SymbolicFormulaFactory()
-    )
+    result = KBestJanusGrounder(k=10).get_query_result(program)
     assert ("q",) in result.formulas
     assert "not p_boolean" in str(result.formulas[("q",)])

@@ -42,12 +42,7 @@ def _needs_wrap(s: str) -> bool:
 class SymbolicFormulaFactory(DeepLogFormulaFactory[str]):
     """Concrete factory that emits formula text strings.
 
-    Every method returns a string that is valid input for
-    :func:`~deeplog.formula.text_parser_lark.parse_formula`, so the
-    symbolic representation and the text representation are one and the same.
-    That is also why it rejects a compiled lump: a handle onto a circuit parses
-    as an atom, not as the formula the lump stands for. Rendering one is what
-    ``str`` on an AST node does, through a subclass of this factory.
+    Rendering an AST node's ``str`` runs through a subclass of this factory.
     """
 
     def create_aggregation(
@@ -83,12 +78,8 @@ class SymbolicFormulaFactory(DeepLogFormulaFactory[str]):
             return symbol_to_str(atom)
         return f"{symbol_to_str(without_structure(atom))}_{structure}"
 
-    def embed_circuit(self, node: CircuitNode, children: tuple[str, ...] = ()) -> str:
-        """Reject a compiled lump — it has no surface syntax to render.
-
-        Lumps are emitted only on the compute path (the DeepProbLog engine) and
-        never reach the text interpreter, so this never fires in practice.
-        """
+    def embed_circuit(self, node: CircuitNode) -> str:
+        """Reject a compiled lump — it has no surface syntax to render."""
         raise NotImplementedError(
             "a compiled CircuitNode lump cannot be rendered as formula text"
         )

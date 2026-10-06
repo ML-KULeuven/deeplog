@@ -5,9 +5,8 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING
-from typing import TypeVar
 
+from deeplog.formula.ast import FormulaNode
 from deeplog.symbol import Symbol
 from deeplog.symbol import get_predicate
 
@@ -24,12 +23,6 @@ from .prover import JANUS_AVAILABLE
 from .prover import JanusProver
 
 
-if TYPE_CHECKING:
-    from deeplog.formula.deeplogformulafactory import DeepLogFormulaFactory
-
-
-T = TypeVar("T")
-
 ROOT = Path(__file__).parent
 
 
@@ -45,9 +38,8 @@ class JanusGrounder(PrologGrounder):
         self,
         program: Program,
         goal: Symbol,
-        factory: DeepLogFormulaFactory[T] | ProofBuilder[T],
         open_predicates: OpenPredicates = frozenset(),
-    ) -> dict[Symbol, T]:
+    ) -> dict[Symbol, FormulaNode]:
         """Prove ``goal`` in ``program`` to one proof formula per ground answer."""
         rows = self._prover.query(
             "prove_query(Program, Prover, Query, Builder, GroundQuery, Formula)",
@@ -57,7 +49,7 @@ class JanusGrounder(PrologGrounder):
                 ),
                 "Prover": self._prover,
                 "Query": goal,
-                "Builder": ProofBuilder.wrapping(factory),
+                "Builder": ProofBuilder(),
             },
         )
         return {row["GroundQuery"]: row["Formula"] for row in rows}

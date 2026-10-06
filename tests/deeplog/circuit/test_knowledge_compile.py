@@ -9,21 +9,23 @@ knowledge-compiles the boolean proofs and counts them in probability.
 
 import importlib
 import sys
+from functools import partial
 
 import pytest
 import torch
 
 from deeplog import OPEN
-from deeplog import CircuitFactory
 from deeplog import Domain
 from deeplog import Variable
-from deeplog import to_module
 from deeplog import with_structure
-from deeplog.formula.strategies import transform_expectation_to_probability
-from deeplog.grounding import ProofBuilder
-from deeplog.grounding import SimpleGrounder
-from deeplog.grounding import str_to_rules
+from deeplog.circuit import knowledge_compile
+from deeplog.formula.ast import CircuitNode
+from deeplog.formula.ast import fold
+from deeplog.formula.circuit_factory import CircuitFactory
+from deeplog.formula.circuit_node import to_module
+from deeplog.grounding.prolog import SimpleGrounder
 from deeplog.grounding.prolog import is_query
+from deeplog.grounding.prolog import str_to_rules
 
 
 pymvsdd = pytest.importorskip("pymvsdd")
@@ -32,12 +34,31 @@ pymvsdd = pytest.importorskip("pymvsdd")
 def _ground(code, open_predicates):
     """The proof of every query answer in ``code``, all in one boolean circuit."""
     program = tuple(str_to_rules(code))
-    builder = ProofBuilder(CircuitFactory())
     grounder = SimpleGrounder()
+    factory, built = CircuitFactory(), {}
     proofs = {}
     for query in filter(is_query, program):
-        proofs.update(grounder.ground(program, query[2], builder, open_predicates))
+        for answer, proof in grounder.ground(
+            program, query[2], open_predicates
+        ).items():
+            proofs[answer] = fold(proof, factory, memo=built)
     return proofs
+
+
+def _count(*nodes, leaf_mapping=None, variables=None):
+    """``nodes``, lumps of one boolean circuit, knowledge-compiled into probability.
+
+    ``leaf_mapping`` defaults to retagging each leaf into probability.
+    """
+    roots = [node.node for node in nodes]
+    counted, node_map = knowledge_compile(
+        nodes[0].circuit,
+        roots,
+        variables=variables,
+        structure="probability",
+        leaf_mapping=leaf_mapping or partial(with_structure, structure="probability"),
+    )
+    return tuple(CircuitNode(counted, node_map[root]) for root in roots)
 
 
 def _variable(name, occurrence, values):
@@ -53,7 +74,7 @@ def _compile_program(code, open_predicates, labels, variables):
     applies — a numeric label folding to a constant node.
     """
     answers, nodes = zip(*_ground(code, open_predicates).items(), strict=True)
-    counted = transform_expectation_to_probability(
+    counted = _count(
         *nodes,
         leaf_mapping=lambda leaf: with_structure(labels.get(leaf, leaf), "probability"),
         variables=variables,
@@ -201,7 +222,7 @@ def test_mnist_addition_n2_one_hot():
     assert len(answers) == 19
 
     mod = to_module(
-        *transform_expectation_to_probability(*nodes, variables=_DIGITS),
+        *_count(*nodes, variables=_DIGITS),
         names=answers,
     )
 
@@ -225,7 +246,7 @@ def test_mnist_addition_n2_soft_distribution():
     answers, nodes = zip(*_ground(_MNIST_ADDITION, {("digit", 2)}).items(), strict=True)
 
     mod = to_module(
-        *transform_expectation_to_probability(*nodes, variables=_DIGITS),
+        *_count(*nodes, variables=_DIGITS),
         names=answers,
     )
 
@@ -256,12 +277,10 @@ def test_declaring_the_variable_is_what_makes_the_branches_exclusive():
     variables = _variable(("ab",), OPEN, ["a", "b"])
 
     mod_cats = to_module(
-        *transform_expectation_to_probability(*nodes, variables=variables),
+        *_count(*nodes, variables=variables),
         names=answers,
     )
-    mod_no_cats = to_module(
-        *transform_expectation_to_probability(*nodes), names=answers
-    )
+    mod_no_cats = to_module(*_count(*nodes), names=answers)
 
     # With the branches declared exclusive the conjunction is unsatisfiable, so
     # the compiled circuit is the constant false and has no inputs left at all.
@@ -316,11 +335,13 @@ _DIGIT_I1 = _variable(("digit", ("i1",)), ("digit", ("i1",), OPEN), range(3))
 
 def _compiler_used(monkeypatch, circuit, roots, variables):
     """Which knowledge compiler ``knowledge_compile`` dispatches to."""
-    from deeplog.circuit.knowledge_compile import dispatch as dispatch_module
+    from deeplog.circuit.knowledge_compilation import dispatch as dispatch_module
 
     used: list[str] = []
     for name in ("sdd", "mvsdd"):
-        module = importlib.import_module(f"deeplog.circuit.knowledge_compile.{name}")
+        module = importlib.import_module(
+            f"deeplog.circuit.knowledge_compilation.{name}"
+        )
         original = getattr(module, f"compile_{name}")
         monkeypatch.setattr(
             module,
@@ -384,24 +405,24 @@ def test_compiling_into_another_algebra_builds_one_circuit():
     renames each atom on the way, as that transform would have, so a numeric
     label lands as a constant node rather than a free input.
     """
-    from deeplog.circuit import knowledge_compile as kc_module
     from deeplog.circuit.circuit import Circuit
+    from deeplog.circuit.knowledge_compilation import dispatch
 
     source = Circuit("boolean")
     a, b = source.get_leaf_node(("a",)), source.get_leaf_node(("b",))
     root = source.get_operator("or")(a, b)
 
     built: list[str] = []
-    original = kc_module.dispatch.Circuit
+    original = dispatch.Circuit
 
     class _Counting(original):
         def __init__(self, structure):
             super().__init__(structure)
             built.append(self.structure.name)
 
-    kc_module.dispatch.Circuit = _Counting
+    dispatch.Circuit = _Counting
     try:
-        counted, node_map = kc_module.knowledge_compile(
+        counted, node_map = dispatch.knowledge_compile(
             source,
             [root],
             structure="probability",
@@ -410,12 +431,32 @@ def test_compiling_into_another_algebra_builds_one_circuit():
             ),
         )
     finally:
-        kc_module.dispatch.Circuit = original
+        dispatch.Circuit = original
 
     # One circuit, in the target algebra — no boolean d-DNNF along the way.
     assert built == ["probability"]
     assert counted.structure.name == "probability"
     # ``a``'s label folded to a constant; ``b`` stayed a probability input.
-    assert list(counted.reachable_leaves([node_map[root]])) == [
+    assert list(counted._reachable_leaves([node_map[root]])) == [
         with_structure(("b",), "probability")
     ]
+
+
+@pytest.mark.parametrize("variables", [None, _DIGIT_I1], ids=["sdd", "mvsdd"])
+def test_a_compiled_conjunction_reads_only_its_atoms(variables):
+    """A diagram's elements with a false sub are dropped, not multiplied by zero.
+
+    The primes of a decision cover every assignment, so the one where
+    ``digit(i1,0)`` is false is an element whose sub is false.
+    """
+    proofs = _ground(
+        "digit(i1,0).\ndigit(i1,1).\ndigit(i1,2).\nrain.\n"
+        "q :- digit(i1,0), rain.\nr :- digit(i1,1).\n?- q.\n?- r.",
+        {("digit", 2), ("rain", 0)},
+    )
+    q, _ = _count(proofs[("q",)], proofs[("r",)], variables=variables)
+
+    assert set(q.circuit.reachable_symbol_names([q.node])) == {
+        with_structure(("digit", ("i1",), ("0",)), "probability"),
+        with_structure(("rain",), "probability"),
+    }

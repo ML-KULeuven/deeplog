@@ -162,20 +162,6 @@ def get_all_symbols(shape: Shape | Iterable[Shape]) -> Iterator[Symbol]:
         yield from itertools.chain.from_iterable(get_all_symbols(x) for x in shape)
 
 
-def _shape_symbol_count(shape: Shape | Iterable[Shape]) -> int:
-    if isinstance(shape, SymTensor):
-        return shape.size
-    return sum(_shape_symbol_count(x) for x in shape)
-
-
-def get_only_symbol(shape: Shape | Iterable[Shape]) -> Symbol:
-    """Yield the only symbol contained in ``shape``. Raises an error if there is not exactly one."""
-    count = _shape_symbol_count(shape)
-    if count != 1:
-        raise ValueError(f"Shape contains {count} elements.")
-    return next(get_all_symbols(shape))
-
-
 def structures(shape: Shape | Iterable[Shape]) -> tuple[str | None, ...]:
     """Return the algebraic structure of every symbol in ``shape``, in order.
 

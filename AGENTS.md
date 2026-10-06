@@ -11,7 +11,7 @@
   `pyproject.toml`.
 
 ## Build, Test, and Development Commands
-- Run targeted tests: `pytest tests/deeplog/module/test_simplify_module.py`.
+- Run targeted tests: `pytest tests/deeplog/module/test_reshape.py`.
 - Run full suite: `pytest`. `testpaths` is `["tests", "examples"]` and `examples/conftest.py`
   collects every notebook, so **the example notebooks are part of the test suite** and execute on
   every run.
@@ -91,15 +91,16 @@ input's dtype. Where behaviour genuinely varies, supply the whole function (`div
 a scalar knob beside it is a representable state in which the knob is ignored.
 
 ### 7. Recognition is optional; the general path is mandatory
-Passes in `formula/passes.py` are recognition-only: a `divide` that `recognize_posterior` does
-not recognize still lowers, as a plain division. What a sub-formula *means* (`passes.py`) is
-separate from *how it is computed* (`strategies.py`). Any fast path must be deletable without
-making a result wrong.
+Counting is a fast path: `weighted_model_count` counts the expectations it can and enumerates
+the rest, and registering `enumeration` for `expectation` gives the same numbers without
+knowledge compilation. What a sub-formula *means* (an expectation's definition) is separate
+from *how it is computed* (the compiler's builder for its operation). Any fast path must be
+deletable without making a result wrong.
 
 ### 8. One word, one operation
-`knowledge_compile` is circuit→circuit, `lower` is circuit→module, and `compile` is the whole
-pipeline. Four `compile_<backend>` functions returning two different types is the failure
-mode this names.
+`knowledge_compile` is circuit→circuit, `lower` is anything→module (a circuit, or a constructed
+formula), and `compile` is the whole pipeline. Four `compile_<backend>` functions returning two
+different types is the failure mode this names.
 
 ### 9. A compiled artefact speaks the user's names
 Input slots and output columns are named for the user's atoms and for what they compute — an
@@ -120,8 +121,8 @@ A name is public when a user needs it to state a model, compile it, run it, exte
 through a builder, ground a program, or run an algebraic circuit. How compile works (factories,
 the fold, lumps, the lowering walk, passes) is machinery and stays internal, however useful it
 looks. A public signature mentions only public types. The public namespaces are `deeplog`,
-`deeplog.circuit`, one package per grounder under `deeplog.grounding`, and `deeplog.nesydb`;
-only they define `__all__`.
+`deeplog.circuit`, and one package per grounder under `deeplog.grounding`; only they define
+`__all__`.
 
 ## Testing Guidelines
 - Framework: `pytest`. Place new unit tests beside the module they cover, mirroring `src/`.
@@ -142,13 +143,24 @@ only they define `__all__`.
   why this is the fix, and what a caller must change.
 
 ## Architecture Notes
-- **Shapes**: `SymTensor` declares symbolic layouts; `construct_transformation` builds reshape
-  paths between shapes. A value's algebra is recorded on the symbol naming it — read it back
-  with `sole_structure(shape)` or `structures(shape)`.
+- **Shapes**: `SymTensor` declares symbolic layouts; `reshape` fits a module to a requested
+  input or output shape, through the path `construct_transformation` builds between shapes. A
+  value's algebra is recorded on the symbol naming it — read it back with
+  `sole_structure(shape)` or `structures(shape)`.
 - **Modules**: `DeepLogModule` wraps torch modules with shape validation, `Sequential`
-  composes them, `simplify_module` trims inputs and prepends necessary transforms.
-- **Formula**: `parse_formula_to_module` compiles textual formulas; `DeepLogModuleFactory`
-  interprets a `FormulaNode` AST, and `fold` re-emits a tree through any factory.
+  chains them, and `compose_modules` wires a graph of them by the symbols they read and write.
+- **Formula**: `parse_formula_to_module` compiles textual formulas. A `Compiler` constructs a
+  `FormulaNode` AST bottom-up, folding it through a `CircuitFactory`, then lowers the result
+  top-down with a `Lowering` walk, one level at a time, into one module graph. An aggregation
+  builder gets a level's aggregations of its operation unlowered, with the walk, and reports a
+  module and a column for each; the walk names the columns. `fold` re-emits a tree through any
+  factory.
+- **Sorts**: every predicate declares the domain of each argument (`Predicate(atoms, domains)`,
+  `Domain.of_values()` for values read as they are). `formula/lowering/sorts.py` gives each
+  variable the domain of the arguments it is: a bound variable those in the aggregation binding
+  it (lexical scope), a free one those in every formula compiled together. The lowering declares
+  a call's binders on the compiler it hands the builder, and translates a variable over part of
+  a named domain into its argument's positions.
 - **Pipeline**: a boolean circuit is rewritten by `knowledge_compile` into a d-DNNF, then by
   `transform_circuit` into the target algebra, then by `to_module` (`circuit/lower/`) into a
   torch module. `backends.select_backend` reads the structure alone and never the graph.

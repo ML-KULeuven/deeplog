@@ -3,6 +3,8 @@
 
 import pytest
 
+from deeplog import parse_symbol
+from deeplog.grounding.prolog import split_list
 from deeplog.grounding.prolog import str_to_rules
 from deeplog.grounding.prolog.parser import iter_clauses
 
@@ -49,3 +51,21 @@ def test_every_anonymous_variable_is_a_variable_of_its_own():
     (rule,) = str_to_rules("q(X) :- r(X, _), r(_1, _).")
     assert rule[1] == ("q", ("X",))
     assert rule[2] == (",", ("r", ("X",), ("_2",)), ("r", ("_1",), ("_3",)))
+
+
+@pytest.mark.parametrize(
+    ("symbol_str", "elements", "tail"),
+    [
+        ("[a,b]", ["a", "b"], "[]"),
+        ("[a,[b,c],d|T]", ["a", "[b,c]", "d"], "T"),
+        ("[]", [], "[]"),
+        ("f(a)", [], "f(a)"),
+    ],
+    ids=["list", "nested list with a tail", "empty list", "not a list"],
+)
+def test_split_list(symbol_str, elements, tail):
+    """A list splits into its elements and the tail they end in."""
+    assert split_list(parse_symbol(symbol_str)) == (
+        [parse_symbol(element) for element in elements],
+        parse_symbol(tail),
+    )

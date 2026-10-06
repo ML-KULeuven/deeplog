@@ -198,3 +198,6 @@ site/source/paths/
 
 # Datasets the notebooks download in CI (DEEPLOG_DATA_DIR).
 .datasets/
+
+# The example notebooks' .ipynb twins, which jupytext pairs with their .md.
+examples/*.ipynb

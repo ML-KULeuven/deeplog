@@ -7,20 +7,15 @@ from collections import defaultdict
 from collections.abc import Iterable
 from collections.abc import Mapping
 from functools import reduce
-from typing import TYPE_CHECKING
-from typing import TypeVar
 from typing import cast
 
+from deeplog.formula.ast import FormulaNode
 from deeplog.symbol import Symbol
 from deeplog.symbol import apply_substitution
 from deeplog.symbol import get_predicate
 from deeplog.symbol import get_term_variables
 from deeplog.symbol import is_variable
 from deeplog.symbol import symbol_to_pretty_string
-
-
-if TYPE_CHECKING:
-    from deeplog.formula.deeplogformulafactory import DeepLogFormulaFactory
 
 from ..builder import ProofBuilder
 from .builtins import all_builtins
@@ -41,8 +36,7 @@ from .unify import unify
 
 type Predicate = tuple[str, int]
 type Sub = Mapping[Symbol, Symbol]
-T = TypeVar("T")
-type Proof[T] = tuple[Sub, T]
+type Proof = tuple[Sub, FormulaNode]
 type DictProgram = Mapping[Predicate, Iterable[RuleType]]
 
 
@@ -58,9 +52,8 @@ class SimpleGrounder(PrologGrounder):
         self,
         program: Program,
         goal: Symbol,
-        factory: DeepLogFormulaFactory[T] | ProofBuilder[T],
         open_predicates: OpenPredicates = frozenset(),
-    ) -> dict[Symbol, T]:
+    ) -> dict[Symbol, FormulaNode]:
         """Prove ``goal`` in ``program`` to one proof formula per ground answer.
 
         Raises:
@@ -69,11 +62,11 @@ class SimpleGrounder(PrologGrounder):
                 such a program; :class:`~deeplog.grounding.JanusGrounder` tables
                 its calls and proves it.
         """
-        builder = ProofBuilder.wrapping(factory)
+        builder = ProofBuilder()
         prepared = self._prepare_program(program)
         # Multiple substitutions can ground ``goal`` to the same atom; OR-fold
         # their proof formulas.
-        out: dict[Symbol, T] = {}
+        out: dict[Symbol, FormulaNode] = {}
         for substitution, formula in self._prove(
             prepared, goal, builder, open_predicates, ()
         ):
@@ -97,10 +90,10 @@ class SimpleGrounder(PrologGrounder):
         self,
         program: DictProgram,
         goal: Symbol,
-        builder: ProofBuilder[T],
+        builder: ProofBuilder,
         open_predicates: OpenPredicates,
         ancestors: tuple[Symbol, ...],
-    ) -> Iterable[Proof[T]]:
+    ) -> Iterable[Proof]:
         predicate = get_predicate(goal)
         if predicate in [(",", 2), (";", 2), ("not", 1), ("true", 0)]:
             results = self._prove_logical(
@@ -115,7 +108,7 @@ class SimpleGrounder(PrologGrounder):
         else:
             raise UnknownPredicateException(f"No clauses known for {predicate}.")
         # Aggregate proofs that share the answer substitution.
-        result: dict[frozenset, T] = defaultdict(builder.get_false)
+        result: dict[frozenset, FormulaNode] = defaultdict(builder.get_false)
         for answer_substitution, formula in results:
             key = frozenset(answer_substitution.items())
             result[key] = builder.disjoin(result[key], formula)
@@ -125,10 +118,10 @@ class SimpleGrounder(PrologGrounder):
         self,
         program: DictProgram,
         goal: Symbol,
-        builder: ProofBuilder[T],
+        builder: ProofBuilder,
         open_predicates: OpenPredicates,
         ancestors: tuple[Symbol, ...],
-    ) -> Iterable[Proof[T]]:
+    ) -> Iterable[Proof]:
         predicate = get_predicate(goal)
         if predicate == ("true", 0):
             # `true` succeeds with the identity of conjunction, not its zero:
@@ -168,9 +161,7 @@ class SimpleGrounder(PrologGrounder):
             )
             yield {}, builder.negate(proof)
 
-    def _prove_builtins(
-        self, goal: Symbol, builder: ProofBuilder[T]
-    ) -> Iterable[Proof[T]]:
+    def _prove_builtins(self, goal: Symbol, builder: ProofBuilder) -> Iterable[Proof]:
         predicate = get_predicate(goal)
         if predicate in self.builtins:
             for r in self.builtins[predicate](*goal[1:]):
@@ -180,10 +171,10 @@ class SimpleGrounder(PrologGrounder):
         self,
         program: DictProgram,
         goal: Symbol,
-        builder: ProofBuilder[T],
+        builder: ProofBuilder,
         open_predicates: OpenPredicates,
         ancestors: tuple[Symbol, ...],
-    ) -> Iterable[Proof[T]]:
+    ) -> Iterable[Proof]:
         _check_terminates(goal, ancestors)
         is_open = get_predicate(goal) in open_predicates
         for clause in program[get_predicate(goal)]:

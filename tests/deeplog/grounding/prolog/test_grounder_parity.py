@@ -1,11 +1,9 @@
 #  Copyright (c) 2024-2026. KU Leuven
 """Parity tests: SimpleGrounder and JanusGrounder build the same proofs.
 
-Both grounders build through :class:`~deeplog.formula.ast_factory.AstFactory`, so a
-proof is compared as the formula it is rather than as text. Every query and every
-constraint body of a program is grounded through one
-:class:`~deeplog.grounding.ProofBuilder` per grounder, the way a caller conditioning
-on evidence grounds it, and both builders must end up with the same leaves.
+Both grounders return formulas, so a proof is compared as the formula it is rather
+than as text. Every query and every constraint body of a program is grounded, the
+way a caller conditioning on evidence grounds it.
 """
 
 import math
@@ -17,20 +15,18 @@ import pytest
 
 pytest.importorskip("janus_swi")
 
+from deeplog import BinaryOp
+from deeplog import FormulaNode
 from deeplog import Symbol
 from deeplog import is_variable
-from deeplog.formula import AstFactory
-from deeplog.formula import BinaryOp
-from deeplog.formula import FormulaNode
-from deeplog.formula import map_children
-from deeplog.grounding import JanusGrounder
-from deeplog.grounding import PrologGrounder
-from deeplog.grounding import ProofBuilder
-from deeplog.grounding import SimpleGrounder
-from deeplog.grounding import str_to_rules
+from deeplog.formula.ast import map_children
+from deeplog.grounding.prolog import JanusGrounder
+from deeplog.grounding.prolog import PrologGrounder
+from deeplog.grounding.prolog import SimpleGrounder
 from deeplog.grounding.prolog import get_constraint_body
 from deeplog.grounding.prolog import is_constraint
 from deeplog.grounding.prolog import is_query
+from deeplog.grounding.prolog import str_to_rules
 
 from ...testing_formulas import operands
 
@@ -61,31 +57,22 @@ def _goals(program: Iterable[Symbol]) -> Iterable[Symbol]:
 
 
 def _ground(grounder: PrologGrounder, code: str, open_predicates):
-    """Every goal's proofs, and the leaves the shared builder saw."""
+    """Every goal's proofs."""
     program = tuple(str_to_rules(code))
-    builder = ProofBuilder(AstFactory())
-    proofs = [
+    return [
         {
             answer: _canonicalize(proof)
-            for answer, proof in grounder.ground(
-                program, goal, builder, open_predicates
-            ).items()
+            for answer, proof in grounder.ground(program, goal, open_predicates).items()
         }
         for goal in _goals(program)
     ]
-    return proofs, builder.leaves
 
 
 def _assert_parity(code: str, open_predicates, simple=None, janus=None) -> None:
-    simple_proofs, simple_leaves = _ground(
-        simple or SimpleGrounder(), code, open_predicates
-    )
-    janus_proofs, janus_leaves = _ground(
-        janus or JanusGrounder(), code, open_predicates
-    )
+    simple_proofs = _ground(simple or SimpleGrounder(), code, open_predicates)
+    janus_proofs = _ground(janus or JanusGrounder(), code, open_predicates)
     assert all(simple_proofs), "every goal of these programs has an answer"
     assert simple_proofs == janus_proofs
-    assert simple_leaves == janus_leaves
 
 
 PROGRAMS = {
@@ -107,6 +94,10 @@ PROGRAMS = {
     "rule_chain": ("a :- b.\nb :- c.\nc.\n?- a.", {("c", 0)}),
     "variable_in_query": ("a(0).\na(1).\n?- a(X).", {("a", 1)}),
     "substitution": ("fact(t(1,2,X), t(2,1,X)).\n?- fact(t(1,2,3), Z).", set()),
+    "bracketed_disjunction_in_a_body": (
+        "b.\nc.\nd.\na :- (b ; c), d.\n?- a.",
+        {("b", 0), ("c", 0), ("d", 0)},
+    ),
     "recursion": (
         "edge(0,1).\nedge(1,2).\nedge(1,3).\n"
         "connected(X,Y) :- edge(X,Y).\n"

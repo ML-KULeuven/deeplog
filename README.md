@@ -12,7 +12,7 @@ DeepLog is an operational framework for building neurosymbolic (NeSy) systems. I
 - **Logic-aware modules** – compile formulas into differentiable modules, wrap existing PyTorch components, and connect them to multiple reasoning backends.
 - **Backend flexibility** – start with the pure Python engine or enable the Janus/SWI-Prolog backend for lower latency inference without changing your training code.
 - **Batteries included** – tutorial notebooks, example projects (semantic loss, MNIST addition, …), and a Sphinx site walk you from “hello world” to custom NeSy stacks.
-- **Research to production** – typing, validation, and extensive tests keep advanced reasoning pipelines trustworthy when you move from prototypes to production workloads.
+- **Research to production** – typing, validation, and extensive tests keep advanced reasoning systems trustworthy when you move from prototypes to production workloads.
 
 ## Installation
 
@@ -23,7 +23,7 @@ DeepLog publishes optional extras so you can extend the base install as needed:
 | ----- | ----------- |
 | `pydeeplog[examples]` | Adds interactive notebook tooling (Jupyter) plus Lightning/torchvision/torchmetrics for tutorials. |
 | `pydeeplog[janus_engine]` | Installs the Janus SWI-Prolog bridge for the highest performance Prolog backend. |
-| `pydeeplog[mvsdd]` | Installs MV-SDD, the knowledge compiler for a formula that reaches two values of one variable, such as the branches of an annotated disjunction. |
+| `pydeeplog[mvsdd]` | Installs MV-SDD, the knowledge compiler for formulas that test several values of one variable, such as a digit classifier's ten classes in MNIST addition. Without it, such an expectation is enumerated. |
 | `pydeeplog[tests]` | Adds pytest, coverage and supporting utilities for contributors. |
 | `pydeeplog[site]` | Installs the documentation/notebook toolchain (Sphinx, PyData theme, myst-nb, Jupytext, ipykernel, Lightning/torchvision/torchmetrics, …). |
 
@@ -66,16 +66,17 @@ print(sigmoid_head(torch.tensor([[1.0, -2.0]])))
 # tensor([[0.7311, 0.1192]])
 ```
 
-`WrappedModule` validates tensor shapes against the symbolic specification, so interface mismatches surface as Python errors instead of silent shape bugs when you wire modules into larger reasoning pipelines.
+`WrappedModule` validates tensor shapes against the symbolic specification, so interface mismatches surface as Python errors instead of silent shape bugs when you wire modules into larger reasoning systems.
 
 For a taste of the symbolic side, compile a logical formula straight into a differentiable module:
 
 ```python
 from deeplog import parse_formula_to_module
 
-# Count satisfying assignments of A ∨ B over booleans (= 3: TT, TF, FT).
+# Count satisfying assignments of A ∨ B over booleans (= 3: TT, TF, FT):
+# cast into the reals, where true is 1, and sum.
 module = parse_formula_to_module(
-    "sum(A): sum(B): =(A,true)_boolean or =(B,true)_boolean"
+    "sum(A): sum(B): (=(A,true)_boolean or =(B,true)_boolean)_real"
 )
 print(int(module()))  # 3
 ```
@@ -94,22 +95,20 @@ See `examples/` for end-to-end notebooks (MNIST addition, semantic loss, LTN, �
 
 | Notebook | What it teaches |
 |---|---|
-| [`symbol`](examples/symbol.md) | The `Symbol` type: DeepLog's lightweight tagged-tuple representation of anything symbolic. |
-| [`shape`](examples/shape.md) | `SymTensor` and how symbolic shapes let DeepLog validate module composition. |
+| [`symbols_and_shapes`](examples/symbols_and_shapes.md) | `Symbol`, the tuple that names terms, atoms and values with their algebra, and `SymTensor`, which names every entry of a tensor. |
 | [`deeplogmodule`](examples/deeplogmodule.md) | `DeepLogModule` — the shape-aware `torch.nn.Module` subclass everything downstream builds on. |
-| [`composition`](examples/composition.md) | Combining modules using `Sequential` and `ModuleCircuit`, and handling automatic shape transformations. |
+| [`composition`](examples/composition.md) | Combining modules using `Sequential` and `compose_modules`, and handling automatic shape transformations. |
 
 #### Core concepts
 
 | Notebook | What it teaches                                                                                     |
 |---|-----------------------------------------------------------------------------------------------------|
-| [`formula_to_module`](examples/formula_to_module.md) | Compiling a logical formula straight into a runnable `DeepLogModule` via `parse_formula_to_module`. |
-| [`ast_and_rewrites`](examples/ast_and_rewrites.md) | The materialized formula AST, `fold`/`map_children`, and the `recognize_expectation`/`recognize_posterior` rewrite passes. |
+| [`formula_to_module`](examples/formula_to_module.md) | A constraint compiled into a `DeepLogModule` with `parse_formula_to_module`: fed a batch, differentiated, wired to a network, and computed by counting, enumeration or sampling. |
+| [`formula_ast`](examples/formula_ast.md) | The formula AST: reading it, building it from Python, and the proofs a grounder returns as ASTs. |
 | [`predicates`](examples/predicates.md) | Predicate modules: how symbolic atoms become executable tensor operations.                          |
-| [`01_aggregation_basics`](examples/01_aggregation_basics.md) | Aggregation syntax, finite domains, and how DeepLog builds aggregation modules.                     |
-| [`03_free_variables_and_batching`](examples/03_free_variables_and_batching.md) | Free variables are module inputs.                                                                   |
+| [`aggregation_basics`](examples/aggregation_basics.md) | Aggregation syntax, finite domains, aggregation operators, and expectations under a distribution.   |
+| [`free_variables_and_batching`](examples/free_variables_and_batching.md) | Free variables are module inputs.                                                                   |
 | [`circuits`](examples/circuits.md) | The `Circuit` DAG and `to_module()`.                                                                |
-| [`circuit_transformation`](examples/circuit_transformation.md) | Transforming circuits between algebraic structures (boolean → probability, etc.).                   |
 | [`language`](examples/language.md) | Tour of the textual DeepLog formula language and its parser.                                        |
 
 #### Applications
@@ -117,8 +116,8 @@ See `examples/` for end-to-end notebooks (MNIST addition, semantic loss, LTN, �
 | Notebook | What it teaches |
 |---|---|
 | [`problog`](examples/problog.md) | Running ProbLog programs: probabilistic facts, rules, queries, and conditioning on evidence with `:- ` integrity constraints (`P(q \| e)`). |
-| [`deepproblog`](examples/deepproblog.md) | Neural predicates: a fact's probability comes from a network instead of a constant (an annotated disjunction compiled via the MV-SDD backend), building up to the classic MNIST-addition experiment. **Slow.** |
-| [`semantic_loss`](examples/semantic_loss.md) | A full ML training pipeline that uses a DeepLog formula as a differentiable loss term (semantic loss). **Slow.** |
+| [`deepproblog`](examples/deepproblog.md) | Neural predicates: a fact's probability comes from a network instead of a constant (an annotated disjunction compiled via the MV-SDD backend), building up to the classic MNIST-addition experiment, counted exactly or estimated by sampling. **Slow.** |
+| [`semantic_loss`](examples/semantic_loss.md) | A full ML training loop that uses a DeepLog formula as a differentiable loss term (semantic loss). **Slow.** |
 | [`ltn`](examples/ltn.md) | Reproducing a subset of the Logic Tensor Networks tutorial on top of DeepLog. |
 
 ## Development workflow
@@ -149,7 +148,7 @@ The landing page and docs live under `site/` (Sphinx + PyData theme). To preview
    python -m http.server --directory site/build/html 8000
    ```
 
-Visit `http://localhost:8000` to browse the site. Tools like `sphinx-autobuild` can provide live reloads, but the above workflow is the canonical build pipeline.
+Visit `http://localhost:8000` to browse the site. Tools like `sphinx-autobuild` can provide live reloads, but the steps above are the canonical way to build the site.
 
 ## Support & community
 

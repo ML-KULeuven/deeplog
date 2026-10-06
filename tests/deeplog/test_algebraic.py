@@ -8,7 +8,9 @@ import torch
 
 from deeplog.algebraic import BOOLEAN
 from deeplog.algebraic import LOGPROBABILITY
+from deeplog.algebraic import MPE
 from deeplog.algebraic import PROBABILITY
+from deeplog.algebraic import REAL
 from deeplog.algebraic import Algebra
 from deeplog.algebraic import AlgebraicStructure
 from deeplog.algebraic import Semifield
@@ -17,10 +19,11 @@ from deeplog.algebraic import get_algebraic_structure
 from deeplog.algebraic import register_structure
 from deeplog.algebraic import structure_registry
 from deeplog.circuit import Circuit
+from deeplog.circuit import knowledge_compile
+from deeplog.circuit import transform_circuit
 from deeplog.circuit.backends import register_klay_semiring
 from deeplog.circuit.backends import routed_operators
 from deeplog.circuit.backends import select_backend
-from deeplog.circuit.knowledge_compile import knowledge_compile
 from deeplog.symbol import FalseSymbol
 from deeplog.symbol import TrueSymbol
 from deeplog.variable import Domain
@@ -303,7 +306,7 @@ def test_a_circuit_is_evaluated_as_written_whatever_produced_it():
     boolean = Circuit("boolean")
     a, b = boolean.get_leaf_node(("a",)), boolean.get_leaf_node(("b",))
     compiled, node_map = knowledge_compile(boolean, [boolean.get_operator("or")(a, b)])
-    counted, _ = compiled.transform(list(node_map.values()), "probability")
+    counted, _ = transform_circuit(compiled, "probability", list(node_map.values()))
 
     assert select_backend(Circuit("probability")) == "klay"
     assert select_backend(compiled) == "klay"
@@ -526,3 +529,71 @@ def test_a_structure_klay_does_not_implement_is_not_evaluated_in_real():
     custom = Algebra(name="not_registered_with_klay", product="and", sum="or")
     with pytest.raises(ValueError, match="No Klay semiring is registered"):
         klay_semiring(custom)
+
+
+# --- Aggregators ---
+
+
+def test_an_algebra_declares_its_aggregators():
+    """Definition 1's ``Agg_R``: what an aggregation over a formula in R can name.
+
+    ``boolean`` quantifies and has no sum, so a count casts into ``real`` first.
+    """
+    assert BOOLEAN.aggregations == {"exists", "forall"}
+    assert PROBABILITY.aggregations == {"sum"}
+    assert LOGPROBABILITY.aggregations == {"sum"}
+    assert REAL.aggregations == {"sum"}
+
+
+def test_real_is_a_semiring_that_sums():
+    """A count is a real number, which ``real`` adds, multiplies and sums."""
+    assert isinstance(REAL, Semiring)
+    values = torch.tensor([[[1.0], [0.0], [1.0]]])
+    torch.testing.assert_close(
+        REAL.get_aggregation_fn("sum")(values), torch.tensor([[2.0]])
+    )
+
+
+def test_a_sum_in_log_space_is_the_log_of_the_sum():
+    """``logprobability``'s ``sum`` adds probabilities, not their logarithms."""
+    values = torch.log(torch.tensor([[[0.2], [0.3]]]))
+    torch.testing.assert_close(
+        LOGPROBABILITY.get_aggregation_fn("sum")(values),
+        torch.log(torch.tensor([[0.5]])),
+    )
+
+
+@pytest.mark.parametrize(
+    ("algebra", "one", "zero"),
+    [(PROBABILITY, 1.0, 0.0), (MPE, 1.0, 0.0), (LOGPROBABILITY, 0.0, -math.inf)],
+)
+def test_the_complement_of_one_or_more_is_the_algebras_zero(algebra, one, zero):
+    """A total that rounding pushes past one complements to zero, not below it."""
+    x = torch.tensor([one, one + 1e-6], requires_grad=True)
+
+    complement = algebra.negation_fn(x)
+    complement.sum().backward()
+
+    assert complement.tolist() == [zero, zero]
+    assert x.grad is not None and torch.isfinite(x.grad).all()
+
+
+def test_the_log_complement_is_accurate_near_zero_and_far_below():
+    x = torch.tensor([-1e-6, -0.1, -0.69, -0.7, -5.0, -50.0])
+    exact = torch.log(-torch.expm1(x.double())).float()
+
+    torch.testing.assert_close(LOGPROBABILITY.negation_fn(x), exact)
+
+
+def test_a_log_space_sum_of_zeros_is_zero_with_a_zero_gradient():
+    a = torch.tensor([-math.inf], requires_grad=True)
+    b = torch.tensor([-math.inf], requires_grad=True)
+    values = torch.full((1, 3), -math.inf, requires_grad=True)
+
+    added = LOGPROBABILITY.sum_fn(a, b)
+    summed = LOGPROBABILITY.get_aggregation_fn("sum")(values)
+    (added + summed).sum().backward()
+
+    assert added.item() == summed.item() == -math.inf
+    assert a.grad.item() == b.grad.item() == 0.0
+    assert values.grad.abs().sum().item() == 0.0

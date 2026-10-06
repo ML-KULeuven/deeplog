@@ -3,25 +3,33 @@
 
 from abc import ABC
 from abc import abstractmethod
+from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Mapping
+from collections.abc import Sequence
 
 import torch
 
 from ...module.deeplog_module import DeepLogModule
 from ...shape import SymTensor
 from ...symbol import Symbol
+from ...symbol import get_args
+from ...symbol import get_predicate
 from ...symbol import is_symbol
-from ...symbol import with_structure
+from ...symbol import is_variable
+from ...symbol import symbol_to_pretty_string
+from ...symbol import without_structure
 from ...util import as_tuple
-
-
-#: The ground argument tuples a predicate is asked for, one tuple per evaluation.
-type Arguments = Iterable[tuple[Symbol, ...]]
+from ...variable import Domain
+from ...variable import SymbolicDomain
+from ...variable import ValueDomain
 
 
 class Predicate[*Ts](DeepLogModule, ABC):
     """Base class for predicates backed by torch computations or constants.
+
+    A predicate computes the atoms it is given, a column named by each, from
+    their arguments. A compiler registers it under the predicate it computes.
 
     Subclasses parameterize the generic with the tuple of tensor types that
     :meth:`forward_predicate` will receive — one entry per non-ignored
@@ -33,17 +41,16 @@ class Predicate[*Ts](DeepLogModule, ABC):
     input, so the input shape holds ``i1`` once. Positions are expanded back
     to one row per evaluation before :meth:`forward_predicate` sees them,
     unless the position is listed in :attr:`distinct_arguments`.
+
+    Each argument ranges over a domain, its sort (:meth:`domains_of`). A value
+    written where it ranges over a named or a tensor domain is read as what a
+    variable there holds: its position among the domain's names, or the number
+    it writes. So an atom reads the same whether an aggregation feeds its
+    variable a value or the value is written into it. Where it ranges over the
+    values (:meth:`~deeplog.variable.Domain.of_values`), a written argument is
+    what :meth:`resolve_argument` says: by default a number it writes, or else
+    the name of an input.
     """
-
-    functor: str
-    arity: int
-
-    #: The algebra this predicate's values live in. A *declaration*, not a
-    #: module annotation — it is the third component of the ``(functor, arity,
-    #: structure)`` builder-registry key, and it is what every output symbol is
-    #: labelled with in ``__init__``. Read a built module's algebra off those
-    #: symbols (:func:`~deeplog.shape.sole_structure`), not off the class.
-    structure: str
 
     #: Argument positions handed to :meth:`forward_predicate` as one row per
     #: distinct symbol rather than one row per evaluation. A predicate opts in
@@ -54,10 +61,12 @@ class Predicate[*Ts](DeepLogModule, ABC):
     distinct_arguments: tuple[int, ...] = ()
 
     def __init_subclass__(cls, **kwargs: object) -> None:
-        """Refuse a subclass defining ``_resolve_argument``, the former name of :meth:`resolve_argument`.
+        """Refuse a subclass defining a name no predicate is read by any more.
 
         Raises:
-            TypeError: If ``cls`` defines ``_resolve_argument``.
+            TypeError: If ``cls`` defines ``_resolve_argument``, the former name
+                of :meth:`resolve_argument`, or declares ``functor``, ``arity``
+                or ``structure``, which its key in a compiler states.
         """
         super().__init_subclass__(**kwargs)
         if "_resolve_argument" in vars(cls):
@@ -65,34 +74,61 @@ class Predicate[*Ts](DeepLogModule, ABC):
                 f"{cls.__qualname__} defines _resolve_argument, which is called "
                 "resolve_argument now; rename the method."
             )
+        declared = [
+            name for name in ("functor", "arity", "structure") if name in vars(cls)
+        ]
+        if declared:
+            raise TypeError(
+                f"{cls.__qualname__} declares {', '.join(declared)}, which a "
+                "predicate no longer does: a compiler registers it under its "
+                "predicate, as atom_builders={(functor, arity, structure): "
+                f"{cls.__qualname__}}}, and it names its columns by the atoms it "
+                "is given."
+            )
 
     def __init__(
         self,
-        all_arguments: Arguments,
+        atoms: Iterable[Symbol],
+        domains: Sequence[Domain] | Callable[[tuple[Symbol, ...]], Sequence[Domain]],
         *,
         ignore_arguments: Iterable[int] | None = None,
     ):
-        """Store predicate metadata and pre-process argument bindings/constants."""
-        all_arguments = list(all_arguments)
+        """Compute ``atoms``, a column named by each, from their arguments.
+
+        ``domains`` gives the domain of each argument, one per argument of the
+        atoms, or is a function giving them for one atom's arguments
+        (:meth:`~deeplog.formula.predicates.predicate.Predicate.domains_of`).
+
+        Raises:
+            ValueError: If ``atoms`` is empty or its atoms differ in arity,
+                ``domains`` gives an atom other than one domain per argument, or
+                a value written where an argument ranges over a named or a
+                tensor domain is not one of its values.
+        """
+        atoms = list(atoms)
+        self._domains = domains
+        all_arguments = [get_args(without_structure(atom)) for atom in atoms]
         self._nr_evaluations = len(all_arguments)
-        if not all(len(args) == self.arity for args in all_arguments):
-            raise ValueError("Not all inputs are of the correct arity")
+        arities = {len(args) for args in all_arguments}
+        if len(arities) != 1:
+            raise ValueError(
+                f"{type(self).__name__} computes atoms of one arity; it is given "
+                f"atoms of arities {sorted(arities)}."
+            )
+        (arity,) = arities
+        functor, _ = get_predicate(without_structure(atoms[0]))
+        #: The predicate, as ``functor/arity``, that error messages name.
+        self._name = f"{functor}/{arity}"
 
         ignore_arguments = (
             set(ignore_arguments) if ignore_arguments is not None else set()
         )
-        self._argument_indices = [
-            i for i in range(self.arity) if i not in ignore_arguments
-        ]
+        self._argument_indices = [i for i in range(arity) if i not in ignore_arguments]
 
         inputs, indices, slots, constants = self._classify_arguments(all_arguments)
 
         input_shape = tuple(SymTensor(i) for i in inputs)
-        evaluations: list[tuple] = [(self.functor, *args) for args in all_arguments]
-        output_shape = SymTensor(
-            [with_structure(s, self.structure) for s in evaluations]
-        )
-        super().__init__(input_shape, output_shape)
+        super().__init__(input_shape, SymTensor(atoms))
 
         # Slots in ``_constants_{j}`` corresponding to symbol-valued arguments
         # are left uninitialized; ``_materialize_position`` must overwrite them
@@ -137,8 +173,9 @@ class Predicate[*Ts](DeepLogModule, ABC):
         indices: list[list[int]] = [[] for _ in self._argument_indices]
         constants: dict[int, torch.Tensor] = {}
         for i, arguments in enumerate(all_arguments):
+            resolved = self.resolve_arguments(arguments)
             for k, j in enumerate(self._argument_indices):
-                constant_or_symbol = self.resolve_argument(arguments[j], j)
+                constant_or_symbol = resolved[j]
                 if is_symbol(constant_or_symbol):
                     symbols[k].append(constant_or_symbol)
                     indices[k].append(i)
@@ -265,7 +302,7 @@ class Predicate[*Ts](DeepLogModule, ABC):
             for sym in sym_list:
                 if sym not in tensors:
                     raise KeyError(
-                        f"Predicate {self.functor}/{self.arity} has free "
+                        f"{type(self).__name__} has free "
                         f"symbol {sym} at position {j}; not present in "
                         f"the supplied tensors mapping."
                     )
@@ -289,30 +326,103 @@ class Predicate[*Ts](DeepLogModule, ABC):
             for k, j in enumerate(self._argument_indices)
         ]
         # `predicate_inputs` length is set by `len(_argument_indices)`, which
-        # equals the subclass's declared arity — but pyright can't see that
+        # equals the atoms' arity — but pyright can't see that
         # the runtime list matches the static ``*Ts`` type-parameter tuple.
         y = self.forward_predicate(*predicate_inputs)  # pyright: ignore[reportArgumentType]
         return y.view(batch_size, self._nr_evaluations, *y.shape[1:])
 
-    @classmethod
-    def get_predicate(cls):
-        """Return the tuple ``(functor, arity, structure)``."""
-        return cls.functor, cls.arity, cls.structure
+    def _input_of(self, symbol: Symbol, index: int) -> tuple[int, int]:
+        """Where ``symbol``, the argument at ``index`` of an atom, is read from.
+
+        The index of the input tensor that argument position reads, and the
+        column of ``symbol`` in it.
+
+        Raises:
+            ValueError: If no atom has ``symbol`` at ``index`` as an input.
+        """
+        if index not in self._argument_indices:
+            raise ValueError(f"{self._name} ignores its argument {index + 1}.")
+        position = self._argument_indices.index(index)
+        symbols = list(as_tuple(self.get_input_shape())[position])
+        if symbol not in symbols:
+            raise ValueError(
+                f"{self._name} reads no input {symbol_to_pretty_string(symbol)} "
+                f"at its argument {index + 1}."
+            )
+        return position, symbols.index(symbol)
+
+    def domains_of(self, arguments: tuple[Symbol, ...], /) -> tuple[Domain, ...]:
+        """The domain each argument of an atom with ``arguments`` ranges over.
+
+        Raises:
+            ValueError: If the predicate gives other than one domain per
+                argument.
+        """
+        found = tuple(
+            self._domains(arguments) if callable(self._domains) else self._domains
+        )
+        if len(found) != len(arguments):
+            raise ValueError(
+                f"{self._name} gives {len(found)} domains for an atom of "
+                f"{len(arguments)} arguments; it gives one per argument."
+            )
+        return found
+
+    def resolve_arguments(
+        self, arguments: tuple[Symbol, ...], /
+    ) -> tuple[Symbol | int | float | bool | torch.Tensor, ...]:
+        """What each argument of one atom stands for.
+
+        A value written where an argument ranges over a named or a tensor
+        domain (:meth:`domains_of`) is read as what a variable there holds; a
+        variable, and an argument written where it ranges over the values, is
+        what :meth:`resolve_argument` says. An ignored position keeps its
+        symbol. A subclass whose reading of one argument depends on another in
+        a way other than through its domain overrides this.
+
+        Raises:
+            ValueError: If a value written where an argument ranges over a named
+                or a tensor domain is not one of its values.
+        """
+        domains = self.domains_of(arguments)
+        resolved: list[Symbol | int | float | bool | torch.Tensor] = []
+        for index, (symbol, domain) in enumerate(zip(arguments, domains, strict=True)):
+            if index not in self._argument_indices:
+                resolved.append(symbol)
+                continue
+            if is_variable(symbol) or isinstance(domain, ValueDomain):
+                resolved.append(self.resolve_argument(symbol, index))
+                continue
+            value = value_of(symbol, domain)
+            if value is None:
+                raise ValueError(
+                    f"{symbol_to_pretty_string(symbol)} is not a value of the "
+                    f"domain of {self._name}'s argument {index + 1}."
+                )
+            resolved.append(value)
+        return tuple(resolved)
 
     def resolve_argument(
         self, symbol: Symbol, index: int, /
     ) -> Symbol | int | float | bool | torch.Tensor:
         """What the argument ``symbol`` at position ``index`` of an atom stands for.
 
-        A subclass overrides this to give its atoms constant arguments. The
-        default keeps every argument a variable.
+        It is asked for a variable, and for an argument written where it ranges
+        over the values
+        (:meth:`~deeplog.formula.predicates.predicate.Predicate.domains_of`). A
+        subclass overrides this to give such arguments other constant values.
+        By default a written number is that number, and any other argument is a
+        variable, read from the input under its symbol.
 
         Returns:
             A symbol, which makes the argument a variable read from the input
             under that symbol, or a value, which makes it a constant: a tensor
             is used as it is, and a number or a boolean as a scalar.
         """
-        return symbol
+        if is_variable(symbol):
+            return symbol
+        number = number_of(symbol)
+        return symbol if number is None else number
 
     @abstractmethod
     def forward_predicate(self, *args: torch.Tensor) -> torch.Tensor:
@@ -323,3 +433,29 @@ class Predicate[*Ts](DeepLogModule, ABC):
         Concrete subclasses can still document or narrow the individual
         tensor argument types they expect.
         """
+
+
+def value_of(symbol: Symbol, domain: Domain) -> int | float | None:
+    """What a variable over ``domain`` holds where its value is ``symbol``.
+
+    A named value is its position among the domain's names, and an unnamed one
+    the number ``symbol`` writes, if the domain holds it. ``None`` if ``symbol``
+    is no value of ``domain``.
+    """
+    if isinstance(domain, SymbolicDomain):
+        return domain.index(symbol) if symbol in domain.names else None
+    number = number_of(symbol)
+    values = domain.as_tensor()
+    if number is None or values.dim() != 1 or not bool((values == number).any()):
+        return None
+    return number
+
+
+def number_of(symbol: Symbol) -> float | None:
+    """The number ``symbol`` writes, or ``None`` if it writes none."""
+    if len(symbol) != 1:
+        return None
+    try:
+        return float(symbol[0])
+    except ValueError:
+        return None

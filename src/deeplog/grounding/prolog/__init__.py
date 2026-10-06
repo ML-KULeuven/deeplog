@@ -1,14 +1,14 @@
 #  Copyright (c) 2024-2026. KU Leuven
-"""The plain-Prolog grounder: program representation, parser, and provers."""
+"""The Prolog grounder: programs, the grounders that prove them, and Prolog terms."""
 
 from .grounder import Builtin
 from .grounder import OpenPredicates
 from .grounder import PrologGrounder
 from .grounder import UnknownPredicateException
-from .janus import JANUS_AVAILABLE
-from .janus import JanusGrounder
-from .janus import JanusNotAvailableException
-from .janus import JanusProver
+from .janus.janus import JanusGrounder
+from .janus.prover import JanusNotAvailableException
+from .janus.prover import JanusProver
+from .parser import split_list
 from .parser import str_to_rule
 from .parser import str_to_rules
 from .parser import symbol_to_prolog_str
@@ -22,30 +22,31 @@ from .program import is_constraint
 from .program import is_fact
 from .program import is_query
 from .simple import SimpleGrounder
-from .unify import calculate_mgu
 
 
 __all__ = [
+    # Programs
     "Program",
     "RuleType",
     "create_rule",
-    "create_query",
     "create_fact",
+    "create_query",
     "is_fact",
     "is_query",
     "is_constraint",
     "get_constraint_body",
     "str_to_rule",
     "str_to_rules",
-    "symbol_to_prolog_str",
-    "calculate_mgu",
+    # Grounders
     "PrologGrounder",
-    "Builtin",
-    "OpenPredicates",
-    "UnknownPredicateException",
     "SimpleGrounder",
     "JanusGrounder",
     "JanusProver",
+    "Builtin",
+    "OpenPredicates",
+    "UnknownPredicateException",
     "JanusNotAvailableException",
-    "JANUS_AVAILABLE",
+    # Prolog terms
+    "split_list",
+    "symbol_to_prolog_str",
 ]

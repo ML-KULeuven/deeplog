@@ -1,64 +1,84 @@
 #  Copyright (c) 2024-2026. KU Leuven
 """Built-in predicate implementations."""
 
-import functools
 import math
 from collections.abc import Callable
 from collections.abc import Iterable
 
 import torch
 
+from ...algebraic import BOOLEAN
 from ...symbol import Symbol
+from ...symbol import get_predicate
 from ...symbol import is_variable
 from ...symbol import symbol_to_pretty_string
+from ...symbol import without_structure
 from ...variable import Domain
-from ...variable import SymbolicDomain
 from .predicate import Predicate
+from .predicate import number_of
 
 
-class SumsPredicate(Predicate[torch.Tensor, torch.Tensor, torch.Tensor]):
-    """Predicate that checks whether a triplet of values x,y,z adhere to x+y=z."""
+#: The truth values, the domain of the atom a probability label weighs.
+_TRUTH = Domain.of_structure(BOOLEAN)
 
-    functor = "sums"
-    arity = 3
-    structure = "boolean"
-
-    def resolve_argument(self, symbol: Symbol, _: int, /) -> float | Symbol:
-        """A number for an argument that writes one, else the argument as a variable."""
-        if len(symbol) != 1:
-            return symbol
-        try:
-            return float(symbol[0])
-        except (ValueError, TypeError, IndexError):
-            return symbol
-
-    def forward_predicate(
-        self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor
-    ) -> torch.Tensor:
-        """Return 1.0 where ``x + y == z`` and 0.0 otherwise."""
-        return (x + y == z).to(torch.get_default_dtype())
+#: The values, the domain of an argument read as it is.
+_VALUES = Domain.of_values()
 
 
 class EqualityPredicate(Predicate[torch.Tensor, torch.Tensor]):
-    """Predicate that checks the equality between pairs of symbols."""
+    """Whether the two arguments of an atom name the same value.
 
-    functor = "="
-    arity = 2
-    structure = "boolean"
+    Both arguments range over the domain of the variable the atom compares, so
+    a written value compared with a variable is read as the variable's value
+    is. Two written values range over the names they write, so they compare by
+    name.
+    """
 
     def __init__(
-        self, all_arguments: Iterable[tuple[Symbol, Symbol]], domain: Iterable[Symbol]
+        self,
+        atoms: Iterable[Symbol],
+        domain_of: Callable[[Symbol], Domain],
     ):
-        """
-        Bind argument pairs to compare and map symbols in ``domain`` to integer ids so
-        equality can be evaluated numerically.
-        """
-        self._domain_mapping = {symbol: i for i, symbol in enumerate(domain)}
-        super().__init__(all_arguments)
+        """Compare the arguments of each atom, ``domain_of`` giving each variable's domain.
 
-    def resolve_argument(self, symbol: Symbol, _: int, /) -> int | Symbol:
-        """The id of an argument in the domain, else the argument as a variable."""
-        return self._domain_mapping.get(symbol, symbol)
+        Raises:
+            ValueError: If a written value is not a value of the domain of the
+                variable it is compared with, or two variables compared with
+                each other range over different domains.
+        """
+        # Asked while the arguments are resolved: a compiled module keeps the
+        # domains it read, and no compiler.
+        self._domain_of = domain_of
+        self._variables: dict[Symbol, Domain] = {}
+        super().__init__(atoms, self._compared)
+        del self._domain_of
+
+    def _compared(self, arguments: tuple[Symbol, ...]) -> tuple[Domain, Domain]:
+        """Both arguments' domain: the compared variable's, or the names written."""
+        variable = next(
+            (argument for argument in arguments if is_variable(argument)), None
+        )
+        if variable is None:
+            names = Domain.of(dict.fromkeys(arguments))
+            return names, names
+        if variable not in self._variables:
+            self._variables[variable] = self._domain_of(variable)
+        return self._variables[variable], self._variables[variable]
+
+    def resolve_arguments(
+        self, arguments: tuple[Symbol, ...], /
+    ) -> tuple[Symbol | int | float | bool | torch.Tensor, ...]:
+        """The two arguments as variables, or as the values the variables are compared with."""
+        lhs, rhs = arguments
+        if is_variable(lhs) and is_variable(rhs):
+            if self._compared((lhs,)) != self._compared((rhs,)):
+                raise ValueError(
+                    f"{symbol_to_pretty_string(lhs)} and "
+                    f"{symbol_to_pretty_string(rhs)} range over different "
+                    "domains, so their values cannot be compared."
+                )
+            return lhs, rhs
+        return super().resolve_arguments(arguments)
 
     def forward_predicate(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
         """Return a tensor of equality results between the two arguments."""
@@ -68,18 +88,18 @@ class EqualityPredicate(Predicate[torch.Tensor, torch.Tensor]):
 class _LabelProbabilityPredicate(Predicate[torch.Tensor, torch.Tensor]):
     """Shared logic for ``(atom, label)`` predicates with probability-space outputs.
 
-    Subclasses set ``functor``/``structure`` and implement ``_convert_label``
-    (literal → output-space scalar) and ``_negate`` (output-space ``1 - p``).
+    The first argument is a truth value, a variable's or a written ``false`` or
+    ``true``, and the second the probability that it is ``true``. Subclasses
+    implement ``_convert_label`` (literal → output-space scalar) and
+    ``_negate`` (output-space ``1 - p``).
     """
 
-    arity = 2
+    def __init__(self, atoms: Iterable[Symbol]):
+        """Weigh the truth value of each atom by its label."""
+        super().__init__(atoms, (_TRUTH, _VALUES))
 
     def resolve_argument(self, symbol: Symbol, index: int, /) -> float | Symbol:
         if index == 0:
-            if symbol == ("true",):
-                return 1.0
-            if symbol == ("false",):
-                return 0.0
             return symbol
         label_structure = "probability"
         if len(symbol) == 3 and symbol[0] == "_":
@@ -107,9 +127,6 @@ class _LabelProbabilityPredicate(Predicate[torch.Tensor, torch.Tensor]):
 class ProbabilityPredicate(_LabelProbabilityPredicate):
     """``(atom, label)`` predicate with probability-space outputs."""
 
-    functor = "p"
-    structure = "probability"
-
     def _convert_label(self, p: float, label_structure: str) -> float:
         if label_structure == "logprobability":
             return math.exp(p)
@@ -121,9 +138,6 @@ class ProbabilityPredicate(_LabelProbabilityPredicate):
 
 class LogProbabilityPredicate(_LabelProbabilityPredicate):
     """``(atom, label)`` predicate with log-probability-space outputs."""
-
-    functor = "logp"
-    structure = "logprobability"
 
     def _convert_label(self, p: float, label_structure: str) -> float:
         if label_structure == "probability":
@@ -140,14 +154,13 @@ class NetworkPredicate(Predicate[torch.Tensor, torch.Tensor]):
     """Predicate that delegates evaluation to a provided ``torch.nn.Module``.
 
     Always binary: the first argument is fed to the module, and the second is a
-    value that reads a row of its output. The ``arity`` constructor parameter is
-    therefore expected to be ``2``.
+    value that reads a row of its output.
 
     Given a ``domain``, which lists the values of the module's output rows in row
-    order, an atom reads the row at its value's position in ``domain``: a written
-    value resolves to an element of ``domain.as_tensor()``, and a variable is given
-    one, as an aggregation over a binder ranging over ``domain`` does. Without a
-    domain, a value is its row: a whole number from 0 up to the number of rows.
+    order, the second argument ranges over it: an atom reads the row at its
+    value's position, whether the value is written or a variable holds it.
+    Without a domain, the second argument ranges over the values, and a written
+    value is its row: a whole number from 0 up to the number of rows.
 
     Ground atoms sharing a first argument — ``digit(i1,0) … digit(i1,9)``, the
     usual "one classifier, N mutually exclusive values" pattern — are distinct
@@ -165,70 +178,56 @@ class NetworkPredicate(Predicate[torch.Tensor, torch.Tensor]):
 
     def __init__(
         self,
-        functor: str,
-        arity: int,
-        structure: str,
+        atoms: Iterable[Symbol],
+        *,
         module: torch.nn.Module,
-        all_arguments: Iterable[tuple[Symbol, ...]],
         domain: Domain | None = None,
     ):
-        """Evaluate ``functor``/``arity`` atoms in ``structure`` through ``module``.
+        """Compute ``atoms`` through ``module``.
 
         Raises:
             ValueError: If ``domain``'s values are not distinct scalars, or a
                 written value is not one of them, or, without a domain, not a
                 row.
         """
-        # functor/arity/structure/domain must exist before ``super().__init__``,
-        # which resolves the arguments.
-        self.functor = functor
-        self.arity = arity
-        self.structure = structure
-        self._domain = domain
+        atoms = list(atoms)
         values = None if domain is None else domain.as_tensor()
         if values is not None and (
             values.dim() != 1 or values.unique().numel() != values.numel()
         ):
-            raise ValueError(
-                f"The domain of {functor}/{arity} holds {tuple(values.shape)} values "
-                "that are not distinct scalars, so they name no rows."
+            name = (
+                "/".join(map(str, get_predicate(without_structure(atoms[0]))))
+                if atoms
+                else type(self).__name__
             )
-        super().__init__(all_arguments)
+            raise ValueError(
+                f"The domain of {name} holds {tuple(values.shape)} values that "
+                "are not distinct scalars, so they name no rows."
+            )
+        super().__init__(atoms, (_VALUES, _VALUES if domain is None else domain))
         self._module = module
         self.register_buffer("_values", values, persistent=False)
 
     def resolve_argument(self, symbol: Symbol, index: int, /) -> float | Symbol:
-        """The module's input, or the value whose row is read.
+        """The module's input, or, without a domain, the row a written value reads.
 
-        The first argument is a number it writes, or else a variable. The second
-        is a variable, or the value it names: a name's position among a symbolic
-        domain's names, a number of a tensor domain, or, without a domain, a row.
+        The first argument is a number it writes, or else a variable. Without a
+        domain, the second is a variable or a row, a whole number from 0; with
+        one, a written value is read as a value of the domain instead.
 
         Raises:
-            ValueError: If the second argument names no value of the domain, or,
-                without one, no row.
+            ValueError: If, without a domain, the second argument writes no row.
         """
-        value = _number(symbol)
+        value = number_of(symbol)
         if index == 0:
             return symbol if value is None else value
         if is_variable(symbol):
             return symbol
-        if isinstance(self._domain, SymbolicDomain):
-            if symbol in self._domain.names:
-                return self._domain.index(symbol)
-        elif self._domain is not None:
-            if value is not None and bool((self._domain.as_tensor() == value).any()):
-                return value
-        elif value is not None and value.is_integer() and value >= 0:
+        if value is not None and value.is_integer() and value >= 0:
             return value
         raise ValueError(
-            f"{symbol_to_pretty_string(symbol)} is not "
-            + (
-                f"a row of the module of {self.functor}/{self.arity}, which has no "
-                "domain, so its values are its rows from 0."
-                if self._domain is None
-                else f"a value of the domain of {self.functor}/{self.arity}."
-            )
+            f"{symbol_to_pretty_string(symbol)} is not a row of the module of "
+            f"{self._name}, which has no domain, so its values are its rows from 0."
         )
 
     def forward_predicate(
@@ -268,14 +267,14 @@ class NetworkPredicate(Predicate[torch.Tensor, torch.Tensor]):
             found = (values == values.round()) & (values >= 0) & (values < count)
             if not bool(found.all()):
                 raise ValueError(
-                    f"{self.functor}/{self.arity} is given the value "
+                    f"{self._name} is given the value "
                     f"{values[~found][0].item()}, which is not a row of its "
                     f"module's {count} rows."
                 )
             return values.to(torch.long)
         if output.dim() < 2 or output.shape[1] != len(self._values):
             raise ValueError(
-                f"The module of {self.functor}/{self.arity} gives rows of shape "
+                f"The module of {self._name} gives rows of shape "
                 f"{tuple(output.shape[1:])}, where its domain has "
                 f"{len(self._values)} values."
             )
@@ -283,36 +282,7 @@ class NetworkPredicate(Predicate[torch.Tensor, torch.Tensor]):
         found = matches.any(dim=-1)
         if not bool(found.all()):
             raise ValueError(
-                f"{self.functor}/{self.arity} is given the value "
+                f"{self._name} is given the value "
                 f"{values[~found][0].item()}, which is not in its domain."
             )
         return matches.int().argmax(dim=-1)
-
-
-def _number(symbol: Symbol) -> float | None:
-    """The number ``symbol`` writes, or ``None`` if it writes none."""
-    if len(symbol) != 1:
-        return None
-    try:
-        return float(symbol[0])
-    except ValueError:
-        return None
-
-
-def get_network_predicate(
-    functor: str,
-    arity: int,
-    structure: str,
-    module: torch.nn.Module,
-    domain: Domain | None = None,
-) -> Callable[[Iterable[tuple[Symbol, ...]]], NetworkPredicate]:
-    """Curry :class:`NetworkPredicate` with ``(functor, arity, structure, module)`` and ``domain``.
-
-    ``domain`` lists the values of ``module``'s output rows, in row order; without
-    one, a value is its row. The returned callable accepts ``all_arguments`` and
-    yields a configured predicate — suitable as an entry in an ``atom_builders``
-    mapping.
-    """
-    return functools.partial(
-        NetworkPredicate, functor, arity, structure, module, domain=domain
-    )

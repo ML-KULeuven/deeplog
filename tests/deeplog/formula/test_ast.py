@@ -1,34 +1,36 @@
 #  Copyright (c) 2024-2026. KU Leuven
 """Tests for the materialized formula AST — the shape the parser produces.
 
-The fold (catamorphism) is exercised end-to-end elsewhere: ``parse_formula`` is
-``fold ∘ parse_formula_to_ast``, so the round-trip suites in ``test_text_parser``
-and ``test_text_printer`` already drive it, and ``test_recognition`` covers the
-passes/module path. This module therefore pins only what is unique to the IR:
-that ``parse_formula_to_ast`` materializes the expected, immutable dataclasses.
+The fold (catamorphism) is exercised end-to-end elsewhere: ``str`` folds a
+formula through the text interpreter, so the round-trip suites in
+``test_text_parser`` and ``test_text_printer`` already drive it, and
+the compiler tests cover the module path. This module therefore pins
+only what is unique to the IR: that ``parse_formula`` materializes the expected,
+immutable dataclasses, and what the fold guarantees on top of them.
 """
+
+import pickle
 
 import pytest
 
-from deeplog import CircuitNode
+from deeplog import Aggregation
+from deeplog import Atom
+from deeplog import BinaryOp
+from deeplog import Compiler
 from deeplog import DeepLogModule
-from deeplog.formula import Aggregation
-from deeplog.formula import AstFactory
-from deeplog.formula import Atom
-from deeplog.formula import BinaryOp
-from deeplog.formula import SymbolicFormulaFactory
-from deeplog.formula import Transformation
-from deeplog.formula import UnaryOp
-from deeplog.formula import fold
-from deeplog.formula import map_children
-from deeplog.formula import parse_formula_to_ast
+from deeplog import Transformation
+from deeplog import UnaryOp
+from deeplog import parse_formula
+from deeplog import with_structure
+from deeplog.formula.ast import CircuitNode
+from deeplog.formula.ast import fold
+from deeplog.formula.ast import map_children
 from deeplog.formula.circuit_factory import CircuitFactory
-from deeplog.formula.deeplogformulafactory import DeepLogFormulaFactory
-from deeplog.formula.deeplogmodulefactory import DeepLogModuleFactory
+from deeplog.formula.symbolic_factory import SymbolicFormulaFactory
 
 
-def test_parse_formula_to_ast_aggregation_with_params():
-    ast = parse_formula_to_ast("expect(X; q(X)_probability): p(X)_probability")
+def test_parse_formula_aggregation_with_params():
+    ast = parse_formula("expect(X; q(X)_probability): p(X)_probability")
     assert ast == Aggregation(
         operation="expect",
         binders=(("X",),),
@@ -37,8 +39,8 @@ def test_parse_formula_to_ast_aggregation_with_params():
     )
 
 
-def test_parse_formula_to_ast_binary_and_transformation():
-    ast = parse_formula_to_ast("(=(X,true)_boolean or =(Y,true)_boolean)_probability")
+def test_parse_formula_binary_and_transformation():
+    ast = parse_formula("(=(X,true)_boolean or =(Y,true)_boolean)_probability")
     assert ast == Transformation(
         "probability",
         BinaryOp(
@@ -49,8 +51,8 @@ def test_parse_formula_to_ast_binary_and_transformation():
     )
 
 
-def test_parse_formula_to_ast_prefix_unary():
-    ast = parse_formula_to_ast("sum(Burglary): not =(Burglary,true)_boolean")
+def test_parse_formula_prefix_unary():
+    ast = parse_formula("sum(Burglary): not =(Burglary,true)_boolean")
     assert ast == Aggregation(
         operation="sum",
         binders=(("Burglary",),),
@@ -63,19 +65,52 @@ def test_parse_formula_to_ast_prefix_unary():
 
 def test_ast_binders_and_params_are_tuples():
     """Binders/params are tuples so nodes stay hashable/frozen."""
-    ast = parse_formula_to_ast("sum(X, Y): p(X)_probability")
+    ast = parse_formula("sum(X, Y): p(X)_probability")
     assert isinstance(ast.binders, tuple)
     assert isinstance(ast.params, tuple)
     hash(ast)  # frozen dataclasses must be hashable
 
 
+@pytest.mark.parametrize("binder", [("x",), ("f", ("X",))])
+def test_an_aggregation_binds_only_variables(binder):
+    """A binder is a variable: ``=`` would read a constant one as a constant."""
+    body = Atom(with_structure(("=", binder, ("true",)), "boolean"))
+
+    with pytest.raises(ValueError, match="not a variable"):
+        Aggregation("sum", (binder,), (), Transformation("real", body))
+
+
+def test_a_parsed_aggregation_binds_only_variables():
+    with pytest.raises(ValueError, match="sum binds x, which is not a variable"):
+        parse_formula("sum(x): (=(x,true)_boolean)_real")
+
+
+def test_hashing_a_formula_does_not_recurse_into_it():
+    node = Atom(with_structure(("a",), "probability"))
+    for _ in range(10_000):
+        node = UnaryOp("negate", node)
+
+    assert hash(node) == hash(UnaryOp("negate", node.operand))
+
+
+def test_a_pickled_node_equals_and_hashes_as_the_node():
+    a = Atom(with_structure(("a",), "boolean"))
+    node = BinaryOp("or", a, UnaryOp("not", a))
+
+    loaded = pickle.loads(pickle.dumps(node))  # noqa: S301
+
+    assert loaded == node
+    assert hash(loaded) == hash(node)
+    assert {node: 1}[loaded] == 1
+
+
 def test_circuit_node_is_a_formula_node_lump():
-    """A ``CircuitNode`` folds as a leaf: ``_fold`` calls ``embed_circuit`` on it
+    """A ``CircuitNode`` folds as a leaf: ``fold`` calls ``embed_circuit`` on it
     rather than recursing into AST children it does not have.
 
     The DeepProbLog engine emits already-compiled boolean lumps. The circuit
-    factory embeds one verbatim (identity); the module factory *lowers* it to a
-    runnable module. Either way it is treated as a leaf, never re-materialized.
+    factory embeds one verbatim (identity), and the compiler lowers it to a
+    runnable module. Either way it is never re-materialized.
     """
     factory = CircuitFactory()
     lump = factory.create_atom(("_", ("x",), ("boolean",)))
@@ -84,9 +119,8 @@ def test_circuit_node_is_a_formula_node_lump():
     # The circuit factory embeds the lump verbatim (identity).
     assert fold(lump, factory) is lump
 
-    # The module factory lowers the lump to a module (no longer a CircuitNode).
-    lowered = fold(lump, DeepLogModuleFactory())
-    assert isinstance(lowered, DeepLogModule)
+    # The compiler lowers the lump to a module (no longer a CircuitNode).
+    assert isinstance(Compiler().compile(lump), DeepLogModule)
 
     # A lump has no surface syntax, so the text interpreter rejects it.
     with pytest.raises(NotImplementedError):
@@ -119,13 +153,13 @@ def test_structure_property_per_node_kind():
 
 
 def test_parse_interns_shared_subformula():
-    """``parse_formula_to_ast`` returns a canonical DAG: equal subformulas share.
+    """``parse_formula`` returns a canonical DAG: equal subformulas share.
 
     Two textually-identical operands collapse to the *same object* (``is``), yet
     the AST is still structurally equal to the expected tree — interning changes
     identity, never value.
     """
-    ast = parse_formula_to_ast("(=(X,true)_boolean or =(X,true)_boolean)_probability")
+    ast = parse_formula("(=(X,true)_boolean or =(X,true)_boolean)_probability")
 
     atom = Atom(("_", ("=", ("X",), ("true",)), ("boolean",)))
     assert ast == Transformation("probability", BinaryOp("or", atom, atom))
@@ -253,7 +287,7 @@ def test_fold_memo_shares_circuit_node():
     shared ``and`` node, not one per textual occurrence (the circuit dedups leaves
     but never operator nodes, so without the memo this would be two).
     """
-    ast = parse_formula_to_ast(
+    ast = parse_formula(
         "(=(X,true)_boolean and =(Y,true)_boolean) or "
         "(=(X,true)_boolean and =(Y,true)_boolean)"
     )
@@ -263,52 +297,10 @@ def test_fold_memo_shares_circuit_node():
     circuit = node.circuit
     and_nodes = sum(
         1
-        for nid in circuit.iter_topological([node.node])
+        for nid in circuit._iter_topological([node.node])
         if circuit._get_node(nid).node_type == "and"
     )
     assert and_nodes == 1
-
-
-class _BoundaryRecorder(DeepLogFormulaFactory[str]):
-    """A minimal lowering algebra that spells out what each eliminator saw."""
-
-    lowers_circuit_children = True
-
-    def create_atom(self, atom):
-        return f"atom({atom[1][0]})"
-
-    def create_binary_node(self, operator, lhs, rhs):
-        return f"{operator}({lhs},{rhs})"
-
-    def create_unary_node(self, operator, operand):
-        return f"{operator}({operand})"
-
-    def create_transformation(self, structure, child):
-        return f"cast_{structure}({child})"
-
-    def create_aggregation(self, operation, binders, params, child):
-        return f"{operation}({child})"
-
-    def embed_circuit(self, node, children=()):
-        return f"lump[{','.join(children)}]"
-
-
-def test_fold_keeps_boundary_atoms_distinct_across_lumps():
-    """Each lump's boundary atom folds to *its own* carrier, not a neighbour's.
-
-    ``CircuitNode.children`` materializes an ``Atom`` per boundary symbol, and
-    the fold memo is keyed by object identity. Were those atoms rebuilt (and
-    freed) on every access, CPython could hand a later atom a recycled address
-    and the memo would answer with an earlier atom's carrier — silently wiring
-    the wrong predicate onto a lump's boundary.
-    """
-    factory = CircuitFactory()
-    lumps = [factory.create_atom(("_", (f"a{i}",), ("boolean",))) for i in range(3)]
-    ast = BinaryOp("or", lumps[0], BinaryOp("or", lumps[1], lumps[2]))
-
-    folded = fold(ast, _BoundaryRecorder())
-
-    assert folded == "or(lump[atom(a0)],or(lump[atom(a1)],lump[atom(a2)]))"
 
 
 def test_circuit_node_children_are_cached():
@@ -328,22 +320,46 @@ def test_circuit_node_children_are_cached():
 def test_str_renders_the_formula_text_the_node_parsed_from():
     """``str`` is surface syntax: it round-trips back through the parser."""
     text = "(=(X,true)_boolean or =(Y,true)_boolean)_probability"
-    ast = parse_formula_to_ast(text)
+    ast = parse_formula(text)
 
     assert str(ast) == text
-    assert parse_formula_to_ast(str(ast)) == ast
+    assert parse_formula(str(ast)) == ast
+
+
+def test_both_spellings_of_an_equality_are_one_atom():
+    """``=`` is symmetric: ``=(a, X)`` is the atom ``=(X, a)``."""
+    written = Atom(with_structure(("=", ("X",), ("a",)), "boolean"))
+    swapped = Atom(with_structure(("=", ("a",), ("X",)), "boolean"))
+
+    assert swapped == written
+    assert hash(swapped) == hash(written)
+    assert swapped.atom == written.atom
+
+
+@pytest.mark.parametrize(
+    ("text", "printed"),
+    [
+        ("=(a,X)_boolean", "=(X,a)_boolean"),
+        ("=(X,a)_boolean", "=(X,a)_boolean"),
+        ("=(Y,X)_boolean", "=(Y,X)_boolean"),
+        ("=(b,a)_boolean", "=(b,a)_boolean"),
+    ],
+)
+def test_an_equality_prints_its_variable_before_a_written_value(text, printed):
+    """Only a written value compared with a variable is reordered."""
+    assert str(parse_formula(text)) == printed
 
 
 def test_repr_renders_the_node_structure_on_one_line():
     """``repr`` names each node kind and the datum that distinguishes it."""
-    ast = parse_formula_to_ast("sum(X): not p(X)_probability")
+    ast = parse_formula("sum(X): not p(X)_probability")
 
     assert repr(ast) == "Aggregation(sum(X), UnaryOp(not, Atom(p(X)_probability)))"
 
 
 def test_tree_indents_one_line_per_node():
     """``tree`` is ``repr``'s structure, one node per line, children under parents."""
-    ast = parse_formula_to_ast("(=(X,true)_boolean or =(Y,true)_boolean)_probability")
+    ast = parse_formula("(=(X,true)_boolean or =(Y,true)_boolean)_probability")
 
     assert ast.tree() == (
         "Transformation probability\n"
@@ -356,7 +372,7 @@ def test_tree_indents_one_line_per_node():
 def test_renderings_of_a_lump_show_its_boundary_but_not_its_interior():
     """A lump has no surface syntax, so ``str`` names it and the structure shows
     the formulas its boundary defers — never the compiled interior."""
-    lump = fold(parse_formula_to_ast("not =(X,true)_boolean"), CircuitFactory())
+    lump = fold(parse_formula("not =(X,true)_boolean"), CircuitFactory())
     assert isinstance(lump, CircuitNode)
     handle = f"{lump.circuit.name}#{lump.node}"
 
@@ -365,17 +381,32 @@ def test_renderings_of_a_lump_show_its_boundary_but_not_its_interior():
     assert lump.tree() == f"CircuitNode {handle}\n└─ Atom =(X,true)_boolean"
 
 
-def test_ast_factory_is_the_identity_interpreter():
-    """Folding through ``AstFactory`` reproduces the node it started from."""
-    ast = parse_formula_to_ast(
-        "sum(X; q(X)_probability): (p(X)_boolean or not r(X)_boolean)_probability"
-    )
+def test_fold_takes_a_formula_deeper_than_the_recursion_limit():
+    """A grounded proof can chain thousands of disjunctions; the fold walks them.
 
-    assert fold(ast, AstFactory()) == ast
+    The chain is rendered too, since ``str`` folds through the text interpreter.
+    """
+    import sys
+
+    depth = sys.getrecursionlimit() * 2
+    chain = Atom(("_", ("a0",), ("boolean",)))
+    for i in range(1, depth):
+        chain = BinaryOp("or", chain, Atom(("_", (f"a{i}",), ("boolean",))))
+
+    assert isinstance(fold(chain, CircuitFactory()), CircuitNode)
+    assert str(chain).count(" or ") == depth - 1
 
 
-def test_ast_factory_splices_a_lump_in_verbatim():
-    """A lump is already an AST node, so the identity interpreter returns it."""
-    lump = fold(parse_formula_to_ast("not =(X,true)_boolean"), CircuitFactory())
+def test_a_shared_memo_never_answers_for_a_node_that_is_gone():
+    """Folds sharing one memo keep the nodes they folded alive.
 
-    assert fold(lump, AstFactory()) is lump
+    The memo is keyed by ``id``; were a folded node freed, a later node could get
+    its ``id`` and be answered with the earlier node's result.
+    """
+    factory, memo = CircuitFactory(), {}
+    lumps = [
+        fold(Atom(("_", (name,), ("boolean",))), factory, memo=memo)
+        for name in ("a", "b", "c")
+    ]
+
+    assert len({lump.node for lump in lumps}) == 3

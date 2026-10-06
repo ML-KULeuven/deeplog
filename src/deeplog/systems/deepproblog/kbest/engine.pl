@@ -229,16 +229,15 @@ naf_dispatch(needs_choice(ChoiceGoal, ChoiceLabel),
 
 % NAF subproof needs an undecided categorical RV → spawn N+1 outer-heap
 % children: one per AD branch (cat(CatId)-Idx committed positively, the
-% branch's MV literal conjoined, heuristic multiplied by P_i) plus a
-% "none" child (cat(CatId)-none committed, a single
-% "RV took the residual outcome" leaf conjoined, heuristic multiplied
-% by the residual 1 - Σ P_i).
+% branch's leaf conjoined, heuristic multiplied by P_i) plus a "none"
+% child (cat(CatId)-none committed, the negation of the disjunction of
+% every branch's leaf conjoined, heuristic multiplied by the residual
+% 1 - Σ P_i).
 %
-% Each child emits exactly one new leaf via the factory's MV-aware
-% methods — `get_categorical_value` for branch values, `get_categorical_none`
-% for the residual. Downstream MV-SDD compilation reads the resulting
-% (cat_id, value_idx | "none") tagging off the engine result and turns
-% them into single multi-valued literals at the cat_id RV's vtree leaf.
+% Every leaf is made by the factory's `get_categorical_value`, which
+% records the branch as a value of the cat_id RV. The "none" child records
+% all of them, so the RV's values are its every branch and the residual
+% is the outcome where none of them holds.
 %
 % After the split, not(Goal) stays on the goal stack and is re-resolved
 % on the next pop. The single child whose committed value matches the
@@ -264,14 +263,24 @@ naf_dispatch(needs_cat_choice(CID, CatId),
         py_call(Factory:get_scalar_probability(LabelSym), P),
         add_probability_to_heuristic(P, Heur, NewHeur),
         NewA = [cat(CatId)-BIdx|A]
-    ;   % "None" child: a single MV literal for the residual outcome.
+    ;   % "None" child: none of the branches holds.
         cat_residual_probability(Branches, Factory, 0.0, SumP),
         Residual is 1.0 - SumP,
-        py_call(Factory:get_categorical_none(CatIdStr), NoneLeaf),
-        py_call(Factory:conjoin(F, NoneLeaf), NewF),
+        py_call(Factory:get_false(), False),
+        foldl(cat_branch_disjoin(CatIdStr, Factory), Branches, False, AnyBranch),
+        py_call(Factory:negate(AnyBranch), NoBranch),
+        py_call(Factory:conjoin(F, NoBranch), NewF),
         add_probability_to_heuristic(Residual, Heur, NewHeur),
         NewA = [cat(CatId)-none|A]
     ).
+
+% Disjoin the leaf of one AD branch onto Acc, recording it as a value.
+cat_branch_disjoin(CatIdStr, Factory, BGoal-BIdx-BInner, Acc, NewAcc) :-
+    to_symbol(BGoal, GoalSym),
+    to_symbol(BInner, LabelSym),
+    py_call(Factory:get_categorical_value(GoalSym, LabelSym, CatIdStr, BIdx),
+            Leaf),
+    py_call(Factory:disjoin(Acc, Leaf), NewAcc).
 
 % Sum the scalar probabilities of all branches under a CatId — used by
 % the categorical-NAF "none" child to compute its residual probability.

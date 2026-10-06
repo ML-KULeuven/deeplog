@@ -56,7 +56,8 @@ Getting started
 
    .. rubric:: Feature extras
 
-   * ``pydeeplog[tests]`` — includes pytest, hypothesis, and assorted utilities to execute ``pytest`` across the repo.
+   * ``pydeeplog[mvsdd]`` — installs mv-sdd, the knowledge compiler for formulas that test several values of one variable, such as a digit classifier's ten classes in MNIST addition. Without it, such an expectation is enumerated.
+   * ``pydeeplog[tests]`` — includes pytest, pytest-xdist and coverage, and what the example notebooks need, to execute ``pytest`` across the repo, notebooks included.
    * ``pydeeplog[examples]`` — pulls the tutorial notebook requirements so every example in :doc:`tutorial` runs without additional setup.
    * ``pydeeplog[site]`` — installs the doc toolchain (Sphinx, myst-nb, design components) so you can run ``(cd site && make html)`` locally.
    * ``pydeeplog[janus_engine]`` — activates the SWI-Prolog powered Janus backend for lower-latency logical inference (requires a local SWI-Prolog install).
@@ -68,17 +69,17 @@ Getting started
    .. jupyter-execute::
 
       import torch
-      from deeplog import SymTensor, parse_formula_to_module, reshape, with_structure
+      from deeplog import SymTensor, parse_formula_to_module, reshape
 
       # Compute the expected value of an implication (A → B ≡ ¬A ∨ B).
       # E[A → B] where A and B are independent boolean random variables.
-      module = parse_formula_to_module("expectation(A, B): not A_boolean or B_boolean")
+      module = parse_formula_to_module(
+          "expectation(A, B): not =(A,true)_boolean or =(B,true)_boolean"
+      )
 
       # A module names its inputs, so declare the layout of your data and
       # reshape the module onto it instead of matching its input order.
-      layout = SymTensor(
-          [with_structure(("A",), "probability"), with_structure(("B",), "probability")]
-      )
+      layout = SymTensor(["=(A,true) _ probability", "=(B,true) _ probability"])
       module = reshape(module, layout)
 
       # Each row: [P(A=true), P(B=true)]
@@ -94,9 +95,9 @@ Getting started
       for (p_a, p_b), exp in zip(probs, expectations):
           print(f"P(A)={p_a:.1f}  P(B)={p_b:.1f}  ->  E[A → B]={float(exp):.2f}")
 
-   This computes the probability that an implication holds given independent atom probabilities — a weighted model count. The ``expectation`` operator compiles the boolean formula into the probability semiring. Feed this into your loss to softly encourage logical constraints during training.
+   This computes the probability that an implication holds when ``A`` and ``B`` are true independently, with the given probabilities: a weighted model count. The ``expectation`` operator compiles the boolean formula into the probability semiring. Feed this into your loss to softly encourage logical constraints during training.
 
 .. seealso::
 
    - :doc:`tutorial` ‒ pick the example notebook that matches your workload.
-   - :doc:`autoapi/index` ‒ dive into the generated API reference when you start composing modules.
+   - :doc:`public_api` ‒ dive into the API reference when you start composing modules.

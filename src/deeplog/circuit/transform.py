@@ -14,6 +14,7 @@ from ..symbol import Symbol
 from ..symbol import is_structure_wrapped
 from ..symbol import unwrap_structure
 from .circuit import Circuit
+from .fold import fold_circuit
 
 
 if TYPE_CHECKING:
@@ -88,12 +89,12 @@ def transform_circuit(
     The map is exact only insofar as the source's operators mean in the target
     what they meant at home. Reading a *logical* circuit's ``or`` as a semiring
     sum requires the source to be deterministic and decomposable, which is what
-    :func:`~deeplog.circuit.knowledge_compile.knowledge_compile` produces.
+    :func:`~deeplog.circuit.knowledge_compilation.dispatch.knowledge_compile` produces.
 
     Args:
-        source: The circuit to transform_circuit.
+        source: The circuit to transform.
         target_structure: The target algebraic structure (name or instance).
-        roots: Root node IDs defining the subgraph to transform_circuit.
+        roots: Root node IDs defining the subgraph to transform.
         operator_mapping: Explicit mapping from source operator names to target
             operator names, replacing the inferred one. If None, the mapping is
             inferred from the roles both structures declare (product→product,
@@ -138,7 +139,7 @@ def transform_circuit(
         operator_mapping=op_mapping,
         leaf_mapping=leaf_mapping,
     )
-    source.fold(roots, algebra, memo=node_map)
+    fold_circuit(source, roots, algebra, memo=node_map)
     return target_circuit, node_map
 
 
@@ -243,7 +244,7 @@ class CircuitAlgebra(DeepLogFormulaFactory[int]):
             f"aggregation, only the ground formula one was expanded into."
         )
 
-    def embed_circuit(self, node: CircuitNode, children: tuple[int, ...] = ()) -> int:
+    def embed_circuit(self, node: CircuitNode) -> int:
         """Unreachable: the fold is already inside a circuit."""
         raise NotImplementedError(
             f"{type(self).__name__} folds circuit nodes; it is already inside "

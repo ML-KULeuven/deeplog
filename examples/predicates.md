@@ -5,334 +5,161 @@ jupytext:
     format_name: myst
     format_version: 0.13
 kernelspec:
-  display_name: venv-deeplogdev
+  display_name: Python 3
   language: python
   name: python3
 ---
 
 # Predicates in DeepLog
 
-Predicates are the mechanism through which symbolic atoms in DeepLog formulas become executable tensor operations.
+A formula is built from atoms, such as `sky(photo1,rainy)` or `umbrella(rainy)`: statements whose values the formula combines. This notebook is about where those values come from. An atom's value is either given, as an input of the compiled module, or computed by a predicate, a [`DeepLogModule`](deeplog.module.deeplog_module.DeepLogModule) that computes every atom of one functor at once from the atoms' arguments.
 
-An atom is the smallest symbolic unit in a logic formula (e.g.`=(X,true)`, `digit(I,N)`), representing a statement whose value we want to compute.
-
-A predicate defines how such atoms should be evaluated: it maps symbolic arguments to tensors, and implements the function that determines whether the atom holds (Boolean predicates) or how strongly it holds (probability or neural predicates).
+The examples follow one small scenario: the weather is sunny, cloudy or rainy, people carry an umbrella more often the worse it is, and a network tells the weather from a photo.
 
 +++
 
-When DeepLog compiles a formula such as:
-```
-or(=(X,true), p(X))
-```
+## Atoms as inputs
 
-it needs to know how to evaluate:
-- the Boolean equality atom `=(X,true)`
-- the probability atom `p(X)`
-
-A predicate is a {class}`~deeplog.module.deeplog_module.DeepLogModule` that defines how to evaluate a family of atoms.
-This notebook shows how predicates are defined, what built-in predicates DeepLog provides, and how to write custom predicates.
-
-+++
-
-
-Every predicate class:
-- declares a [`SymTensor`](deeplog.shape.SymTensor) input and output layout
-- implements a batched forward computation
-- can be symbolic, numeric, or neural
-
-+++
-
-## Boolean predicates
-
-+++
-
-### EqualityPredicate
-The [`EqualityPredicate`](deeplog.formula.predicates.builtin_predicates.EqualityPredicate) evaluates atoms of the form:
-```
-=(X,true)
-=(X,false)
-```
-
-It expects per-variable assignments (`false` or `true`) and checks equality.
+Without a predicate for its functor, an atom is an input of the compiled module, named by the atom. The formula below is the chance that `photo1` shows rain and someone carries an umbrella, and `_probability` says each atom's value is a probability. Nothing computes either atom, so both are columns of the module's input:
 
 ```{code-cell} ipython3
 import torch
 
-from deeplog import parse_formula_to_module, reshape
-from deeplog.shape import SymTensor
+from deeplog import parse_formula_to_module
 
 
-module = parse_formula_to_module(
-    "=(Burglary,true)_boolean or =(Earthquake,true)_boolean"
-)
-module = reshape(module, input=SymTensor([("Burglary",), ("Earthquake",)]))
+formula = "sky(photo1,rainy)_probability times umbrella(rainy)_probability"
 
-print("Module input shape:", module.get_input_shape())
-
-inputs = torch.tensor([[0, 0], [0, 1], [1, 0], [1, 1]])
-outputs = module(inputs)
-
-print("-" * 80)
-for i, row in enumerate(inputs[:]):
-    print(
-        f"Burglary: {bool(row[0])}\t|\tEarthquake: {bool(row[1])}\t|\tResult: {bool(outputs[i])}"
-    )
+given = parse_formula_to_module(formula)
+print("input:", given.get_input_shape())
+print(given(torch.tensor([[0.7, 0.9]])))
 ```
 
-## Probability predicate
-[`ProbabilityPredicate`](deeplog.formula.predicates.builtin_predicates.ProbabilityPredicate) materializes literal weights by reading the numeric label encoded in the second argument of `p/2`. It mixes those probabilities with the Boolean value of each atom, returning `p` when the literal is true and `1-p` otherwise (or the log versions when configured).
+The rest of this notebook replaces each of these inputs with a predicate that computes it.
+
+## Writing a predicate
+
+A predicate subclasses [`Predicate`](deeplog.formula.predicates.predicate.Predicate). It is given its atoms and a domain for each argument, which the next section explains. Its `forward_predicate` receives one tensor per argument, with a row for each atom in each batch item, and returns a value per row: the predicate computes all of its atoms in one call.
+
+`Umbrella` gives the chance that someone carries an umbrella in each weather, reading its argument over the weathers:
 
 ```{code-cell} ipython3
-from deeplog import ProbabilityPredicate
-from deeplog import simplify_module
+from deeplog import Domain, Predicate, parse_symbol
 
 
-probability_module = simplify_module(
-    ProbabilityPredicate(
-        [
-            (("burglary",), ("_", ("0.8",), ("probability",))),
-            (("earthquake",), ("_", ("0.3",), ("probability",))),
-        ]
-    )
-)
+weathers = Domain.of(["sunny", "cloudy", "rainy"])
 
-print("Input shape:", probability_module.get_input_shape())
 
-assignments = torch.tensor(
-    [
-        [1.0, 0.0],  # burglary true, earthquake false
-        [0.0, 1.0],  # burglary false, earthquake true
-        [1.0, 1.0],  # both true
-    ]
-)
+class Umbrella(Predicate):
+    def __init__(self, atoms):
+        super().__init__(atoms, (weathers,))
 
-weights = probability_module(assignments)
-print("Weights:")
-print(weights)
+    def forward_predicate(self, weather: torch.Tensor) -> torch.Tensor:
+        return torch.tensor([0.1, 0.4, 0.9])[weather]
+
+
+umbrella = Umbrella(map(parse_symbol, ["umbrella(rainy)", "umbrella(Weather)"]))
+print("input :", *umbrella.get_input_shape())
+print("output:", umbrella.get_output_shape())
+print(umbrella(torch.tensor([[2], [0]])))  # Weather is rainy, then sunny
 ```
 
-Probabilities can also be symbolic variables rather than constants. In that case the predicate expects an extra probability tensor input whose symbols match those variable labels.
+The module has a column for each atom. `umbrella(rainy)` reads no input: its argument is written, and the predicate keeps it.
+
+A compiler looks up an atom's predicate in its `atom_builders`, by the atom's functor, arity and algebra: `umbrella(rainy)_probability` under `("umbrella", 1, "probability")`. An entry can be anything that takes the atoms and returns a module with a column for each, such as a predicate class. With `Umbrella` registered, the formula's input `umbrella(rainy)` is gone, and `umbrella(Weather)` reads `Weather` instead:
 
 ```{code-cell} ipython3
-import torch
-
-from deeplog import ProbabilityPredicate
-from deeplog import SymTensor
+from deeplog import Compiler
 
 
-# Two atoms, but their labels are variables p_a and p_b instead of numeric constants
-variable_prob_predicate = ProbabilityPredicate(
-    [
-        (("a",), ("p_a",)),
-        (("b",), ("p_b",)),
-    ]
-)
+compiler = Compiler(atom_builders={("umbrella", 1, "probability"): Umbrella})
 
-print("Input shape (atoms, probabilities):", variable_prob_predicate.get_input_shape())
+partly_given = parse_formula_to_module(formula, compiler=compiler)
+print("input:", *partly_given.get_input_shape())
+print(partly_given(torch.tensor([[0.7]])))
 
-atom_assignments = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
-provided_probabilities = torch.tensor([[0.2, 0.8], [0.5, 0.6]])
-
-weights = variable_prob_predicate(atom_assignments, provided_probabilities)
-print("Weights with variable labels:")
-print(weights)
+in_weather = parse_formula_to_module("umbrella(Weather)_probability", compiler=compiler)
+print("input:", *in_weather.get_input_shape())
+print(in_weather(torch.tensor([[2], [1]])))  # Weather is rainy, then cloudy
 ```
 
-Log-space support: use `LogProbabilityPredicate` to get log outputs with automatic conversions between probability and log labels. It takes the logarithm of labels provided as probabilities. Similarly, `ProbabilityPredicate` converts log-probability labels to probability outputs.
+## Reading arguments
+
+An argument's domain, its sort, says how the predicate reads the values there, whether they are written in the atom or held by a variable:
+
+- a named domain, `Domain.of([...])`: a finite set of names. A name reaches the predicate as its position in the domain, so `Umbrella` sees `rainy` as 2, whether the atom writes it or `Weather` holds it.
+- the values, `Domain.of_values()`: numbers, points or images, read as they are. A number written as the argument is that number, and a word names an input.
+- a tensor domain, `Domain.of_tensor(...)`: a finite set of unnamed values, such as the digits 0 to 9, read as they are.
+
+`Warm` reads a temperature, over the values:
 
 ```{code-cell} ipython3
-from math import log
+class Warm(Predicate):
+    def __init__(self, atoms):
+        super().__init__(atoms, (Domain.of_values(),))
 
-from deeplog import LogProbabilityPredicate, ProbabilityPredicate
+    def forward_predicate(self, temperature: torch.Tensor) -> torch.Tensor:
+        return (temperature >= 20).to(temperature.dtype)
 
 
-atoms = torch.tensor([[1.0], [0.0]])  # single atom true/false
-# Request log-prob outputs from probability labels
-logprob_module = simplify_module(
-    LogProbabilityPredicate(
-        [
-            (("atom",), ("_", ("0.65",), ("probability",))),
-        ],
-    )
-)
-print("logprobability outputs from probability labels:")
-print(logprob_module(atoms))
-
-# Request probability outputs from log-probability labels
-prob_module = simplify_module(
-    ProbabilityPredicate(
-        [
-            (("atom",), ("_", (str(log(0.8)),), ("logprobability",))),
-        ],
-    )
-)
-print("probability outputs from logprobability labels:")
-print(prob_module(atoms))
+warm = Warm(map(parse_symbol, ["warm(Temperature)", "warm(25)", "warm(12)"]))
+print("output:", warm.get_output_shape())
+print(warm(torch.tensor([[25.0], [12.0]])))  # Temperature is 25, then 12
 ```
 
-## Arithmetic Predicates
+An atom means the same either way: where `Temperature` is 25, `warm(Temperature)` agrees with `warm(25)`, and where it is 12, with `warm(12)`.
 
-+++
+In a formula, a variable takes the domain of the arguments it fills: `Weather` ranges over the three weathers wherever `umbrella` reads it, without being declared. A variable read only over the values, as `warm` reads `Temperature`, has no finite domain to take, so summing over it needs one declared, as the `aggregation_basics` notebook does.
 
-### SumsPredicate
+## Built-in predicates
 
-[`SumsPredicate`](deeplog.formula.predicates.builtin_predicates.SumsPredicate) evaluates digit-wise addition constraints:
-```
-sums(A, B, C)
-```
-
-
-It checks whether: `A + B == C`
-
-This is used in tasks like MNIST addition, digit-by-digit arithmetic, temporal constraint reasoning, and logic with numeric structure.
-
-Example:
+Every compiler computes `p`, `logp` and `=`. `p(V,Label)` weighs a truth value: it is `Label` where `V` is true, and `1 - Label` where it is false. `=(V,Value)` holds where `V` holds `Value`, reading `Value` as its position in `V`'s domain, as a predicate over a named domain does. Here `Rain` is a truth value, which a module takes as `0` for false and `1` for true:
 
 ```{code-cell} ipython3
-from deeplog import SumsPredicate
+chance = parse_formula_to_module("p(Rain,0.2)_probability")
+raining = parse_formula_to_module("=(Rain,true)_boolean")
 
-
-triplets = [(("A",), ("B",), ("C",))]
-predicate = SumsPredicate(triplets)
-
-in_a = torch.tensor([[1.0], [1.0]])
-in_b = torch.tensor([[2.0], [5.0]])
-in_c = torch.tensor([[3.0], [9.0]])
-
-result = predicate(in_a, in_b, in_c)
-print("-" * 80)
-for i in range(2):
-    a, b, c, r = int(in_a[i]), int(in_b[i]), int(in_c[i]), bool(result[i])
-    print(f"A: {a}	|	B: {b}t|	C: {c}	|	Result: {r}")
+rain = torch.tensor([[1], [0]])  # Rain is true, then false
+print("p(Rain,0.2) :", chance(rain).flatten())
+print("=(Rain,true):", raining(rain).flatten())
 ```
 
-## NetworkPredicate
+A label written as a word names an input, so `p(Rain,forecast)` takes the chance of rain from an input `forecast`. `logp` computes the same in log space, in the `logprobability` algebra, and converts a label written as a probability, as in `logp(Rain,0.2 _ probability)`.
 
-The `get_network_predicate` function wraps a torch module that predicts a distribution over a discrete output domain, returning a predicate class.
+## Networks
 
-```{code-cell} ipython3
-from deeplog import get_network_predicate
-
-
-# Lets define a simple neural network for digit recognition
-
-
-class MyMLP(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.fc = torch.nn.Linear(784, 10)
-
-    def forward(self, x):
-        return self.fc(x)
-
-
-net = MyMLP()  # must output logits/probabilities over the domain
-
-Image1 = ("Image1",)
-Image2 = ("Image2",)
-
-# Create a predicate class using get_network_predicate
-DigitPredicate = get_network_predicate("digit", 2, "probability", net)
-
-# Instantiate with arguments (image, digit_index)
-arguments = [
-    (Image1, ("0",)),
-    (Image1, ("1",)),
-    (Image2, ("0",)),
-]
-
-predicate = DigitPredicate(arguments)
-print(predicate)
-```
-
-## Custom Predicates
-To define your own predicate, subclass `Predicate`:
-- `resolve_argument(symbol, index)`, optional: return a numeric/boolean/tensor constant for literal arguments, or a `Symbol` (often the input itself) to keep it as a variable, which is what the default does for every argument. Constants are baked into the module buffers and injected automatically during `forward`.
-- `forward_predicate(*x)`: the batched computation over fully materialized arguments (constants already filled in, variables coming from the input tensors). Return a tensor whose batch dimension is flattened over all evaluations; the base class reshapes it back to `(batch, num_evaluations, ...)`.
-
-```{code-cell} ipython3
-from collections.abc import Iterable
-
-import torch
-
-from deeplog import Predicate
-from deeplog.symbol import Symbol
-
-
-class EvenPredicate(Predicate):
-    functor = "even"
-    arity = 1
-    structure = "boolean"
-
-    def __init__(self, all_arguments: Iterable[tuple[Symbol, ...]]):
-        super().__init__(all_arguments)
-
-    def resolve_argument(self, symbol: Symbol, _: int):
-        # Treat literal numbers as constants so they need no runtime input
-        try:
-            return float(symbol[0])
-        except (ValueError, TypeError, IndexError):
-            return symbol
-
-    def forward_predicate(self, digits: torch.Tensor) -> torch.Tensor:
-        # digits shape: (batch * num_evaluations, 1)
-        return (digits % 2 == 0).to(digits.dtype)
-```
-
-```{code-cell} ipython3
-even_predicate = EvenPredicate([(("Digit",),)])
-
-print("Input shape:", even_predicate.get_input_shape())
-print("Output shape:", even_predicate.get_output_shape())
-
-digits = torch.tensor([[0.0], [1.0], [2.0], [7.0]])
-outputs = even_predicate(digits)
-
-print("Digits:", digits.view(-1).tolist())
-print("Even flags:", outputs.view(-1).tolist())
-```
-
-The base `Predicate.forward` injects constants (when `resolve_argument` returns any non-symbol values) and duplicates the input tensors across evaluations. Your `forward_predicate` only needs to implement the pure logic; the example above shows how to supply batched numeric inputs directly without using factories or parsed formulas.
-
-+++
-
-## Predicate factory pattern
-
-You can use `functools.partial` to pre-configure predicate parameters, creating a factory-like pattern for instantiation.
-
-**What it does:** binds predicate-specific options (like thresholds) so you can instantiate consistently with just the per-atom arguments.
-
-**Where it's used:** when registering predicates with {class}`~deeplog.formula.deeplogmodulefactory.deeplogmodulefactory.DeepLogModuleFactory` via `atom_builders`.
-
-**Example:** set predicate-specific options once, then instantiate consistently.
+[`NetworkPredicate`](deeplog.formula.predicates.builtin_predicates.NetworkPredicate) runs a network that outputs a distribution. `sky(Photo,Weather)` is the probability a classifier gives the weather `Weather` for `Photo`; with the weathers as its domain, the classifier's outputs are the weathers in that order. The compiler gives a predicate only its atoms, so the network is bound at registration, here with `functools.partial`. With both predicates registered, the formula reads only the photo: `photo1` is a word where `sky` reads values, so it names an input:
 
 ```{code-cell} ipython3
 from functools import partial
 
+from torch import nn
 
-class MyPredicate(Predicate):
-    functor = "my_functor"
-    arity = 2
-    structure = "boolean"
-
-    def __init__(self, arguments, threshold: float = 0.5):
-        super().__init__(arguments)
-        self.threshold = threshold
-
-    def resolve_argument(self, symbol, index):
-        return symbol
-
-    def forward_predicate(self, *x):
-        score = (x[0] == x[1]).float().mean(dim=-1, keepdim=True)
-        return (score >= self.threshold).float()
+from deeplog import NetworkPredicate
 
 
-# Configure once using functools.partial
-factory = partial(MyPredicate, threshold=0.8)
+classifier = nn.Sequential(nn.Linear(64, 3), nn.Softmax(dim=1))
+sky = partial(NetworkPredicate, module=classifier, domain=weathers)
+compiler = Compiler(
+    atom_builders={
+        ("umbrella", 1, "probability"): Umbrella,
+        ("sky", 2, "probability"): sky,
+    }
+)
 
-# Instantiate with atom arguments
-pred = factory([(("A",), ("B",))])  # MyPredicate(arguments=[...], threshold=0.8)
-print(pred)
+from_photo = parse_formula_to_module(formula, compiler=compiler)
+print("input:", *from_photo.get_input_shape())
+
+photos = torch.rand(2, 1, 64)  # a batch of two photos, 64 features each
+print(from_photo(photos).detach())
 ```
 
-This pattern lets you expose predicate-specific knobs (e.g., thresholds, domains) once while keeping a uniform interface. In {class}`~deeplog.formula.deeplogmodulefactory.deeplogmodulefactory.DeepLogModuleFactory`, you can register these factories via `atom_builders`, keyed by `(functor, arity, structure)` signature.
+The formula covers rainy weather only. Summed over every weather, the same product is the chance of an umbrella in whatever weather the photo shows. Summing over a variable is an aggregation, the subject of the `aggregation_basics` notebook.
+
+```{code-cell} ipython3
+umbrella_in_photo = parse_formula_to_module(
+    "sum(Weather): sky(photo1,Weather)_probability times umbrella(Weather)_probability",
+    compiler=compiler,
+)
+print(umbrella_in_photo(photos).detach())
+```

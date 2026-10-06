@@ -56,7 +56,7 @@ def fold_circuit[T](
     them -- as :func:`deeplog.formula.ast.fold`'s does on the AST side.
     """
     built: dict[int, T] = memo if memo is not None else {}
-    for node_id in circuit.iter_topological(roots, frontier):
+    for node_id in circuit._iter_topological(roots, frontier):
         if node_id in built:
             continue
         if frontier is not None and node_id in frontier:

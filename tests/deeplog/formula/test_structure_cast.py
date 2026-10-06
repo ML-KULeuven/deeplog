@@ -2,36 +2,33 @@
 import torch
 
 from deeplog import SymTensor
-from deeplog import sole_structure
 from deeplog import with_structure
-from deeplog.formula.deeplogmodulefactory.transform_cast import build_transform
+from deeplog.formula.lowering.transform_cast import build_transform
+from deeplog.shape import sole_structure
 
 
 a, b = ("a",), ("b",)
 
 
-def test_real_to_probability_cast():
+def test_boolean_to_real_cast():
     """A cast reports its algebra on its outputs, not on itself.
 
     Its inputs and outputs live in *different* algebras, which is exactly the
     thing a single per-module annotation could not express.
     """
-    input_shape = SymTensor([with_structure(sym, "real") for sym in (a, b)])
-    module = build_transform(input_shape, "real", "probability")
+    input_shape = SymTensor([with_structure(sym, "boolean") for sym in (a, b)])
+    module = build_transform(input_shape, "boolean", "real")
 
-    assert sole_structure(module.get_input_shape()) == "real"
+    assert sole_structure(module.get_input_shape()) == "boolean"
 
     expected_output_shape = SymTensor(
-        [
-            with_structure(("transform", ("probability",), sym), "probability")
-            for sym in input_shape
-        ]
+        [with_structure(("transform", ("real",), sym), "real") for sym in input_shape]
     )
     assert module.get_output_shape() == expected_output_shape
-    assert sole_structure(module.get_output_shape()) == "probability"
+    assert sole_structure(module.get_output_shape()) == "real"
 
-    input_tensor = torch.tensor([[-5.0, 3.0], [2.0, 7.0]])
-    torch.testing.assert_close(module(input_tensor), torch.sigmoid(input_tensor))
+    input_tensor = torch.tensor([[0.0, 1.0], [1.0, 1.0]])
+    torch.testing.assert_close(module(input_tensor), input_tensor)
 
 
 def test_probability_and_log_probability_cast_into_each_other():

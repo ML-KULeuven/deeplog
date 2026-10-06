@@ -7,18 +7,19 @@ semifield like any other, so it becomes a circuit node; no backend has a node fo
 a quotient, so :mod:`deeplog.circuit.split` cuts the graph there and applies the
 division across the compiled columns (:class:`~deeplog.module.ColumnwiseModule`).
 These tests exercise that lowering end-to-end through
-``DeepLogModuleFactory.compile``.
+``Compiler.compile``.
 """
 
 import pytest
 import torch
 
-from deeplog import DeepLogModuleFactory
+from deeplog import Aggregation
+from deeplog import Atom
+from deeplog import BinaryOp
+from deeplog import Compiler
+from deeplog import Transformation
+from deeplog import parse_formula_to_module
 from deeplog import reshape
-from deeplog.formula import Aggregation
-from deeplog.formula import Atom
-from deeplog.formula import BinaryOp
-from deeplog.formula import parse_formula_to_module
 from deeplog.shape import SymTensor
 
 
@@ -61,7 +62,7 @@ def test_posterior_disjunction_evidence():
         BinaryOp("or", Atom(BURGLARY_BOOL_SYM), Atom(EARTHQUAKE_BOOL_SYM)),
     )
     module = reshape(
-        DeepLogModuleFactory().compile(_posterior(joint, evidence)),
+        Compiler().compile(_posterior(joint, evidence)),
         input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
     )
 
@@ -87,7 +88,7 @@ def test_posterior_distinct_symbol_sets():
     )
     evidence = _expectation([EARTHQUAKE], Atom(EARTHQUAKE_BOOL_SYM))
     module = reshape(
-        DeepLogModuleFactory().compile(_posterior(joint, evidence)),
+        Compiler().compile(_posterior(joint, evidence)),
         input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
     )
 
@@ -106,7 +107,7 @@ def test_posterior_impossible_evidence_stays_finite():
     )
     evidence = _expectation([EARTHQUAKE], Atom(EARTHQUAKE_BOOL_SYM))
     module = reshape(
-        DeepLogModuleFactory().compile(_posterior(joint, evidence)),
+        Compiler().compile(_posterior(joint, evidence)),
         input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
     )
 
@@ -114,36 +115,39 @@ def test_posterior_impossible_evidence_stays_finite():
     assert torch.isfinite(result).all()
 
 
-def test_symbolic_operator_the_structure_defines_lowers_elementwise():
-    """A ``times`` over two already-reduced expectations multiplies their outputs.
+def _weighted_count():
+    """``sum(B): (B)_probability times p(B, 0.8)``: a count no circuit holds.
 
-    The operands have left the circuit — had they both been lumps under a
-    circuit-role operator, the construction fold would have absorbed the
-    ``times`` — so what reaches the lowering factory is a product of two
+    A ``sum`` binds its variable, so it stays symbolic, and so does an operator
+    over it.
+    """
+    weight = ("_", ("p", BURGLARY, ("_", ("0.8",), ("probability",))), ("probability",))
+    weighted = BinaryOp(
+        "times",
+        Transformation("probability", Atom(BURGLARY_BOOL_SYM)),
+        Atom(weight),
+    )
+    return Aggregation("sum", (BURGLARY,), (), weighted)
+
+
+def test_symbolic_operator_the_structure_defines_lowers_elementwise():
+    """A ``times`` over two already-reduced counts multiplies their outputs.
+
+    The operands are not lumps, so the construction fold could not absorb the
+    ``times`` into a circuit; what reaches the lowering is a product of two
     numbers, and the probability algebra supplies the multiplication.
     """
-    factory = DeepLogModuleFactory()
-    operand = factory.compile(
-        _expectation([BURGLARY, EARTHQUAKE], Atom(BURGLARY_BOOL_SYM))
-    )
-    product = reshape(
-        factory.create_binary_node("times", operand, operand),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
-    )
-    # E[Burglary] = 0.8, so the product is 0.64.
-    torch.testing.assert_close(
-        product(torch.tensor([[0.8, 0.3]])), torch.tensor([[0.64]])
-    )
+    count = _weighted_count()
+    product = Compiler().compile(BinaryOp("times", count, count))
+    # The count is 0.8, so the product is 0.64.
+    torch.testing.assert_close(product(), torch.tensor([[0.64]]))
 
 
 def test_operator_the_structure_does_not_define_is_rejected():
     """An operator absent from the algebra names itself in the error."""
-    factory = DeepLogModuleFactory()
-    operand = factory.compile(
-        _expectation([BURGLARY, EARTHQUAKE], Atom(BURGLARY_BOOL_SYM))
-    )
+    count = _weighted_count()
     with pytest.raises(NotImplementedError, match="has no operator 'implies'"):
-        factory.create_binary_node("implies", operand, operand)
+        Compiler().compile(BinaryOp("implies", count, count))
 
 
 # --- End-to-end through the parser's `/` syntax ---
@@ -165,7 +169,7 @@ def _wmc(joint: bool) -> str:
 
 
 def test_posterior_via_parser_divide_syntax():
-    """`(WMC_q∧e) divide (WMC_e)` parses, recognizes, and evaluates to P(B|E)=0.8."""
+    """`(WMC_q∧e) divide (WMC_e)` parses and evaluates to P(B|E)=0.8."""
     text = f"{_wmc(True)} divide {_wmc(False)}"
     module = reshape(
         parse_formula_to_module(text),
@@ -177,12 +181,12 @@ def test_posterior_via_parser_divide_syntax():
 
 
 def test_parser_divide_that_is_no_posterior_is_a_plain_ratio():
-    """A `divide` the posterior pass does not recognize still compiles.
+    """A `divide` of two counts is the ratio of their values.
 
-    The numerator is disjunctive, so the denominator's evidence is not a
-    conjunct of it and ``recognize_posterior`` leaves the node alone; the
-    lowering factory then divides the two operands as an ordinary ratio.
-    E[B∨E] = 0.86 over P(B)=0.8, P(E)=0.3, so the ratio is 0.86 / 0.3.
+    The numerator's evidence is not a conjunct of it, so this is no posterior.
+    The binders range over ``false, true`` and the weights do not depend on
+    them: the disjunction holds in three of the four models, each weighing
+    ``0.8 * 0.3``, and the evidence in one, weighing ``0.3``.
     """
     disjunctive = (
         "(sum(Burglary, Earthquake): "
@@ -194,7 +198,7 @@ def test_parser_divide_that_is_no_posterior_is_a_plain_ratio():
         input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
     )
     torch.testing.assert_close(
-        module(torch.tensor([[0.8, 0.3]])), torch.tensor([[0.86 / 0.3]])
+        module(torch.tensor([[0.8, 0.3]])), torch.tensor([[3 * 0.8 * 0.3 / 0.3]])
     )
 
 
@@ -206,7 +210,7 @@ def test_operator_above_a_division_composes():
     everything above it stays symbolic and is applied elementwise — one
     compiled circuit per division-free subtree, a tensor expression above.
     """
-    factory = DeepLogModuleFactory()
+    compiler = Compiler()
     joint = _expectation(
         [BURGLARY, EARTHQUAKE], _and(BURGLARY_BOOL_SYM, EARTHQUAKE_BOOL_SYM)
     )
@@ -214,7 +218,7 @@ def test_operator_above_a_division_composes():
     other = _expectation([BURGLARY], Atom(BURGLARY_BOOL_SYM))
 
     module = reshape(
-        factory.compile(BinaryOp("times", _posterior(joint, evidence), other)),
+        compiler.compile(BinaryOp("times", _posterior(joint, evidence), other)),
         input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
     )
 
@@ -226,7 +230,7 @@ def test_operator_above_a_division_composes():
 
 def test_division_nested_under_a_division():
     """A divide whose numerator is itself a divide lowers as nested tensor ops."""
-    factory = DeepLogModuleFactory()
+    compiler = Compiler()
     joint = _expectation(
         [BURGLARY, EARTHQUAKE], _and(BURGLARY_BOOL_SYM, EARTHQUAKE_BOOL_SYM)
     )
@@ -234,7 +238,7 @@ def test_division_nested_under_a_division():
     other = _expectation([BURGLARY], Atom(BURGLARY_BOOL_SYM))
 
     module = reshape(
-        factory.compile(_posterior(_posterior(joint, evidence), other)),
+        compiler.compile(_posterior(_posterior(joint, evidence), other)),
         input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
     )
 

@@ -2,59 +2,13 @@
 """Symbolic unification for the Prolog grounder."""
 
 from collections import defaultdict
-from collections import deque
 from collections.abc import Callable
 from collections.abc import Mapping
 
 from deeplog.symbol import Symbol
 from deeplog.symbol import apply_substitution
-from deeplog.symbol import get_predicate
+from deeplog.symbol import calculate_mgu
 from deeplog.symbol import get_term_variables
-from deeplog.symbol import is_variable
-
-
-def _replace_all_occurrences(
-    queue: deque[tuple[Symbol, Symbol]], substitution: dict[Symbol, Symbol]
-) -> deque[tuple[Symbol, Symbol]]:
-    return deque(
-        (apply_substitution(lhs, substitution), apply_substitution(rhs, substitution))
-        for lhs, rhs in queue
-    )
-
-
-def calculate_mgu(term1: Symbol, term2: Symbol) -> dict[Symbol, Symbol] | None:
-    """Return the most general unifier of ``term1`` and ``term2``, or ``None``.
-
-    The unifier is the substitution ``s`` with
-    ``apply_substitution(term1, s) == apply_substitution(term2, s)`` that every
-    other such substitution refines. ``None`` means the terms do not unify.
-    Variables are identified by name, so every ``_`` is the same variable.
-
-    There is no occurs check. Unifying a variable with a term containing it is
-    not supported: it may raise :class:`RecursionError`, or return a substitution
-    :func:`~deeplog.symbol.apply_substitution` cannot apply.
-    """
-    queue: deque[tuple[Symbol, Symbol]] = deque([(term1, term2)])
-    substitution: dict[Symbol, Symbol] = {}
-    while queue:
-        lhs, rhs = queue.popleft()
-        if is_variable(rhs) and not is_variable(lhs):
-            queue.appendleft((rhs, lhs))
-        elif is_variable(lhs):
-            if lhs == rhs:
-                continue
-            new_sub = {lhs: rhs}
-            substitution = {
-                k: apply_substitution(v, new_sub) for k, v in substitution.items()
-            }
-            substitution.update(new_sub)
-            queue = _replace_all_occurrences(queue, new_sub)
-        else:
-            if get_predicate(lhs) != get_predicate(rhs):
-                return None
-            queue.extend(zip(lhs[1:], rhs[1:], strict=True))
-
-    return substitution
 
 
 def unify(term1: Symbol, term2: Symbol) -> tuple[Symbol, dict[Symbol, Symbol]] | None:

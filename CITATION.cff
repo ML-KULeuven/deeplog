@@ -17,8 +17,8 @@ authors:
   - family-names: Marra
     given-names: Giuseppe
 preferred-citation:
-  type: article
-  title: "DeepLog: An Operational Neurosymbolic Framework"
+  type: conference-paper
+  title: "DeepLog: A Software Framework for Modular Neurosymbolic AI"
   authors:
     - family-names: Manhaeve
       given-names: Robin
@@ -34,7 +34,18 @@ preferred-citation:
       given-names: Luc
     - family-names: Marra
       given-names: Giuseppe
+  collection-title: "Proceedings of the Thirty-Fifth International Joint Conference on Artificial Intelligence, IJCAI-26"
+  conference:
+    name: "IJCAI 2026"
+  publisher:
+    name: "International Joint Conferences on Artificial Intelligence Organization"
+  editors:
+    - family-names: Calvanese
+      given-names: Diego
+  start: 8462
+  end: 8465
   year: 2026
-  url: "https://arxiv.org/abs/2605.10279"
-  doi: "10.48550/arXiv.2605.10279"
-  notes: "Preprint accepted at IJCAI2026 Demo Track"
+  month: 8
+  doi: "10.24963/ijcai.2026/980"
+  url: "https://www.ijcai.org/proceedings/2026/980"
+  notes: "Demo Track"

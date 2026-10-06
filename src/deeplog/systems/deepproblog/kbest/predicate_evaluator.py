@@ -1,9 +1,8 @@
 """Label → probability evaluator used by :class:`KBestJanusGrounder` for ranking.
 
-KBest builds boolean proof formulas via the wrapped factory just like the
-non-kbest engines; the only thing it needs from the user *beyond* a factory
-is a way to resolve non-numeric labels (e.g. neural-network-backed labels)
-to a probability scalar for its heuristic ranking. Numeric-constant labels
+KBest builds boolean proof formulas just like the non-kbest engines; the only
+thing it needs from the user is a way to resolve non-numeric labels (e.g.
+neural-network-backed labels) to a probability scalar for its heuristic ranking. Numeric-constant labels
 already resolve structurally inside
 :meth:`~deeplog.systems.deepproblog.kbest.probabilistic_factory.ProbabilisticFactory.get_scalar_probability`,
 so the evaluator only needs to cover the network-backed case.
@@ -15,17 +14,18 @@ from collections.abc import Mapping
 
 import torch
 
+from deeplog import PROBABILITY
 from deeplog import AtomBuilder
 from deeplog import Predicate
 from deeplog import Symbol
-from deeplog import get_algebraic_structure
+from deeplog import with_structure
 
 
 class NeuralPredicateEvaluator:
     """Evaluator that runs a registered network predicate per non-numeric label.
 
     Numeric-constant labels resolve via the standard probability-structure
-    constant path (delegated to :func:`~deeplog.algebraic.get_algebraic_structure`).
+    constant path (:meth:`~deeplog.algebraic.AlgebraicStructure.get_constant_value`).
     Compound labels like ``("classifier", ("img1",), ("1",))`` are dispatched
     to the atom builder keyed by ``(functor, arity, "probability")``; the
     resulting :class:`~deeplog.formula.predicates.predicate.Predicate`
@@ -43,7 +43,7 @@ class NeuralPredicateEvaluator:
 
     def __call__(self, label: Symbol) -> float:
         """Evaluate ``label`` to a probability scalar."""
-        constant = get_algebraic_structure("probability").get_constant_value(label)
+        constant = PROBABILITY.get_constant_value(label)
         if constant is not None:
             return float(constant)
         functor = label[0]
@@ -52,7 +52,7 @@ class NeuralPredicateEvaluator:
         builder = self._atom_builders.get(key)
         if builder is None:
             raise ValueError(f"No atom builder registered for {key}")
-        node = builder([label[1:]])
+        node = builder([with_structure(label, PROBABILITY.name)])
         if not isinstance(node, Predicate):
             raise ValueError(
                 f"Atom builder for {key} produced a {type(node).__name__}, "

@@ -4,13 +4,13 @@
 import pytest
 import torch
 
-from deeplog import CircuitNode
-from deeplog import transform_nodes
 from deeplog.algebraic import AlgebraicStructure
 from deeplog.algebraic import Semiring
 from deeplog.circuit import Circuit
-from deeplog.circuit.knowledge_compile import knowledge_compile
+from deeplog.circuit import knowledge_compile
 from deeplog.circuit.transform import transform_circuit
+from deeplog.formula.ast import CircuitNode
+from deeplog.formula.circuit_node import transform_nodes
 
 
 class TestAutoMapping:
@@ -395,7 +395,7 @@ class TestTransformNodes:
 class TestIncrementalTarget:
     """Test the ``into=`` entry point: accumulate several roots into one target.
 
-    This is what lets the module factory transform each expectation eagerly yet
+    This is what lets the lowering transform each expectation eagerly yet
     have them co-reside in one circuit — equivalent to a single batched
     ``transform_nodes`` call, but spread across calls.
     """
@@ -449,7 +449,7 @@ class TestIncrementalTarget:
         assert nmap[shared] == shared_target  # stable mapping
         times_nodes = [
             nid
-            for nid in target.iter_topological([nmap[root1], nmap[root2]])
+            for nid in target._iter_topological([nmap[root1], nmap[root2]])
             if target._get_node(nid).node_type == "times"
         ]
         assert len(times_nodes) == 1  # the shared AND mapped to a single times

@@ -1,64 +1,56 @@
 #  Copyright (c) 2024-2026. KU Leuven
-"""Parse DIMACS CNF inputs into DeepLog formulas using a factory."""
+"""Parse DIMACS CNF inputs into DeepLog formulas."""
 
 from __future__ import annotations
 
-from typing import Any
-
-from ..algebraic import Algebra
-from ..algebraic import get_algebraic_structure
+from ..algebraic import BOOLEAN
 from ..symbol import Symbol
-from .deeplogformulafactory import DeepLogFormulaFactory
+from ..symbol import with_structure
+from .ast import Atom
+from .ast import BinaryOp
+from .ast import FormulaNode
+from .ast import UnaryOp
 
 
-def parse_dimacs_cnf[T](
-    dimacs: str,
-    factory: DeepLogFormulaFactory[T],
-    *,
-    structure: str | Algebra = "boolean",
-) -> T:
-    """Parse ``dimacs`` text and emit a DeepLog deeplogfactory via ``factory``."""
-    if isinstance(structure, str):
-        resolved = get_algebraic_structure(structure)
-        if not isinstance(resolved, Algebra):
-            raise TypeError(
-                f"Structure '{structure}' is not an Algebra (has no negation operator)"
-            )
-        algebra = resolved
-        structure_name = structure
-    else:
-        algebra = structure
-        structure_name = algebra.name
+def parse_dimacs_cnf(dimacs: str) -> FormulaNode:
+    """Parse ``dimacs`` into the boolean formula of its clauses.
 
-    clauses = _read_dimacs(dimacs)
-    and_op = algebra.product
-    or_op = algebra.sum
-    not_op = algebra.negation
+    Variable ``i`` is the variable ``Vi``, and the literal ``i`` its test
+    ``=(Vi,true)``, so ``expectation(V1, ..., Vn): φ`` is the probability that
+    the formula ``φ`` holds. A negative literal is the negation of its test, a
+    clause the disjunction of its literals, and the formula the conjunction of
+    its clauses. An empty clause is ``false``, and a clause holding a literal and
+    its negation ``true``.
 
-    def literal_to_node(literal: int):
-        symbol: Symbol = (f"v{abs(literal)}",)
-        leaf = factory.create_atom(("_", symbol, (structure_name,)))
-        return leaf if literal > 0 else factory.create_unary_node(not_op, leaf)
+    Raises:
+        ValueError: If ``dimacs`` is not well-formed DIMACS CNF.
+    """
 
-    def clause_to_node(literals: list[int]):
+    def atom(symbol: Symbol) -> FormulaNode:
+        return Atom(with_structure(symbol, BOOLEAN.name))
+
+    def literal(value: int) -> FormulaNode:
+        test = atom(("=", (f"V{abs(value)}",), ("true",)))
+        return test if value > 0 else UnaryOp(BOOLEAN.negation, test)
+
+    def clause(literals: list[int]) -> FormulaNode:
         if not literals:
-            return factory.create_atom(("_", algebra.zero, (structure_name,)))
-        literal_set = set(literals)
-        if any(-literal in literal_set for literal in literal_set):
-            return factory.create_atom(("_", algebra.one, (structure_name,)))
-        nodes = [literal_to_node(literal) for literal in literals]
-        return _fold_binary(nodes, factory, or_op)
+            return atom(BOOLEAN.zero)
+        present = set(literals)
+        if any(-value in present for value in present):
+            return atom(BOOLEAN.one)
+        return _chain(BOOLEAN.sum, [literal(value) for value in literals])
 
-    clause_nodes = [clause_to_node(clause) for clause in clauses]
-    return _fold_binary(clause_nodes, factory, and_op)
+    return _chain(
+        BOOLEAN.product, [clause(literals) for literals in _read_dimacs(dimacs)]
+    )
 
 
-def _fold_binary(nodes: list[Any], factory: DeepLogFormulaFactory[Any], operator: str):
-    if not nodes:
-        raise ValueError("Cannot fold an empty set of nodes")
+def _chain(operator: str, nodes: list[FormulaNode]) -> FormulaNode:
+    """``nodes`` combined left to right with ``operator``."""
     result = nodes[0]
     for node in nodes[1:]:
-        result = factory.create_binary_node(operator, result, node)
+        result = BinaryOp(operator, result, node)
     return result
 
 

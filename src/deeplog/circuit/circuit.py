@@ -4,21 +4,16 @@
 from collections.abc import Callable
 from collections.abc import Iterator
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
 
 from ..algebraic import AlgebraicStructure
 from ..algebraic import Semiring
 from ..algebraic import get_algebraic_structure
-from ..module import DeepLogModule
+from ..module.deeplog_module import DeepLogModule
 from ..symbol import Symbol
 from ..symbol import is_structure_wrapped
 from ..symbol import with_structure
 from .graph import Graph
 from .graph import Node
-
-
-if TYPE_CHECKING:
-    from ..formula.deeplogformulafactory import DeepLogFormulaFactory
 
 
 class Circuit:
@@ -106,8 +101,8 @@ class Circuit:
         """Return the *bare* canonical leaf symbol for a node ID, or None.
 
         This is the leaf's identity with its redundant structure tag stripped.
-        For the structure-tagged boundary spelling use :meth:`get_symbol_name`,
-        :attr:`leaf_nodes`, or :meth:`reachable_leaves`.
+        For the structure-tagged boundary spelling use :meth:`get_symbol_name`
+        or :attr:`leaf_nodes`.
         """
         return self._leaf_names.get(node_id)
 
@@ -122,7 +117,7 @@ class Circuit:
             bare = self._constant_names.get(node_id)
         return with_structure(bare, self._structure.name) if bare is not None else None
 
-    def reachable_leaves(
+    def _reachable_leaves(
         self, roots: list[int], frontier: Mapping[int, Symbol] | None = None
     ) -> dict[Symbol, int]:
         """The input slots of the subgraph under ``roots``: ``{symbol: node_id}``.
@@ -137,7 +132,7 @@ class Circuit:
         slots themselves, under the symbols given, after the real leaves in
         traversal order.
         """
-        reachable = set(self.iter_topological(roots, frontier))
+        reachable = set(self._iter_topological(roots, frontier))
         slots = {
             with_structure(bare, self._structure.name): nid
             for nid, bare in self._leaf_names.items()
@@ -149,23 +144,23 @@ class Circuit:
             )
         return slots
 
-    def reachable_constants(
+    def _reachable_constants(
         self, roots: list[int], frontier: Mapping[int, Symbol] | None = None
     ) -> dict[Symbol, int]:
         """The constant nodes reachable from ``roots``: ``{symbol: node_id}``.
 
-        The counterpart to :meth:`reachable_leaves` for the ``constant`` nodes a
+        The counterpart to :meth:`_reachable_leaves` for the ``constant`` nodes a
         structure's ``constant_fn`` produced — the ``0.6`` in ``times(p, 0.6)``,
         and the identities alongside them, since a constant is one kind of node.
         A backend with a primitive for an identity (:attr:`zero_node`,
         :attr:`one_node`) drops it from this set and binds it instead. Keyed by
-        the structure-tagged name, as :meth:`reachable_leaves` is; the value each
+        the structure-tagged name, as :meth:`_reachable_leaves` is; the value each
         stands for is in :attr:`constant_values`. Topological order, so slot
         assignment is deterministic.
         """
         return {
             with_structure(bare, self._structure.name): node_id
-            for node_id in self.iter_topological(roots, frontier)
+            for node_id in self._iter_topological(roots, frontier)
             if (bare := self._constant_names.get(node_id)) is not None
         }
 
@@ -175,16 +170,15 @@ class Circuit:
         """Reachable nodes named via ``name_of``, topological order, ``None``s dropped."""
         return [
             name
-            for node_id in self.iter_topological(roots)
+            for node_id in self._iter_topological(roots)
             if (name := name_of(node_id)) is not None
         ]
 
     def reachable_leaf_names(self, roots: list[int]) -> list[Symbol]:
         """Named leaves reachable from ``roots``, in topological order (no constants).
 
-        The leaves-only boundary view as plain symbols: what feeds a lump and
-        the boolean boundary an expectation transform reasons about. Contrast :meth:`reachable_symbol_names`
-        (also yields constants) and :meth:`reachable_leaves` (keys symbols to ids).
+        The leaves-only boundary view as plain symbols. Contrast
+        :meth:`reachable_symbol_names`, which also yields constants.
         """
         return self._reachable_named(roots, self._tagged_leaf_name)
 
@@ -261,11 +255,6 @@ class Circuit:
         return apply_operator
 
     @property
-    def constant_nodes(self) -> dict[Symbol, int]:
-        """Mapping of constant symbols to node IDs."""
-        return self._constant_nodes
-
-    @property
     def constant_values(self) -> dict[int, float]:
         """Mapping of node IDs to their constant float values."""
         return self._constant_values
@@ -286,11 +275,20 @@ class Circuit:
             return None
         return self._constant_nodes.get(structure.one)
 
+    def operation(self, node_id: int) -> tuple[str, tuple[int, ...]]:
+        """What the node with the given ID is, and the nodes it applies to.
+
+        The first is an operator of the circuit's structure, or ``leaf`` or
+        ``constant``, which apply to no node.
+        """
+        node = self._graph.get_node(node_id)
+        return node.node_type, node.children
+
     def _get_node(self, node_id: int) -> Node:
         """Return the node with the given ID."""
         return self._graph.get_node(node_id)
 
-    def iter_topological(
+    def _iter_topological(
         self, roots: list[int], frontier: Mapping[int, Symbol] | None = None
     ) -> Iterator[int]:
         """Iterate over nodes in topological order (leaves first).
@@ -300,7 +298,7 @@ class Circuit:
         """
         return self._graph.iter_topological(roots, frozenset(frontier or ()))
 
-    def flatten_chains(
+    def _flatten_chains(
         self,
         roots: list[int],
         chain_groups: list[tuple[frozenset[str], frozenset[int]]],
@@ -311,68 +309,15 @@ class Circuit:
             roots, chain_groups, frozenset(frontier or ())
         )
 
-    def to_module(
-        self,
-        roots: dict[int, Symbol],
-        frontier: Mapping[int, Symbol] | None = None,
-    ) -> DeepLogModule:
+    def to_module(self, roots: dict[int, Symbol]) -> DeepLogModule:
         """Convert the circuit to a DeepLog module, evaluating it as written.
 
         Args:
             roots: A dictionary mapping node IDs to output names.
-            frontier: Nodes to lower as input slots under the given
-                     symbols rather than descending into
-                     (:mod:`deeplog.circuit.split`).
 
         Returns:
             A DeepLogModule wrapping the circuit as a torch module.
         """
         from .lower.dispatch import to_module
 
-        return to_module(self, roots, frontier=frontier)
-
-    def fold[T](
-        self,
-        roots: list[int],
-        algebra: "DeepLogFormulaFactory[T]",
-        *,
-        frontier: Mapping[int, Symbol] | None = None,
-        memo: dict[int, T] | None = None,
-    ) -> dict[int, T]:
-        """Re-emit the subgraph under ``roots`` through ``algebra``.
-
-        The "fold" verb on the engine; see
-        :func:`~deeplog.circuit.fold.fold_circuit` for the full contract. A
-        circuit is a sub-algebra of the formula AST, so this takes the same
-        algebra :func:`~deeplog.formula.ast.fold` drives over a tree.
-        """
-        from .fold import fold_circuit
-
-        return fold_circuit(self, roots, algebra, frontier=frontier, memo=memo)
-
-    def transform(
-        self,
-        roots: list[int],
-        target_structure: str | AlgebraicStructure,
-        *,
-        operator_mapping: dict[str, str] | None = None,
-        leaf_mapping: Callable[[Symbol], Symbol] | None = None,
-        into: "tuple[Circuit, dict[int, int]] | None" = None,
-    ) -> "tuple[Circuit, dict[int, int]]":
-        """Transform the subgraph under ``roots`` into ``target_structure``.
-
-        The "transform" verb on the engine; see
-        :func:`~deeplog.circuit.transform.transform_circuit` for the full
-        contract. Returns ``(new_circuit, node_map)`` mapping each source node
-        id to its id in the new circuit.
-        """
-        from .transform import transform_circuit
-
-        return transform_circuit(
-            self,
-            target_structure,
-            roots,
-            operator_mapping=operator_mapping,
-            leaf_mapping=leaf_mapping,
-            into=into,
-        )
+        return to_module(self, roots)

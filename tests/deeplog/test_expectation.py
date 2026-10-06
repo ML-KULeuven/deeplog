@@ -1,33 +1,48 @@
 #  Copyright (c) 2024-2026. KU Leuven
-"""Tests for the expectation aggregation operator.
+"""Tests for the expectation aggregation.
 
-Expectation is circuit-representable: the construction fold absorbs it via the
-weighted-model-count fast path (a boolean lump is model-counted into a
-probability lump), so it is exercised here through the high-level
-``DeepLogModuleFactory.compile`` path over an expectation AST — recognition is
-already done, the construction fold builds the probability circuit, lowering
-composes the module. The error cases are raised by the fast path during
-construction.
+``expectation(X; P): φ`` is the expectation of ``φ`` over ``X`` distributed as
+``P``: a factor weighs each named value of its binder, and the mass they leave
+is a missing value's, where every leaf over the binder is false. Without ``P``,
+the binders are independent, and each value ``φ`` tests a binder for weighs as
+that test in probability. The default builder
+counts (:func:`~deeplog.formula.lowering.expectation.weighted_model_count`) and
+enumerates what it cannot count
+(:func:`~deeplog.formula.lowering.expectation.enumeration`), and
+:func:`~deeplog.formula.lowering.expectation.sampling` returns one that
+estimates it.
 """
+
+import math
+import sys
+from functools import partial
 
 import pytest
 import torch
 
-from deeplog import OPEN
-from deeplog import CircuitNode
-from deeplog import DeepLogModuleFactory
+from deeplog import Aggregation
+from deeplog import Atom
+from deeplog import BinaryOp
+from deeplog import Compiler
 from deeplog import Domain
-from deeplog import Variable
+from deeplog import EqualityPredicate
+from deeplog import NetworkPredicate
+from deeplog import Predicate
+from deeplog import Transformation
+from deeplog import UnaryOp
+from deeplog import enumeration
+from deeplog import parse_formula
 from deeplog import reshape
+from deeplog import sampling
+from deeplog import score_function
 from deeplog import with_structure
-from deeplog.formula import Aggregation
-from deeplog.formula import Atom
-from deeplog.formula import BinaryOp
-from deeplog.formula import UnaryOp
-from deeplog.formula import lower_circuit_nodes
+from deeplog.formula.ast import fold
 from deeplog.formula.circuit_factory import CircuitFactory
-from deeplog.formula.deeplogmodulefactory.lower import batched_lowering
+from deeplog.module.aggregation_modules import ExpectationModule
 from deeplog.shape import SymTensor
+from deeplog.shape import get_all_symbols
+
+from .testing_modules import Forecast
 
 
 FALSE = ("false",)
@@ -51,13 +66,36 @@ def _expectation(binders, child, params=()):
     return Aggregation("expectation", tuple(binders), tuple(params), child)
 
 
+@pytest.fixture
+def compilations(monkeypatch):
+    """The number of roots of each knowledge compilation, in order."""
+    import deeplog.circuit.knowledge_compilation.mvsdd as mvsdd
+    import deeplog.circuit.knowledge_compilation.sdd as sdd
+
+    roots_per_call = []
+
+    def counting(original):
+        def compile_counted(circuit, roots, *args, **kwargs):
+            roots_per_call.append(len(roots))
+            return original(circuit, roots, *args, **kwargs)
+
+        return compile_counted
+
+    monkeypatch.setattr(sdd, "compile_sdd", counting(sdd.compile_sdd))
+    monkeypatch.setattr(mvsdd, "compile_mvsdd", counting(mvsdd.compile_mvsdd))
+    return roots_per_call
+
+
+# --- Without a distribution, a binder weighs the values its body tests ------
+
+
 def test_expectation_boolean_disjunction():
     """Expectation of Burglary OR Earthquake compiles to probability semiring."""
     disjunction = BinaryOp("or", Atom(BURGLARY_BOOL_SYM), Atom(EARTHQUAKE_BOOL_SYM))
     exp = _expectation([BURGLARY, EARTHQUAKE], disjunction)
 
     module = reshape(
-        DeepLogModuleFactory().compile(exp),
+        Compiler().compile(exp),
         input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
     )
 
@@ -84,9 +122,7 @@ def test_expectation_single_variable():
     b_circuit = UnaryOp("not", UnaryOp("not", Atom(BURGLARY_BOOL_SYM)))
     exp = _expectation([BURGLARY], b_circuit)
 
-    module = reshape(
-        DeepLogModuleFactory().compile(exp), input=SymTensor([BURGLARY_PROB_SYM])
-    )
+    module = reshape(Compiler().compile(exp), input=SymTensor([BURGLARY_PROB_SYM]))
 
     assert module.get_input_shape() == SymTensor([BURGLARY_PROB_SYM])
     assert len(list(module.get_output_shape())) == 1
@@ -106,7 +142,7 @@ def test_expectation_conjunction():
     exp = _expectation([BURGLARY, EARTHQUAKE], conjunction)
 
     module = reshape(
-        DeepLogModuleFactory().compile(exp),
+        Compiler().compile(exp),
         input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
     )
 
@@ -120,101 +156,600 @@ def test_expectation_conjunction():
     torch.testing.assert_close(result, torch.tensor([[0.25]]))
 
 
-def test_expectation_rejects_probability_param():
-    """Expectation no longer infers leaf mappings from probability formulas."""
+def _builders(builder: str) -> Compiler:
+    if builder == "counted":
+        return Compiler()
+    return Compiler(aggregation_builders={"expectation": enumeration})
+
+
+@pytest.mark.parametrize("builder", ["counted", "enumerated"])
+@pytest.mark.parametrize(("operator", "expected"), [("or", 0.9), ("and", 0.0)])
+def test_two_values_of_a_binder_are_exclusive_without_a_distribution(
+    builder, operator, expected
+):
+    """``=(B,true)`` and ``=(B,false)`` each weigh by their own input, as one variable.
+
+    The mass the two leave is ``B``'s missing value, where both are false.
+    """
+    formula = parse_formula(
+        f"expectation(B): =(B,true)_boolean {operator} =(B,false)_boolean"
+    )
+    true, false = (
+        ("_", ("=", ("B",), (value,)), ("probability",)) for value in ("true", "false")
+    )
+
+    module = reshape(
+        _builders(builder).compile(formula), input=SymTensor([true, false])
+    )
+
+    torch.testing.assert_close(
+        module(torch.tensor([[0.6, 0.3]])), torch.tensor([[expected]])
+    )
+
+
+@pytest.mark.parametrize("builder", ["counted", "enumerated"])
+def test_a_leaf_over_no_binder_is_not_random_without_a_distribution(builder):
+    """A leaf no binder reaches is evaluated as written, as under a distribution."""
+    formula = parse_formula("expectation(B): =(B,true)_boolean and a_boolean")
+
+    module = reshape(
+        _builders(builder).compile(formula),
+        input=SymTensor(["=(B,true) _ probability", "a _ boolean"]),
+    )
+
+    torch.testing.assert_close(
+        module(torch.tensor([[0.6, 1.0], [0.6, 0.0]])), torch.tensor([[0.6], [0.0]])
+    )
+
+
+@pytest.mark.parametrize("builder", ["counted", "enumerated"])
+def test_both_spellings_of_a_test_are_one_input_without_a_distribution(builder):
+    """``=(X,a)`` and ``=(a,X)`` test ``X`` for one value, weighed by one input."""
+    aggregation_builders = {} if builder == "counted" else {"expectation": enumeration}
+    compiler = Compiler(
+        variables={("X",): Domain.of(["a", "b"])},
+        aggregation_builders=aggregation_builders,
+    )
+
+    module = compiler.compile(
+        parse_formula("expectation(X): =(X,a)_boolean or =(a,X)_boolean")
+    )
+
+    assert set(get_all_symbols(module.get_input_shape())) == {
+        ("_", ("=", ("X",), ("a",)), ("probability",))
+    }
+    torch.testing.assert_close(module(torch.tensor([[0.3]])), torch.tensor([[0.3]]))
+
+
+def test_a_binder_its_body_does_not_test_weighs_nothing_without_a_distribution():
+    """A binder the body never tests has no named value, so its mass is all missing."""
+    module = Compiler().compile(parse_formula("expectation(B, E): =(B,true)_boolean"))
+
+    assert module.get_input_shape() == (SymTensor(["=(B,true) _ probability"]),)
+    torch.testing.assert_close(module(torch.tensor([[0.6]])), torch.tensor([[0.6]]))
+
+
+@pytest.mark.parametrize("builder", ["counted", "enumerated"])
+def test_a_binder_read_but_not_tested_is_refused_without_a_distribution(builder):
+    """Only a test ``=(V, v)`` names a value an input can weigh."""
+    formula = parse_formula("expectation(X): q(X)_boolean")
+
+    with pytest.raises(ValueError, match="give it a distribution"):
+        _builders(builder).compile(formula)
+
+
+def test_an_expectation_without_a_distribution_is_counted(compilations):
+    pytest.importorskip("pymvsdd")
+    formula = parse_formula(
+        "expectation(B, E): =(B,true)_boolean or =(B,false)_boolean "
+        "or =(E,true)_boolean"
+    )
+
+    Compiler().compile(formula)
+
+    assert compilations == [1]
+
+
+def test_registering_enumeration_gives_the_default_numbers_without_compiling(
+    compilations,
+):
+    """Counting is a fast path: enumerating instead changes no number."""
     disjunction = BinaryOp("or", Atom(BURGLARY_BOOL_SYM), Atom(EARTHQUAKE_BOOL_SYM))
-    pb_sym = ("_", ("prob", BURGLARY, TRUE), ("probability",))
-    pe_sym = ("_", ("prob", EARTHQUAKE, TRUE), ("probability",))
-    prob_formula = BinaryOp("times", Atom(pb_sym), Atom(pe_sym))
+    exp = _expectation([BURGLARY, EARTHQUAKE], disjunction)
+    compiler = Compiler(aggregation_builders={"expectation": enumeration})
 
-    exp = _expectation([BURGLARY, EARTHQUAKE], disjunction, params=[prob_formula])
+    module = reshape(
+        compiler.compile(exp),
+        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+    )
 
-    with pytest.raises(ValueError, match="does not accept"):
-        DeepLogModuleFactory().compile(exp)
+    torch.testing.assert_close(
+        module(torch.tensor([[0.8, 0.3]])), torch.tensor([[0.86]])
+    )
+    assert compilations == []
+
+
+# --- With a distribution --------------------------------------------------------
+
+
+_BURGLARY_OR_EARTHQUAKE = "=(B,true)_boolean or =(E,true)_boolean"
+_P = "p(B,0.8)_probability times p(E,0.3)_probability"
+
+
+def test_a_factor_over_its_binders_domain_is_counted(compilations):
+    """``forecast`` reads ``Rain``'s truth values, so counting writes them into it."""
+    compiler = Compiler(atom_builders={("forecast", 1, "probability"): Forecast})
+    module = compiler.compile(
+        parse_formula(
+            "expectation(Rain; forecast(Rain)_probability): =(Rain,true)_boolean"
+        )
+    )
+
+    assert compilations == [1]
+    assert list(get_all_symbols(module.get_input_shape())) == []
+    torch.testing.assert_close(module(), torch.tensor([[0.2]]))
+
+
+def test_an_expectation_under_p_factors_is_counted(compilations):
+    """``p`` factors, one per binder, are counted in one compilation, with no inputs."""
+    formula = parse_formula(f"expectation(B, E; {_P}): {_BURGLARY_OR_EARTHQUAKE}")
+
+    module = Compiler().compile(formula)
+
+    assert compilations == [1]
+    assert list(get_all_symbols(module.get_input_shape())) == []
+    torch.testing.assert_close(module(), torch.tensor([[1 - 0.2 * 0.7]]))
+
+
+def test_under_factors_that_sum_to_one_an_expectation_is_its_sum():
+    """No mass is missing, so the expectation is ``sum(X): (φ)_probability times P``."""
+    expectation = parse_formula(f"expectation(B, E; {_P}): {_BURGLARY_OR_EARTHQUAKE}")
+    summed = parse_formula(
+        f"sum(B, E): ({_BURGLARY_OR_EARTHQUAKE})_probability times ({_P})"
+    )
+
+    torch.testing.assert_close(
+        Compiler().compile(expectation)(), Compiler().compile(summed)()
+    )
+
+
+@pytest.mark.parametrize(
+    "aggregation_builders",
+    [{}, {"expectation": enumeration}],
+    ids=["counted", "enumerated"],
+)
+def test_a_factor_mentioning_no_binder_scales_the_expectation(aggregation_builders):
+    formula = parse_formula(
+        "expectation(B; p(B,0.8)_probability times q_probability): =(B,true)_boolean"
+    )
+
+    module = Compiler(aggregation_builders=aggregation_builders).compile(formula)
+
+    assert list(get_all_symbols(module.get_input_shape())) == [
+        with_structure(("q",), "probability")
+    ]
+    torch.testing.assert_close(module(torch.tensor([[0.5]])), torch.tensor([[0.4]]))
+
+
+_ABC = Domain.of(["a", "b", "c"])
+
+
+class _Weight(Predicate):
+    """``w(X)``: 0.2, 0.5 and 0.3 for the values ``a``, ``b`` and ``c`` of ``X``."""
+
+    def __init__(self, atoms, domain=_ABC):
+        super().__init__(atoms, (domain,))
+
+    def forward_predicate(self, x):
+        return torch.tensor([0.2, 0.5, 0.3])[x.long()]
+
+
+def _categorical_compiler(**aggregation_builders):
+    """A compiler declaring ``X`` over ``a, b, c``, weighed by ``w(X)``."""
+    return Compiler(
+        variables={("X",): Domain.of(["a", "b", "c"])},
+        atom_builders={("w", 1, "probability"): _Weight},
+        aggregation_builders=aggregation_builders,
+    )
+
+
+class _SubWeight(_Weight):
+    """``w(X)``: 0.2, 0.5 and 0.1 for ``a``, ``b`` and ``c``, which leave 0.2 missing."""
+
+    def forward_predicate(self, x):
+        return torch.tensor([0.2, 0.5, 0.1])[x.long()]
+
+
+class _IsB(Predicate):
+    """``isb(X)``: whether ``X`` is ``b``, over ``a, b, c``."""
+
+    def __init__(self, atoms):
+        super().__init__(atoms, (_ABC,))
+
+    def forward_predicate(self, x):
+        return (x == 1).to(torch.get_default_dtype())
+
+
+def _missing_mass_compiler(builder: str, builders=None):
+    """``X`` over ``a, b, c``, weighed by ``w``, and ``Y`` over ``a, b``, by ``v``.
+
+    ``v`` weighs ``a`` and ``b`` as ``w`` does.
+    """
+    aggregation_builders = {
+        "counted": {},
+        "enumerated": {"expectation": enumeration},
+        "sampled": {"expectation": sampling(40_000)},
+    }[builder]
+    return Compiler(
+        variables={("X",): Domain.of(["a", "b", "c"]), ("Y",): Domain.of(["a", "b"])},
+        atom_builders={
+            ("w", 1, "probability"): _SubWeight,
+            ("v", 1, "probability"): partial(_SubWeight, domain=Domain.of(["a", "b"])),
+            **(builders or {}),
+        },
+        aggregation_builders=aggregation_builders,
+    )
+
+
+@pytest.mark.parametrize("builder", ["counted", "enumerated", "sampled"])
+@pytest.mark.parametrize(
+    ("body", "value"),
+    [
+        # b and c, and the missing 0.2, where no test holds.
+        ("not =(X,a)_boolean", 0.8),
+        ("=(X,a)_boolean or not =(X,b)_boolean", 0.5),
+        ("not =(X,b)_boolean and not =(X,c)_boolean", 0.4),
+        ("=(X,a)_boolean or =(X,b)_boolean", 0.7),
+    ],
+)
+def test_the_mass_named_values_leave_is_a_missing_value(builder, body, value):
+    """A factor summing below one leaves its binder a value no test names."""
+    pytest.importorskip("pymvsdd")
+    torch.manual_seed(0)
+    compiler = _missing_mass_compiler(builder)
+    formula = parse_formula(f"expectation(X; w(X)_probability): {body}")
+
+    torch.testing.assert_close(
+        compiler.compile(formula)(), torch.tensor([[value]]), atol=0.01, rtol=0
+    )
+
+
+@pytest.mark.parametrize(
+    "aggregation_builders",
+    [{}, {"expectation": enumeration}, {"expectation": sampling(1)}],
+    ids=["counted", "enumerated", "sampled"],
+)
+def test_a_distribution_without_a_complement_leaves_no_missing_value(
+    aggregation_builders,
+):
+    """In ``real`` the mass ``w`` leaves goes nowhere: b and c weigh 0.5 and 0.1.
+
+    Sampling draws only from a distribution in ``probability``, so it enumerates
+    this one, exactly, even from a single draw.
+    """
+    compiler = Compiler(
+        variables={("X",): Domain.of(["a", "b", "c"])},
+        atom_builders={("w", 1, "real"): _SubWeight},
+        aggregation_builders=aggregation_builders,
+    )
+    formula = parse_formula("expectation(X; w(X)_real): not =(X,a)_boolean")
+
+    torch.testing.assert_close(compiler.compile(formula)(), torch.tensor([[0.6]]))
+
+
+@pytest.mark.parametrize("builder", ["counted", "enumerated"])
+@pytest.mark.parametrize(
+    ("body", "value"),
+    [
+        # w(a), times the most Y weighs: v(b) or its missing value, 0.5.
+        ("=(X,a)_boolean", 0.1),
+        # v(b), times the most X weighs: w(b) or its missing value, 0.5.
+        ("=(X,a)_boolean or =(Y,b)_boolean", 0.25),
+    ],
+)
+def test_an_expectation_in_mpe_is_its_most_probable_model(builder, body, value):
+    """The most a model weighs, its missing values included (glab #160).
+
+    ``w`` and ``v`` weigh as in :func:`_missing_mass_compiler`, under ``max``.
+    """
+    compiler = Compiler(
+        variables={("X",): Domain.of(["a", "b", "c"]), ("Y",): Domain.of(["a", "b"])},
+        atom_builders={
+            ("w", 1, "mpe"): _SubWeight,
+            ("v", 1, "mpe"): partial(_SubWeight, domain=Domain.of(["a", "b"])),
+        },
+        aggregation_builders={
+            "counted": {},
+            "enumerated": {"expectation": enumeration},
+        }[builder],
+    )
+    formula = parse_formula(f"expectation(X, Y; w(X)_mpe times v(Y)_mpe): {body}")
+
+    torch.testing.assert_close(compiler.compile(formula)(), torch.tensor([[value]]))
+
+
+@pytest.mark.parametrize("builder", ["counted", "enumerated"])
+def test_a_binder_the_body_never_tests_weighs_one(builder):
+    """Its named values and its missing value together weigh one."""
+    compiler = _missing_mass_compiler(builder)
+    formula = parse_formula(
+        "expectation(X, Y; w(X)_probability times v(Y)_probability): =(X,a)_boolean"
+    )
+
+    torch.testing.assert_close(compiler.compile(formula)(), torch.tensor([[0.2]]))
+
+
+@pytest.mark.parametrize("builder", ["counted", "enumerated"])
+def test_each_binder_leaves_its_own_missing_mass(builder, compilations):
+    """``w`` leaves 0.2 of ``X``'s mass missing, and ``v`` 0.3 of ``Y``'s."""
+    pytest.importorskip("pymvsdd")
+    formula = parse_formula(
+        "expectation(X, Y; w(X)_probability times v(Y)_probability):"
+        " not =(X,a)_boolean and not =(X,b)_boolean"
+        " and not =(Y,a)_boolean and not =(Y,b)_boolean"
+    )
+
+    # X is c or missing, 0.1 + 0.2, and Y is missing, 0.3.
+    torch.testing.assert_close(
+        _missing_mass_compiler(builder).compile(formula)(), torch.tensor([[0.09]])
+    )
+    assert compilations == ([1] if builder == "counted" else [])
+
+
+@pytest.mark.parametrize("n", [4, 7, 8])
+def test_binders_whose_factors_differ_only_in_the_binder_weigh_apart(n):
+    """``p(Vi,0.5)`` gives every ``Vi`` the same weights, each its own (glab #147)."""
+    binders = [f"V{i}" for i in range(n)]
+    factors = " times ".join(f"p({binder},0.5)_probability" for binder in binders)
+    body = " or ".join(f"=({binder},true)_boolean" for binder in binders)
+    formula = parse_formula(f"expectation({', '.join(binders)}; {factors}): {body}")
+
+    torch.testing.assert_close(
+        Compiler().compile(formula)(), torch.tensor([[1 - 0.5**n]])
+    )
+
+
+class _Softmax(torch.nn.Module):
+    def forward(self, x):
+        return torch.softmax(x, -1)
+
+
+class _LogSoftmax(torch.nn.Module):
+    def forward(self, x):
+        return torch.log_softmax(x, -1)
+
+
+def _digit_compiler(algebra: str, builder: str):
+    """``X`` over ``a, b, c``, weighed by a softmax network in ``algebra``."""
+    network = _LogSoftmax() if algebra == "logprobability" else _Softmax()
+    domain = Domain.of(["a", "b", "c"])
+    digit = partial(NetworkPredicate, module=network, domain=domain)
+    aggregation_builders = {"enumerated": {"expectation": enumeration}}.get(builder, {})
+    return Compiler(
+        variables={("X",): domain},
+        atom_builders={("digit", 2, algebra): digit},
+        aggregation_builders=aggregation_builders,
+    )
+
+
+# These logits' softmax sums past one by rounding, in either algebra's sum.
+_ROUNDED_PAST_ONE = [[[1.9, -1.4, -0.5]]]
+
+
+@pytest.mark.parametrize("builder", ["counted", "enumerated"])
+@pytest.mark.parametrize(
+    ("algebra", "zero"), [("probability", 0.0), ("logprobability", -math.inf)]
+)
+def test_a_complete_distribution_leaves_no_missing_mass(builder, algebra, zero):
+    """Only the missing outcome satisfies the body, and it weighs the algebra's zero."""
+    pytest.importorskip("pymvsdd")
+    formula = parse_formula(
+        f"expectation(X; digit(img,X)_{algebra}):"
+        " not =(X,a)_boolean and not =(X,b)_boolean and not =(X,c)_boolean"
+    )
+    logits = torch.tensor(_ROUNDED_PAST_ONE, requires_grad=True)
+
+    value = _digit_compiler(algebra, builder).compile(formula)(logits)
+    value.sum().backward()
+
+    assert value.item() == zero
+    assert logits.grad is not None and torch.isfinite(logits.grad).all()
+
+
+def test_enumeration_counts_as_counting_does_in_log_space():
+    """The same value and gradient, where enumeration used to have no cast (glab #149)."""
+    formula = parse_formula(
+        "expectation(X; digit(img,X)_logprobability): not =(X,a)_boolean"
+    )
+    results = []
+    for builder in ("counted", "enumerated"):
+        logits = torch.tensor([[[0.5, -1.0, 2.0]]], requires_grad=True)
+        value = _digit_compiler("logprobability", builder).compile(formula)(logits)
+        value.sum().backward()
+        results.append((value, logits.grad))
+
+    (counted, counted_grad), (enumerated, enumerated_grad) = results
+    torch.testing.assert_close(enumerated, counted)
+    torch.testing.assert_close(enumerated_grad, counted_grad)
+
+
+@pytest.mark.parametrize("builder", ["enumerated", "sampled"])
+def test_a_leaf_over_a_missing_binder_is_false(builder):
+    """``isb(X)`` holds for ``b`` alone, so ``not isb(X)`` holds for a, c and missing."""
+    torch.manual_seed(0)
+    compiler = _missing_mass_compiler(builder, {("isb", 1, "boolean"): _IsB})
+    formula = parse_formula("expectation(X; w(X)_probability): not isb(X)_boolean")
+
+    torch.testing.assert_close(
+        compiler.compile(formula)(), torch.tensor([[0.5]]), atol=0.01, rtol=0
+    )
+
+
+def test_a_sum_has_no_missing_value():
+    """A sum adds over the named values alone: it is no expectation."""
+    formula = parse_formula(
+        "sum(X): (not =(X,a)_boolean)_probability times w(X)_probability"
+    )
+
+    torch.testing.assert_close(
+        _missing_mass_compiler("counted").compile(formula)(), torch.tensor([[0.6]])
+    )
+
+
+def test_a_binder_without_a_factor_is_refused():
+    formula = parse_formula(
+        "expectation(X, Y; w(X)_probability): =(X,a)_boolean and =(Y,a)_boolean"
+    )
+
+    with pytest.raises(ValueError, match="gives no factor"):
+        _missing_mass_compiler("counted").compile(formula)
+
+
+@pytest.mark.parametrize("builder", ["counted", "enumerated"])
+def test_values_of_a_binder_are_exclusive_under_a_distribution(builder):
+    """Two values of one binder cannot both hold: they are one categorical variable."""
+    if builder == "counted":
+        pytest.importorskip("pymvsdd")
+        compiler = _categorical_compiler()
+    else:
+        compiler = _categorical_compiler(expectation=enumeration)
+    formula = parse_formula(
+        "expectation(X; w(X)_probability): =(X,a)_boolean or =(X,b)_boolean"
+    )
+
+    torch.testing.assert_close(compiler.compile(formula)(), torch.tensor([[0.7]]))
+
+
+def test_without_mv_sdd_two_values_of_a_binder_are_enumerated(
+    monkeypatch, compilations
+):
+    """Counting is a fast path: without its knowledge compiler, the same number."""
+    monkeypatch.setitem(sys.modules, "pymvsdd", None)
+    formula = parse_formula(
+        "expectation(X; w(X)_probability): =(X,a)_boolean or =(X,b)_boolean"
+    )
+
+    value = _categorical_compiler().compile(formula)()
+
+    torch.testing.assert_close(value, torch.tensor([[0.7]]))
+    assert compilations == []
+
+
+def test_without_mv_sdd_one_value_per_binder_is_still_counted(
+    monkeypatch, compilations
+):
+    """Only a group reaching two values of one binder needs mv-sdd."""
+    monkeypatch.setitem(sys.modules, "pymvsdd", None)
+    formula = parse_formula(f"expectation(B, E; {_P}): {_BURGLARY_OR_EARTHQUAKE}")
+
+    value = Compiler().compile(formula)()
+
+    torch.testing.assert_close(value, torch.tensor([[1 - 0.2 * 0.7]]))
+    assert compilations == [1]
+
+
+def test_a_network_factor_is_counted_by_its_rows():
+    """A network atom with the binder in its value position is a factor."""
+    pytest.importorskip("pymvsdd")
+
+    class Passthrough(torch.nn.Module):
+        def forward(self, x):
+            return x
+
+    domain = Domain.of(["a", "b", "c"])
+    compiler = Compiler(
+        variables={("X",): domain},
+        atom_builders={
+            ("digit", 2, "probability"): partial(
+                NetworkPredicate, module=Passthrough(), domain=domain
+            )
+        },
+    )
+    formula = parse_formula(
+        "expectation(X; digit(img,X)_probability): =(X,a)_boolean or =(X,c)_boolean"
+    )
+
+    module = compiler.compile(formula)
+
+    assert module.get_input_shape() == (SymTensor([("img",)]),)
+    torch.testing.assert_close(
+        module(torch.tensor([[[0.2, 0.5, 0.3]]])), torch.tensor([[0.5]])
+    )
+
+
+@pytest.mark.parametrize(
+    "aggregation_builders",
+    [{}, {"expectation": enumeration}, {"expectation": sampling(40_000)}],
+    ids=["counted", "enumerated", "sampled"],
+)
+def test_a_joint_factor_no_builder_computes_weighs_each_pair_by_its_input(
+    aggregation_builders,
+):
+    """``weather(Rain, Wet)`` is a label per pair of values, not one for all four."""
+    torch.manual_seed(0)
+    formula = parse_formula(
+        "expectation(Rain, Wet; weather(Rain,Wet)_probability): "
+        "not =(Rain,true)_boolean or =(Wet,true)_boolean"
+    )
+    table = {
+        "weather(true,true)": 0.4,
+        "weather(true,false)": 0.1,
+        "weather(false,true)": 0.2,
+        "weather(false,false)": 0.3,
+    }
+    module = reshape(
+        Compiler(aggregation_builders=aggregation_builders).compile(formula),
+        input=SymTensor([f"{atom} _ probability" for atom in table]),
+    )
+
+    # Only rain without wet breaks the rule.
+    torch.testing.assert_close(
+        module(torch.tensor([list(table.values())])),
+        torch.tensor([[0.9]]),
+        atol=0.01,
+        rtol=0,
+    )
+
+
+def test_a_counted_body_is_never_lowered_as_a_boolean_module():
+    """Counting maps the body's leaves to weights: the module holds no value test."""
+
+    class Spy(EqualityPredicate):
+        pass
+
+    def spy(atoms):
+        return Spy(atoms, lambda _: Domain.of([FALSE, TRUE]))
+
+    formula = parse_formula(f"expectation(B, E; {_P}): {_BURGLARY_OR_EARTHQUAKE}")
+
+    module = Compiler(atom_builders={("=", 2, "boolean"): spy}).compile(formula)
+
+    assert not any(isinstance(inner, Spy) for inner in module.modules())
+
+
+def test_expectations_whose_factors_disagree_are_counted_apart(compilations):
+    """One binder with two distributions is two variables: two compilations."""
+    first = parse_formula("expectation(B; p(B,0.8)_probability): =(B,true)_boolean")
+    second = parse_formula(
+        "expectation(B; p(B,0.4)_probability): =(B,true)_boolean or =(B,true)_boolean"
+    )
+
+    module = Compiler().compile(first, second)
+
+    assert compilations == [1, 1]
+    torch.testing.assert_close(module(), torch.tensor([[0.8, 0.4]]))
 
 
 def test_expectation_too_many_params_raises_error():
-    """Expectation with more than one param should raise an error."""
+    """An expectation's one param is its distribution."""
     disjunction = BinaryOp("or", Atom(BURGLARY_BOOL_SYM), Atom(EARTHQUAKE_BOOL_SYM))
     pb = Atom(("_", ("prob", BURGLARY, TRUE), ("probability",)))
     pe = Atom(("_", ("prob", EARTHQUAKE, TRUE), ("probability",)))
 
     exp = _expectation([BURGLARY], disjunction, params=[pb, pe])
 
-    with pytest.raises(ValueError, match="does not accept"):
-        DeepLogModuleFactory().compile(exp)
-
-
-def test_multiple_expectations_coreside_via_batched_transform():
-    """Several boolean roots transform together into one probability circuit.
-
-    Co-residence is an explicit batch
-    (:func:`~deeplog.formula.strategies.transform_expectation_to_probability`):
-    the roots share one arithmetic circuit (and dedup their shared sub-circuits)
-    and compile together to a multi-output module.
-    """
-    from deeplog.formula.strategies import transform_expectation_to_probability
-
-    cf = CircuitFactory()
-    b = cf.create_atom(("_", BURGLARY_ATOM, ("boolean",)))
-    e = cf.create_atom(("_", EARTHQUAKE_ATOM, ("boolean",)))
-    or_node = cf.create_binary_node("or", b, e)
-    and_node = cf.create_binary_node("and", b, e)
-
-    exp_or, exp_and = transform_expectation_to_probability(or_node, and_node)
-
-    # Co-residence: both roots transformed into the *same* circuit, and the
-    # shared boolean leaves map to the same probability nodes.
-    assert isinstance(exp_or, CircuitNode) and isinstance(exp_and, CircuitNode)
-    assert exp_or.circuit is exp_and.circuit
-    assert exp_or.node != exp_and.node
-
-    # lower_circuit_nodes names its outputs positionally, in the order the roots
-    # are handed in (or first, and second), so a name-based input reshape pins the
-    # probability inputs and the outputs are read by position.
-    module = lower_circuit_nodes(DeepLogModuleFactory(), exp_or, exp_and)
-    module = reshape(
-        module,
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
-    )
-
-    # E[B or E] = 1 - (1-0.8)(1-0.3) = 0.86; E[B and E] = 0.8*0.3 = 0.24
-    out = module(torch.tensor([[0.8, 0.3]]))
-    torch.testing.assert_close(out, torch.tensor([[0.86, 0.24]]))
-
-
-def test_compiling_two_expectations_shares_one_knowledge_compilation(monkeypatch):
-    """Two formulas compiled together count their shared circuit once.
-
-    The same sharing :func:`lower_circuit_nodes` gives the engine, reached from
-    plain ASTs: both folds run under one memo, so the two counts land on one
-    boolean circuit and are compiled together.
-    """
-    import deeplog.circuit.knowledge_compile.sdd as sdd
-
-    roots_per_call = []
-    original = sdd.compile_sdd
-
-    def counting_compile_sdd(circuit, roots, *args, **kwargs):
-        roots_per_call.append(len(roots))
-        return original(circuit, roots, *args, **kwargs)
-
-    monkeypatch.setattr(sdd, "compile_sdd", counting_compile_sdd)
-
-    b, e = Atom(BURGLARY_BOOL_SYM), Atom(EARTHQUAKE_BOOL_SYM)
-    disjunction = _expectation([BURGLARY, EARTHQUAKE], BinaryOp("or", b, e))
-    conjunction = _expectation([BURGLARY, EARTHQUAKE], BinaryOp("and", b, e))
-
-    module = reshape(
-        DeepLogModuleFactory().compile(disjunction, conjunction),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
-    )
-
-    assert roots_per_call == [2]
-
-    # E[B or E] = 1 - (1-0.8)(1-0.3) = 0.86; E[B and E] = 0.8*0.3 = 0.24
-    out = module(torch.tensor([[0.8, 0.3]]))
-    torch.testing.assert_close(out, torch.tensor([[0.86, 0.24]]))
+    with pytest.raises(ValueError, match="takes one param"):
+        Compiler().compile(exp)
 
 
 def test_expectation_non_boolean_raises_error():
@@ -226,121 +761,189 @@ def test_expectation_non_boolean_raises_error():
     exp = _expectation([X], prob_atom)
 
     with pytest.raises(ValueError, match="boolean"):
-        DeepLogModuleFactory().compile(exp)
+        Compiler().compile(exp)
 
 
-def test_multiple_expectations_share_one_knowledge_compilation(monkeypatch):
-    """Counts over one boolean circuit are compiled together, not one by one.
+def test_an_expectation_is_a_value_of_its_distributions_algebra():
+    """The distribution names the algebra, and probability is the default."""
+    body = Atom(BURGLARY_BOOL_SYM)
+    in_log = Atom(("_", ("logp", BURGLARY, ("0.8",)), ("logprobability",)))
 
-    Each ``expectation`` defers to a boundary feeder, and the lowering gathers
-    the feeders that count the same circuit so a single knowledge compilation
-    serves them all — what the DeepProbLog conditional path needs, where N
-    numerators and their shared evidence would otherwise be compiled N+1 times.
-    """
-    import deeplog.circuit.knowledge_compile.sdd as sdd
+    assert _expectation([BURGLARY], body).structure == "probability"
+    assert _expectation([BURGLARY], body, (in_log,)).structure == "logprobability"
 
-    roots_per_call = []
-    original = sdd.compile_sdd
 
-    def counting_compile_sdd(circuit, roots, *args, **kwargs):
-        roots_per_call.append(len(roots))
-        return original(circuit, roots, *args, **kwargs)
+# --- Construction and batching ----------------------------------------------
 
-    monkeypatch.setattr(sdd, "compile_sdd", counting_compile_sdd)
 
-    cf = CircuitFactory()
-    b = cf.create_atom(("_", BURGLARY_ATOM, ("boolean",)))
-    e = cf.create_atom(("_", EARTHQUAKE_ATOM, ("boolean",)))
-    exp_or = cf.create_aggregation(
-        "expectation", (), (), cf.create_binary_node("or", b, e)
-    )
-    exp_and = cf.create_aggregation(
-        "expectation", (), (), cf.create_binary_node("and", b, e)
+def test_an_expectation_is_never_a_leaf_of_a_circuit():
+    """Construction keeps every aggregation symbolic: it binds variables."""
+    constructed = fold(
+        _expectation([BURGLARY], Atom(BURGLARY_BOOL_SYM)), CircuitFactory()
     )
 
-    module = lower_circuit_nodes(DeepLogModuleFactory(), exp_or, exp_and)
-    module = reshape(module, input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]))
+    assert isinstance(constructed, Aggregation)
 
-    # One compilation, holding both counts.
-    assert roots_per_call == [2]
 
+def test_compiling_two_expectations_shares_one_knowledge_compilation(compilations):
+    """Two formulas compiled together count their shared circuit once."""
+    b, e = Atom(BURGLARY_BOOL_SYM), Atom(EARTHQUAKE_BOOL_SYM)
+    disjunction = _expectation([BURGLARY, EARTHQUAKE], BinaryOp("or", b, e))
+    conjunction = _expectation([BURGLARY, EARTHQUAKE], BinaryOp("and", b, e))
+
+    module = reshape(
+        Compiler().compile(disjunction, conjunction),
+        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+    )
+
+    assert compilations == [2]
+
+    # E[B or E] = 1 - (1-0.8)(1-0.3) = 0.86; E[B and E] = 0.8*0.3 = 0.24
     out = module(torch.tensor([[0.8, 0.3]]))
     torch.testing.assert_close(out, torch.tensor([[0.86, 0.24]]))
 
 
-def test_deferred_lump_reads_back_only_what_absorption_minted():
-    """The marker the strategy left for itself, recognised where it is minted.
+def test_counts_under_different_roots_share_one_knowledge_compilation(compilations):
+    """Counts over one circuit are compiled together wherever they sit in a level.
 
-    An ``expectation`` that still carries binders was never absorbed — it lowers
-    by enumeration like any other aggregation — so it is not one of these.
+    One count is a root; the other is an operand of a product with a ``sum``, a
+    symbolic node, under a second root. Both are in the top level, so the walk
+    takes them in one compilation.
     """
-    from deeplog.formula.strategies import absorb_aggregation
-    from deeplog.formula.strategies import deferred_lump
+    b, e = Atom(BURGLARY_BOOL_SYM), Atom(EARTHQUAKE_BOOL_SYM)
+    disjunction = _expectation([BURGLARY, EARTHQUAKE], BinaryOp("or", b, e))
+    conjunction = _expectation([BURGLARY, EARTHQUAKE], BinaryOp("and", b, e))
+    one = Aggregation("sum", (BURGLARY,), (), Transformation("probability", b))
 
-    cf = CircuitFactory()
-    lump = cf.create_binary_node(
-        "or",
-        cf.create_atom(("_", BURGLARY_ATOM, ("boolean",))),
-        cf.create_atom(("_", EARTHQUAKE_ATOM, ("boolean",))),
+    module = reshape(
+        Compiler().compile(disjunction, BinaryOp("times", conjunction, one)),
+        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
     )
-    absorbed = absorb_aggregation(cf.get_circuit, "expectation", (), (), lump)
-    assert absorbed is not None
-    ((_, feeder),) = absorbed.feeders
 
-    assert deferred_lump(feeder) is lump
-    assert deferred_lump(_expectation([BURGLARY], Atom(BURGLARY_BOOL_SYM))) is None
+    assert compilations == [2]
 
-
-X_1 = ("x", ("1",))
-X_2 = ("x", ("2",))
+    # E[B or E] = 0.86; E[B and E] = 0.24, times one.
+    out = module(torch.tensor([[0.8, 0.3]]))
+    torch.testing.assert_close(out, torch.tensor([[0.86, 0.24]]))
 
 
-def _count_through_the_lowering(**model_facts):
-    """The weighted model count of ``x(1) or x(2)``, taken at the lowering's site."""
-    cf = CircuitFactory()
-    either = cf.create_binary_node(
-        "or",
-        cf.create_atom(("_", X_1, ("boolean",))),
-        cf.create_atom(("_", X_2, ("boolean",))),
+# --- Sampling estimates it from drawn assignments -----------------------------
+
+
+def _sampling(samples: int) -> Compiler:
+    return Compiler(aggregation_builders={"expectation": sampling(samples)})
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"expectation(B, E; {_P}): {_BURGLARY_OR_EARTHQUAKE}",
+        # Without a distribution, each binder weighs the values its body tests.
+        f"expectation(B, E): {_BURGLARY_OR_EARTHQUAKE}",
+        # One factor over both binders makes them one variable.
+        f"expectation(B, E; p(B,0.8)_probability times p(E,0.3)_probability "
+        f"times q(B,E)_probability): {_BURGLARY_OR_EARTHQUAKE}",
+    ],
+)
+def test_sampling_estimates_the_expectation(text):
+    torch.manual_seed(0)
+    formula = parse_formula(text)
+    exact, estimate = Compiler().compile(formula), _sampling(20_000).compile(formula)
+    symbols = list(get_all_symbols(exact.get_input_shape()))
+    assert list(get_all_symbols(estimate.get_input_shape())) == symbols
+    if symbols:
+        exact, estimate = (
+            reshape(module, input=SymTensor(symbols)) for module in (exact, estimate)
+        )
+    inputs = [torch.full((1, len(symbols)), 0.6)] if symbols else []
+
+    torch.testing.assert_close(estimate(*inputs), exact(*inputs), atol=0.02, rtol=0)
+
+
+def test_sampled_expectations_over_agreeing_factors_read_the_same_draws():
+    """``P(B | B)`` is one on any draws, and on no two independent ones."""
+    torch.manual_seed(0)
+    formula = parse_formula(
+        f"(expectation(B, E; {_P}): =(B,true)_boolean and =(B,true)_boolean) "
+        f"divide (expectation(B, E; {_P}): =(B,true)_boolean)"
     )
-    count = cf.create_aggregation("expectation", (), (), either)
-    memo = batched_lowering(
-        DeepLogModuleFactory(),
-        *(feeder for _, feeder in count.feeders),
-        **model_facts,
+
+    module = _sampling(5).compile(formula)
+
+    assert [float(module()) for _ in range(10)] == [1.0] * 10
+
+
+def test_expectations_whose_factors_disagree_are_sampled_apart():
+    formula = parse_formula(
+        "(expectation(B; p(B,0.8)_probability): =(B,true)_boolean) times "
+        "(expectation(B; p(B,0.3)_probability): =(B,true)_boolean)"
     )
-    (module,) = set(memo.values())
-    return float(module().flatten()[0])
+
+    module = _sampling(10).compile(formula)
+
+    sampled = [m for m in module.modules() if isinstance(m, ExpectationModule)]
+    assert [m.samples for m in sampled] == [10, 10]
 
 
-def _label(symbol):
-    """Definition 12's α: ``x(1)`` is labelled 0.3 and ``x(2)`` 0.7."""
-    labels = {X_1: ("0.3",), X_2: ("0.7",)}
-    return with_structure(labels.get(symbol, symbol), "probability")
+def test_a_variable_one_expectation_reads_free_is_not_drawn_for_another():
+    """``X`` is free in the second and bound by the first, so it stays an input."""
+    first = parse_formula("expectation(X): =(X,true)_boolean")
+    second = parse_formula("expectation(Y): (=(Y,true)_boolean and =(X,true)_boolean)")
+
+    module = _sampling(10).compile(first, second)
+
+    assert ("X",) in get_all_symbols(module.get_input_shape())
 
 
-def test_the_lowering_counts_with_what_the_model_declares():
-    """An expectation lowered through the fold honours the declared variables.
+def test_the_score_function_estimates_the_gradient():
+    torch.manual_seed(0)
+    formula = parse_formula(
+        f"expectation(B, E; p(B,pb)_probability times p(E,pe)_probability): "
+        f"{_BURGLARY_OR_EARTHQUAKE}"
+    )
+    labels = SymTensor(
+        [with_structure((name,), "probability") for name in ("pb", "pe")]
+    )
+    exact = reshape(Compiler().compile(formula), input=labels)
+    estimate = reshape(_sampling(4_000).compile(formula), input=labels)
+    x = torch.tensor([[0.8, 0.3]], requires_grad=True)
 
-    ``batched_lowering`` is the single weighted-model-count site, and it used
-    to be unable to receive Definition 12's α or the model's variables — so a
-    multi-valued variable reaching it compiled as if its values were independent
-    atoms, silently. Both values of the variable cover ``x(1) or x(2)``, so the
-    count is 1; read as independent it is 1 - 0.7*0.3 instead.
+    (expected,) = torch.autograd.grad(exact(x).sum(), x)
+    estimated = torch.stack(
+        [torch.autograd.grad(estimate(x).sum(), x)[0] for _ in range(20)]
+    ).mean(dim=0)
+
+    # d/dpb (1 - (1 - pb)(1 - pe)) = 1 - pe, and d/dpe = 1 - pb
+    torch.testing.assert_close(expected, torch.tensor([[0.7, 0.2]]))
+    torch.testing.assert_close(estimated, expected, atol=0.02, rtol=0)
+
+
+def test_the_score_function_keeps_the_values():
+    values = torch.rand(2, 3, 4)
+    log_probability = torch.rand(2, 3, 4, requires_grad=True)
+
+    surrogate = score_function(values, log_probability)
+
+    torch.testing.assert_close(surrogate, values)
+
+
+def test_one_draw_estimates_the_gradient_without_a_baseline():
+    """With no other draws to average, the score function is the draw's own.
+
+    ``B`` is true with probability 1, so the draw is true and its log-probability
+    gradient is ``1 / 1``.
     """
-    pytest.importorskip("pymvsdd")
-    variables = {Variable(("x",), Domain.of(["1", "2"])): (("x", OPEN),)}
+    formula = parse_formula("expectation(B): =(B,true)_boolean")
+    module = _sampling(1).compile(formula)
+    x = torch.tensor([[1.0]], requires_grad=True)
 
-    assert _count_through_the_lowering(
-        leaf_mapping=_label, variables=variables
-    ) == pytest.approx(1.0)
-    assert _count_through_the_lowering(leaf_mapping=_label) == pytest.approx(0.79)
+    value = module(x)
+    (gradient,) = torch.autograd.grad(value.sum(), x)
+
+    torch.testing.assert_close(value.detach(), torch.tensor([[1.0]]))
+    torch.testing.assert_close(gradient, torch.tensor([[1.0]]))
 
 
-def test_lower_circuit_nodes_rejects_a_root_that_is_not_a_lump():
-    """A symbolic node, like an aggregation no circuit holds, is lowered with ``compile``."""
-    symbolic = Aggregation(
-        "sum", (BURGLARY,), (), Atom(("_", BURGLARY_ATOM, ("boolean",)))
-    )
-    with pytest.raises(TypeError, match="lowers raw circuit-node roots"):
-        lower_circuit_nodes(DeepLogModuleFactory(), symbolic)
+def test_sampling_draws_at_least_one_assignment():
+    with pytest.raises(ValueError, match="at least one assignment"):
+        sampling(0)

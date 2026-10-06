@@ -2,9 +2,9 @@
 import pytest
 import torch
 
-from deeplog import ModuleCircuit
 from deeplog import SymTensor
 from deeplog import compose_modules
+from deeplog.module.module_circuit import ModuleCircuit
 
 from ._utils import DummyModule
 
@@ -20,6 +20,23 @@ class TestModuleCircuit:
         ]
         module = ModuleCircuit(modules, SymTensor("d"))
         assert pytest.approx(10.0) == float(module(torch.FloatTensor([[2.0]])))
+
+    def test_inputs_follow_the_order_the_modules_first_read_them(self):
+        """A circuit's inputs are one tensor per symbol no module produces.
+
+        They come in the order the modules, as given, first read them, so the
+        signature does not depend on how symbols hash.
+        """
+        modules = [
+            DummyModule(SymTensor(["z", "a"]), SymTensor("b"), lambda x: x.sum(1)),
+            DummyModule(SymTensor(["m", "b"]), SymTensor("c"), lambda x: x.sum(1)),
+        ]
+        circuit = ModuleCircuit(modules, SymTensor("c"))
+        assert circuit.get_input_shape() == (
+            SymTensor(["z"]),
+            SymTensor(["a"]),
+            SymTensor(["m"]),
+        )
 
     def test_missing_transformation_combines_outputs(self):
         """ModuleCircuit inserts a transformation when a module needs [b,c] but
@@ -113,7 +130,91 @@ def test_compose_one_module_produces_the_requested_shape():
     assert float(composed(torch.FloatTensor([[2.0]]))) == pytest.approx(6.0)
 
 
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_compose_refuses_two_modules_producing_one_symbol(order):
+    """Which module a symbol is read from would depend on the order given."""
+    modules = [
+        DummyModule(SymTensor("a"), SymTensor(["b", "c"]), lambda x: x),
+        DummyModule(SymTensor("d"), SymTensor(["c"]), lambda x: x),
+    ]
+
+    with pytest.raises(ValueError, match="Two modules produce c"):
+        compose_modules([modules[i] for i in order], SymTensor(["c"]))
+
+
 def test_compose_one_module_that_already_fits_returns_it():
     module = DummyModule(SymTensor("a"), SymTensor("b"), lambda x: x)
 
     assert compose_modules([module], SymTensor("b")) is module
+
+
+def test_compose_hands_the_given_input_to_the_module_reading_it():
+    """A module reading ``input_shape`` receives the caller's tensor as it is."""
+    seen = []
+    modules = [
+        DummyModule(
+            SymTensor(["a", "b"]),
+            SymTensor("c"),
+            lambda x: seen.append(x) or x.sum(1, keepdim=True),
+        ),
+        DummyModule(SymTensor("c"), SymTensor("d"), lambda x: 2 * x),
+    ]
+    batch = torch.FloatTensor([[2.0, 3.0]])
+
+    composed = compose_modules(
+        modules, SymTensor("d"), input_shape=SymTensor(["a", "b"])
+    )
+
+    assert composed.get_input_shape() == SymTensor(["a", "b"])
+    assert float(composed(batch)) == pytest.approx(10.0)
+    assert seen[0] is batch
+
+
+def test_compose_takes_from_the_given_input_what_each_module_reads():
+    modules = [
+        DummyModule(SymTensor("a"), SymTensor("c"), lambda x: x**2),
+        DummyModule(
+            (SymTensor("b"), SymTensor("c")), SymTensor("d"), lambda x, y: x + y
+        ),
+    ]
+
+    composed = compose_modules(
+        modules, SymTensor("d"), input_shape=SymTensor(["b", "a"])
+    )
+
+    # b = 3, a = 2  →  c = 4  →  d = 3 + 4
+    assert float(composed(torch.FloatTensor([[3.0, 2.0]]))) == pytest.approx(7.0)
+
+
+def test_compose_one_module_takes_the_requested_input():
+    module = DummyModule(
+        (SymTensor("a"), SymTensor("b")), SymTensor("c"), lambda x, y: x - y
+    )
+
+    composed = compose_modules(
+        [module], SymTensor("c"), input_shape=SymTensor(["b", "a"])
+    )
+
+    assert composed.get_input_shape() == SymTensor(["b", "a"])
+    assert float(composed(torch.FloatTensor([[1.0, 10.0]]))) == pytest.approx(9.0)
+
+
+def test_compose_refuses_an_input_shape_missing_a_symbol_no_module_produces():
+    modules = [
+        DummyModule((SymTensor("a"), SymTensor("b")), SymTensor("c"), lambda x, y: x),
+        DummyModule(SymTensor("c"), SymTensor("d"), lambda x: x),
+    ]
+
+    with pytest.raises(ValueError, match="not produced by any module"):
+        compose_modules(modules, SymTensor("d"), input_shape=SymTensor(["a"]))
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_compose_refuses_an_input_shape_holding_a_produced_symbol(count):
+    modules = [
+        DummyModule(SymTensor("a"), SymTensor("b"), lambda x: x),
+        DummyModule(SymTensor("b"), SymTensor("c"), lambda x: x),
+    ][:count]
+
+    with pytest.raises(ValueError, match="which the modules produce"):
+        compose_modules(modules, SymTensor("b"), input_shape=SymTensor(["a", "b"]))

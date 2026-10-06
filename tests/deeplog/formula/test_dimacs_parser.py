@@ -1,11 +1,22 @@
 #  Copyright (c) 2024-2026. KU Leuven
 import pytest
+import torch
 
-from deeplog.formula import SymbolicFormulaFactory
-from deeplog.formula import parse_dimacs_cnf
+from deeplog import Aggregation
+from deeplog import Atom
+from deeplog import BinaryOp
+from deeplog import Compiler
+from deeplog import SymTensor
+from deeplog import UnaryOp
+from deeplog import parse_dimacs_cnf
+from deeplog import reshape
 
 
-def test_parse_dimacs_boolean_structure():
+def _test(variable: str) -> Atom:
+    return Atom(("_", ("=", (variable,), ("true",)), ("boolean",)))
+
+
+def test_a_literal_tests_its_variable():
     dimacs = """
 c example
 p cnf 3 2
@@ -13,45 +24,29 @@ p cnf 3 2
 2 3 -1 0
 """
 
-    factory = SymbolicFormulaFactory()
-    parsed = parse_dimacs_cnf(dimacs, factory, structure="boolean")
+    parsed = parse_dimacs_cnf(dimacs)
 
-    x1 = factory.create_atom(("_", ("v1",), ("boolean",)))
-    x2 = factory.create_atom(("_", ("v2",), ("boolean",)))
-    x3 = factory.create_atom(("_", ("v3",), ("boolean",)))
-
-    clause_one = factory.create_binary_node(
-        "or", x1, factory.create_unary_node("not", x3)
-    )
-    clause_two = factory.create_binary_node(
-        "or",
-        factory.create_binary_node("or", x2, x3),
-        factory.create_unary_node("not", x1),
-    )
-
-    expected = factory.create_binary_node("and", clause_one, clause_two)
-    assert parsed == expected
+    v1, v2, v3 = _test("V1"), _test("V2"), _test("V3")
+    clause_one = BinaryOp("or", v1, UnaryOp("not", v3))
+    clause_two = BinaryOp("or", BinaryOp("or", v2, v3), UnaryOp("not", v1))
+    assert parsed == BinaryOp("and", clause_one, clause_two)
 
 
-def test_parse_dimacs_probability_structure():
-    dimacs = """
-2 0
--1 0
-"""
+def test_the_expectation_over_its_variables_is_the_probability_it_holds():
+    """``V1 or not V2``, with V1 true at 0.2 and V2 at 0.6: 1 - 0.8 * 0.6."""
+    cnf = parse_dimacs_cnf("p cnf 2 1\n1 -2 0")
+    expectation = Aggregation("expectation", (("V1",), ("V2",)), (), cnf)
 
-    factory = SymbolicFormulaFactory()
-    parsed = parse_dimacs_cnf(dimacs, factory, structure="probability")
-
-    x2 = factory.create_atom(("_", ("v2",), ("probability",)))
-    not_x1 = factory.create_unary_node(
-        "negate", factory.create_atom(("_", ("v1",), ("probability",)))
+    module = reshape(
+        Compiler().compile(expectation),
+        input=SymTensor(["=(V1,true) _ probability", "=(V2,true) _ probability"]),
     )
 
-    expected = factory.create_binary_node("times", x2, not_x1)
-    assert parsed == expected
+    torch.testing.assert_close(
+        module(torch.tensor([[0.2, 0.6]])), torch.tensor([[1 - 0.8 * 0.6]])
+    )
 
 
 def test_reject_missing_clause_terminator():
-    factory = SymbolicFormulaFactory()
     with pytest.raises(ValueError, match="terminating 0"):
-        parse_dimacs_cnf("1 -2", factory)
+        parse_dimacs_cnf("1 -2")

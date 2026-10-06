@@ -1,7 +1,7 @@
 """Parity tests verifying SimpleGrounder and JanusGrounder produce identical formulas.
 
-Both engines are driven through :class:`~deeplog.formula.ast_factory.AstFactory`,
-so a proof is compared as the formula it is rather than as text.
+Both engines return formulas, so a proof is compared as the formula it is rather
+than as text.
 """
 
 #  Copyright (c) 2024-2026. KU Leuven
@@ -13,13 +13,12 @@ import pytest
 
 pytest.importorskip("janus_swi")
 
-from deeplog.formula import AstFactory
-from deeplog.formula import BinaryOp
-from deeplog.formula import FormulaNode
-from deeplog.formula import map_children
-from deeplog.grounding import JanusGrounder
-from deeplog.grounding import SimpleGrounder
-from deeplog.grounding import str_to_rules
+from deeplog import BinaryOp
+from deeplog import FormulaNode
+from deeplog.formula.ast import map_children
+from deeplog.grounding.prolog import JanusGrounder
+from deeplog.grounding.prolog import SimpleGrounder
+from deeplog.grounding.prolog import str_to_rules
 from deeplog.systems.deepproblog import Solver
 
 from ...testing_formulas import operands
@@ -60,10 +59,9 @@ def _assert_results_match(simple_result: dict, janus_result: dict) -> None:
 def assert_engine_parity(code: str) -> None:
     """Assert both engines produce identical formula dicts for the given program."""
     program = tuple(str_to_rules(code))
-    factory = AstFactory()
 
-    simple_result = Solver(SimpleGrounder()).get_query_result(program, factory)
-    janus_result = Solver(JanusGrounder()).get_query_result(program, factory)
+    simple_result = Solver(SimpleGrounder()).get_query_result(program)
+    janus_result = Solver(JanusGrounder()).get_query_result(program)
 
     _assert_results_match(simple_result.formulas, janus_result.formulas)
 
@@ -71,10 +69,9 @@ def assert_engine_parity(code: str) -> None:
 def assert_conditional_parity(code: str) -> None:
     """Assert both engines produce identical conditional results (formulas + evidence)."""
     program = tuple(str_to_rules(code))
-    factory = AstFactory()
 
-    simple_result = Solver(SimpleGrounder()).get_query_result(program, factory)
-    janus_result = Solver(JanusGrounder()).get_query_result(program, factory)
+    simple_result = Solver(SimpleGrounder()).get_query_result(program)
+    janus_result = Solver(JanusGrounder()).get_query_result(program)
 
     _assert_results_match(simple_result.formulas, janus_result.formulas)
     assert (simple_result.evidence is None) == (janus_result.evidence is None)

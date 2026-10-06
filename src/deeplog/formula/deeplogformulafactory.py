@@ -2,7 +2,7 @@
 """Abstract factory for building DeepLog formulas.
 
 Concrete implementations live alongside (e.g. ``symbolic_factory.py``,
-``deeplogmodulefactory/``).
+``circuit_factory.py``).
 """
 
 from __future__ import annotations
@@ -32,26 +32,9 @@ class DeepLogFormulaFactory[T](ABC):
     :func:`~deeplog.formula.ast.fold`, which drives an instance of this class over
     a materialized tree.
 
-    A :class:`~deeplog.formula.ast.CircuitNode` lump is graph-backed; the
-    :attr:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory.lowers_circuit_children`
-    flag decides whether the fold descends its boundary children through the
-    ordinary eliminators (lowering algebras) or splices it in opaquely
-    (builders / interpreters).
-
-    Concrete algebras choose ``T``: ``str`` for
-    ``SymbolicFormulaFactory`` (→ text), ``CircuitNode | DeepLogModule`` for
-    ``DeepLogModuleFactory`` (→ a circuit-backed module).
+    Concrete algebras choose ``T``: ``str`` for ``SymbolicFormulaFactory``
+    (→ text), ``FormulaNode`` for ``CircuitFactory`` (→ circuit lumps).
     """
-
-    #: Whether :func:`~deeplog.formula.ast.fold` should descend a
-    #: :class:`~deeplog.formula.ast.CircuitNode`'s boundary children (its leaf /
-    #: cast AST view) through the ordinary eliminators and hand them to
-    #: :meth:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory.embed_circuit`,
-    #: instead of splicing the lump in as an opaque leaf. A lowering algebra that
-    #: turns leaves into modules sets this; the circuit builder and text
-    #: interpreter leave it off (descending would rebuild circuit structure / has
-    #: no surface syntax).
-    lowers_circuit_children: bool = False
 
     @abstractmethod
     def create_aggregation(
@@ -79,27 +62,11 @@ class DeepLogFormulaFactory[T](ABC):
     def create_atom(self, atom: Symbol) -> T:
         """Build an atomic node."""
 
-    def create_atoms(self, atoms: Sequence[Symbol]) -> list[T]:
-        """Build the leaves a lump reads, in order: ``create_atom`` of each.
-
-        :func:`~deeplog.formula.ast.fold` builds a lump's leaves in this one call,
-        so an algebra that can build several leaves at once overrides it. Each
-        result stands for its leaf wherever ``create_atom`` of it would.
-        """
-        return [self.create_atom(atom) for atom in atoms]
-
     @abstractmethod
-    def embed_circuit(self, node: CircuitNode, children: tuple[T, ...] = ()) -> T:
+    def embed_circuit(self, node: CircuitNode) -> T:
         """Eliminate a :class:`~deeplog.formula.ast.CircuitNode` lump.
 
-        When
-        :attr:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory.lowers_circuit_children`
-        is set, ``children`` holds the fold results of the lump's boundary view
-        (:attr:`~deeplog.formula.ast.CircuitNode.children`) - one per leaf /
-        cast, already turned into ``T``, the leaves by one ``create_atoms`` call
-        and the casts by ``create_transformation`` - and this method composes
-        them with the lump's compiled interior. When the flag is off, ``children`` is empty
-        and the lump is spliced in verbatim (the circuit builder returns it;
-        text interpreters reject it, since a compiled lump has no surface
-        syntax).
+        A lump is a compiled region of a circuit, so it is spliced in as it is:
+        the circuit builder returns it, and text interpreters reject it, since a
+        compiled lump has no surface syntax.
         """

@@ -5,21 +5,6 @@ from __future__ import annotations
 
 #  Copyright (c) 2024-2026. KU Leuven
 
-_REF_TARGET_ALIASES = {
-    "deeplog.module.predicate_modules.builtin_predicates.EqualityPredicate": (
-        "deeplog.formula.predicates.builtin_predicates.EqualityPredicate"
-    ),
-    "deeplog.module.predicate_modules.builtin_predicates.ProbabilityPredicate": (
-        "deeplog.formula.predicates.builtin_predicates.ProbabilityPredicate"
-    ),
-    "deeplog.module.predicate_modules.builtin_predicates.SumsPredicate": (
-        "deeplog.formula.predicates.builtin_predicates.SumsPredicate"
-    ),
-    "deeplog.module.predicate_modules.builtin_predicates.get_network_predicate": (
-        "deeplog.formula.predicates.builtin_predicates.get_network_predicate"
-    ),
-}
-
 
 def resolve_autoapi_xref(app, env, node, contnode):
     """Resolve a handful of AutoAPI cross-reference mismatches."""
@@ -28,7 +13,6 @@ def resolve_autoapi_xref(app, env, node, contnode):
     target = node.get("reftarget", "")
     if not target:
         return None
-    target = _REF_TARGET_ALIASES.get(target, target)
 
     domain = env.get_domain("py")
     refdoc = node.get("refdoc", "")

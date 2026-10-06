@@ -2,7 +2,6 @@
 A module that contains various utility functions.
 """
 
-import os
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Reversible
@@ -68,13 +67,3 @@ def broadcast_tensors(*tensors: torch.Tensor) -> tuple[torch.Tensor, ...]:
         result.append(tensor.repeat_interleave(total_length, dim=1))
         total_length *= tensor.shape[1]
     return tuple(result)
-
-
-def fast_dev_run_enabled() -> bool:
-    """Return whether notebooks should use Lightning's fast_dev_run mode.
-
-    Reads ``DEEPLOG_FAST_DEV_RUN``, or, while it is unset, its old misspelling
-    ``DEELOG_FAST_DEV_RUN``.
-    """
-    value = os.getenv("DEEPLOG_FAST_DEV_RUN", os.getenv("DEELOG_FAST_DEV_RUN", ""))
-    return value.lower() in {"1", "true", "yes", "on"}

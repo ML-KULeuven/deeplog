@@ -52,6 +52,10 @@ check_version:
               raise
       else:
           raise SystemExit(f"Version {version} is already on PyPI; release the change as a new version.")
+      heading = f"## [{tag.removeprefix('v')}]"
+      with open("CHANGELOG.md") as f:
+          if not any(line.startswith(heading) for line in f):
+              raise SystemExit(f"CHANGELOG.md has no section {heading}, which the GitHub release takes its notes from.")
       EOF
 
 # Every job runs on the group's runner, dtai/deeplog/ci-runner, tagged
@@ -159,7 +163,8 @@ mirror_github_release:
       fi
     # Colab opens the released notebooks from GitHub as .ipynb, so each notebook is
     # written as one, whose first code cell installs this release where DeepLog is
-    # not importable.
+    # not importable. Git ignores examples/*.ipynb, the twins contributors pair with
+    # the Markdown, so they are added by force.
     - |
       python - <<'EOF'
       import tomllib
@@ -183,7 +188,7 @@ mirror_github_release:
           notebook.cells.insert(first_code, install)
           nbformat.write(notebook, path.with_suffix(".ipynb"))
       EOF
-    - git add examples/*.ipynb
+    - git add --force examples/*.ipynb
     - TREE=$(git write-tree)
     - SQUASHED=$(git commit-tree "$TREE" ${PARENT:+-p "$PARENT"} -m "Release $CI_COMMIT_TAG")
     # Atomic, so the branch and the tag always move together: the check above
@@ -248,7 +253,6 @@ deploy_static_site:
       optional: true
   variables:
     NB_EXECUTION_TIMEOUT: "600"
-    DOCS_BASE_URL: "https://dtai.cs.kuleuven.be/deeplog"
     STATIC_SITE_DIR: "/static_site"
     SMV_TAG_WHITELIST: "^${CI_COMMIT_TAG}$"
     SMV_BRANCH_WHITELIST: "^$"
@@ -274,7 +278,7 @@ deploy_static_site:
         exit 1
       fi
     - rm -rf site/build/html
-    - DOCS_BASE_URL="${DOCS_BASE_URL:-}" make -C site multiversion
+    - make -C site multiversion
     - |
       if [ ! -d "site/build/html/${CI_COMMIT_TAG}" ]; then
         echo "Expected the docs of ${CI_COMMIT_TAG} at site/build/html/${CI_COMMIT_TAG}, but they were not built."

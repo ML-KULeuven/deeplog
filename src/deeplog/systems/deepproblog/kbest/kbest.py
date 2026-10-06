@@ -16,6 +16,7 @@ from functools import lru_cache
 from functools import reduce
 from pathlib import Path
 
+from deeplog import FormulaNode
 from deeplog import Symbol
 from deeplog import to_symbol
 from deeplog.grounding.prolog import Builtin
@@ -146,7 +147,7 @@ class KBestJanusGrounder(JanusGrounder):
         self._k = k
         self._heuristic = heuristic
 
-    def ground(self, program, goal, factory, open_predicates=frozenset()):
+    def ground(self, program, goal, open_predicates=frozenset()):
         """Not supported: use :meth:`get_query_result` / :meth:`get_result`.
 
         K-best builds labeled leaves during search rather than emitting a
@@ -166,26 +167,24 @@ class KBestJanusGrounder(JanusGrounder):
         self,
         program,
         goal: Symbol,
-        factory,
         evaluator: Callable[[Symbol], float] | None = None,
     ) -> EngineResult:
         """Prove a single ``goal`` with k-best search."""
         program_id = self._kbest.consult(_clauses(program))
-        prob_factory = ProbabilisticFactory(factory, evaluator)
+        prob_factory = ProbabilisticFactory(evaluator)
         formulas = self._kbest_ground(program_id, goal, prob_factory)
         return EngineResult(formulas, prob_factory.labels, prob_factory.variables)
 
     def get_query_result(
         self,
         program,
-        factory,
         evaluator: Callable[[Symbol], float] | None = None,
     ) -> EngineResult:
         """Evaluate every query with k-best search, conditioned on constraints."""
         program_id = self._kbest.consult(_clauses(program))
-        prob_factory = ProbabilisticFactory(factory, evaluator)
+        prob_factory = ProbabilisticFactory(evaluator)
         evidence = self._build_evidence(program, program_id, prob_factory)
-        all_formulas: dict[Symbol, object] = {}
+        all_formulas: dict[Symbol, FormulaNode] = {}
         for query in filter(is_query, program):
             for answer, formula in self._kbest_ground(
                 program_id, query[2], prob_factory

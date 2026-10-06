@@ -15,6 +15,7 @@ from ...module.deeplog_module import DeepLogModule
 from ...shape import SymTensor
 from ...symbol import is_structure_wrapped
 from ...symbol import unwrap_structure
+from ..fold import fold_circuit
 
 
 if TYPE_CHECKING:
@@ -90,10 +91,10 @@ def lower_generic(
 ) -> DeepLogModule:
     """Lower circuit to a pure-PyTorch module using operator_fns directly."""
     root_ids = list(roots.keys())
-    leaf_nodes = circuit.reachable_leaves(root_ids, frontier)
+    leaf_nodes = circuit._reachable_leaves(root_ids, frontier)
 
     algebra = _StepAlgebra(circuit.structure, leaf_nodes)
-    node_to_slot = circuit.fold(root_ids, algebra, frontier=frontier)
+    node_to_slot = fold_circuit(circuit, root_ids, algebra, frontier=frontier)
 
     root_slots = [node_to_slot[r] for r in root_ids]
 
@@ -190,7 +191,7 @@ class _StepAlgebra(DeepLogFormulaFactory[int]):
             f"aggregation, only the ground formula one was expanded into."
         )
 
-    def embed_circuit(self, node: CircuitNode, children: tuple[int, ...] = ()) -> int:
+    def embed_circuit(self, node: CircuitNode) -> int:
         """Unreachable: the fold is already inside a circuit."""
         raise NotImplementedError(
             f"{type(self).__name__} folds circuit nodes; it is already inside "

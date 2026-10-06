@@ -21,9 +21,8 @@ from collections.abc import Callable
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from ..module import ColumnwiseModule
-from ..module import compose_modules
-from ..module import reshape
+from ..module.columnwise import ColumnwiseModule
+from ..module.module_circuit import compose_modules
 from ..shape import SymTensor
 from ..shape import get_all_symbols
 from ..symbol import Symbol
@@ -32,7 +31,7 @@ from .circuit import Circuit
 
 
 if TYPE_CHECKING:
-    from ..module import DeepLogModule
+    from ..module.deeplog_module import DeepLogModule
 
 
 def find_cuts(
@@ -51,7 +50,7 @@ def find_cuts(
     operators = circuit.structure.operators
     return {
         node_id
-        for node_id in circuit.iter_topological(root_ids, frontier)
+        for node_id in circuit._iter_topological(root_ids, frontier)
         if node_id not in (frontier or ())
         and (node_type := circuit._get_node(node_id).node_type) in operators
         and node_type not in routed
@@ -68,9 +67,10 @@ def lower_across_cuts(
     """Lower ``circuit`` in partitions separated by ``cuts``.
 
     One lowering for the operands of the topmost cuts, one
-    :class:`~deeplog.module.ColumnwiseModule` per operator applying the algebra's
-    function to their columns, and one lowering of the region above, bounded
-    at the cuts. When every root is itself a cut there is nothing above.
+    :class:`~deeplog.module.columnwise.ColumnwiseModule` per operator applying
+    the algebra's function to their columns, and one lowering of the region
+    above, bounded at the cuts. When every root is itself a cut there is
+    nothing above.
     """
     from .lower.dispatch import to_module
 
@@ -80,7 +80,7 @@ def lower_across_cuts(
     # is deterministic.
     boundary = [
         node_id
-        for node_id in circuit.iter_topological(root_ids)
+        for node_id in circuit._iter_topological(root_ids)
         if node_id in cuts and node_id in above
     ]
 
@@ -117,12 +117,7 @@ def lower_across_cuts(
         node_id: name for node_id, name in roots.items() if node_id not in boundary_set
     }
     if not upper_roots:
-        return _packed(
-            circuit,
-            root_ids,
-            reshape(compose_modules(combined, wanted), output=wanted),
-            frontier,
-        )
+        return _packed(circuit, root_ids, combined, wanted, frontier)
 
     # The region above the cuts is this same circuit, lowered bounded at them:
     # each cut is an input slot named for the value the combination computes, so
@@ -132,31 +127,30 @@ def lower_across_cuts(
         upper_roots,
         frontier={**(frontier or {}), **{n: cut_name(n) for n in boundary}},
     )
-    return _packed(
-        circuit, root_ids, compose_modules([upper, *combined], wanted), frontier
-    )
+    return _packed(circuit, root_ids, [upper, *combined], wanted, frontier)
 
 
 def _packed(
     circuit: Circuit,
     root_ids: list[int],
-    module: DeepLogModule,
+    modules: list[DeepLogModule],
+    output: SymTensor,
     frontier: Mapping[int, Symbol] | None = None,
 ) -> DeepLogModule:
-    """Present the composition as one packed input tensor, like an uncut lowering.
+    """Compose the partitions behind one packed input tensor, like an uncut lowering.
 
-    Composing partitions yields one input channel per symbol, but a lowered
-    circuit's contract is a single tensor whose columns are its reachable
-    leaves. Ordered by the circuit's own leaf order, so the interface does not
-    depend on where the cuts fell; a symbol that is not a leaf of this circuit
-    (an MV-SDD padding slot) keeps a stable place after them.
+    A lowered circuit's contract is a single tensor whose columns are its
+    reachable leaves. Ordered by the circuit's own leaf order, so the interface
+    does not depend on where the cuts fell; a symbol that is not a leaf of this
+    circuit (an MV-SDD padding slot) keeps a stable place after them.
     """
-    needed = set(get_all_symbols(module.get_input_shape()))
+    produced = set(get_all_symbols(m.get_output_shape() for m in modules))
+    needed = set(get_all_symbols(m.get_input_shape() for m in modules)) - produced
     order = [
-        name for name in circuit.reachable_leaves(root_ids, frontier) if name in needed
+        name for name in circuit._reachable_leaves(root_ids, frontier) if name in needed
     ]
     order += sorted(needed - set(order))
-    return reshape(module, input=SymTensor(order))
+    return compose_modules(modules, output, input_shape=SymTensor(order))
 
 
 def _value_symbol(circuit: Circuit, node_id: int) -> Symbol:
@@ -217,12 +211,7 @@ def _combine(
     applied across one column group per operand position. A circuit with two
     different unroutable operators gets one of these per operator.
     """
-    operator_fn = circuit.structure.get_operator_fn(operator)
-    if operator_fn is None:
-        raise ValueError(
-            f"Structure '{circuit.structure.name}' has a '{operator}' node but no "
-            f"'{operator}' in operator_fns, so the value it computes has no meaning."
-        )
+    operator_fn = circuit.structure.operator_fns[operator]
     columns = tuple(
         tuple(
             _value_symbol(circuit, circuit._get_node(node_id).children[position])

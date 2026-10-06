@@ -2,7 +2,6 @@
 import torch
 
 from deeplog.util import broadcast_tensors
-from deeplog.util import fast_dev_run_enabled
 
 
 def test_broadcast_tensors():
@@ -23,27 +22,3 @@ def test_broadcast_tensors():
         c_b,
         torch.tensor([[[5, 6], [5, 6], [5, 6], [7, 8], [7, 8], [7, 8]]]),
     )
-
-
-def test_fast_dev_run_enabled(monkeypatch):
-    monkeypatch.delenv("DEEPLOG_FAST_DEV_RUN", raising=False)
-    monkeypatch.delenv("DEELOG_FAST_DEV_RUN", raising=False)
-    assert fast_dev_run_enabled() is False
-
-
-def test_fast_dev_run_enabled_truthy(monkeypatch):
-    monkeypatch.delenv("DEELOG_FAST_DEV_RUN", raising=False)
-    monkeypatch.setenv("DEEPLOG_FAST_DEV_RUN", "1")
-    assert fast_dev_run_enabled() is True
-
-
-def test_fast_dev_run_reads_the_old_spelling_while_the_new_one_is_unset(monkeypatch):
-    monkeypatch.delenv("DEEPLOG_FAST_DEV_RUN", raising=False)
-    monkeypatch.setenv("DEELOG_FAST_DEV_RUN", "1")
-    assert fast_dev_run_enabled() is True
-
-
-def test_fast_dev_run_reads_the_new_spelling_over_the_old_one(monkeypatch):
-    monkeypatch.setenv("DEEPLOG_FAST_DEV_RUN", "0")
-    monkeypatch.setenv("DEELOG_FAST_DEV_RUN", "1")
-    assert fast_dev_run_enabled() is False

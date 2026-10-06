@@ -1,6 +1,6 @@
 #  Copyright (c) 2024-2026. KU Leuven
 
-from deeplog.grounding.prolog import calculate_mgu
+from deeplog import calculate_mgu
 from deeplog.grounding.prolog.unify import replace_with_fresh_variables
 from deeplog.grounding.prolog.unify import unify
 from deeplog.symbol import apply_substitution

@@ -28,16 +28,15 @@ from typing import cast
 from deeplog import OPEN
 from deeplog import Domain
 from deeplog import Symbol
-from deeplog import SymbolicDomain
 from deeplog import Variable
 from deeplog import VariableAtoms
 from deeplog import apply_substitution
+from deeplog import calculate_mgu
 from deeplog import flatten_symbol
 from deeplog import get_term_variables
 from deeplog import is_variable
 from deeplog import symbol_to_pretty_string
 from deeplog.grounding.prolog import RuleType
-from deeplog.grounding.prolog import calculate_mgu
 from deeplog.grounding.prolog import is_fact
 
 from .parser import create_labeled_fact
@@ -47,7 +46,7 @@ from .parser import get_label
 
 #: What a disjunction declares — an atom with the variable's term position left
 #: :data:`~deeplog.variable.OPEN`, and the domain that position ranges over.
-type Declaration = tuple[Symbol, SymbolicDomain]
+type Declaration = tuple[Symbol, Domain]
 
 #: Functor of the neural annotation that declares a disjunction non-ground —
 #: ``nn(network, [inputs], OutputVariable, [domain]) :: atom.``
@@ -183,7 +182,7 @@ def instantiate(
 
 
 def _images(
-    occurrence: Symbol, domain: SymbolicDomain, atoms: Sequence[Symbol]
+    occurrence: Symbol, domain: Domain, atoms: Sequence[Symbol]
 ) -> Iterable[Mapping[Symbol, Symbol]]:
     """The bindings of ``occurrence``'s free arguments that ``atoms`` witness."""
     free = {variable for variable in get_term_variables(occurrence) if variable != OPEN}
@@ -202,7 +201,7 @@ def _images(
             yield image
 
 
-def _variable_name(occurrence: Symbol, domain: SymbolicDomain) -> Symbol:
+def _variable_name(occurrence: Symbol, domain: Domain) -> Symbol:
     """The variable occupying ``occurrence``'s open position.
 
     ``digit(i1,3)`` asserts a value of ``digit(i1)``, so the name is the

@@ -1,7 +1,7 @@
 #  Copyright (c) 2024-2026. KU Leuven
 """DeepProbLog surface syntax: the ``p :: a`` label.
 
-Parsing is the grounder's (:func:`deeplog.grounding.str_to_rule`), which reads
+Parsing is the grounder's (:func:`deeplog.grounding.prolog.str_to_rule`), which reads
 ``::`` as the binary term it is; this module gives that term its DeepProbLog
 reading, building and taking apart the labeled atom ``("::", label, atom)``.
 """

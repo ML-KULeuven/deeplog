@@ -3,9 +3,9 @@
 
 from collections.abc import Iterator
 
-from deeplog.formula import Atom
-from deeplog.formula import BinaryOp
-from deeplog.formula import FormulaNode
+from deeplog import Atom
+from deeplog import BinaryOp
+from deeplog import FormulaNode
 from deeplog.symbol import parse_symbol
 
 

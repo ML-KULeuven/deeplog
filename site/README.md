@@ -22,8 +22,5 @@ branch with:
 make multiversion
 ```
 
-If you are hosting under a subpath (e.g., GitHub Pages), set a base URL so the
-switcher links resolve correctly:
-```bash
-DOCS_BASE_URL=/deeplog/ make multiversion
-```
+The site's canonical links, sitemap and version switcher point at the
+`Documentation` URL in `pyproject.toml`, where each release publishes its docs.

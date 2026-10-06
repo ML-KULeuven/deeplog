@@ -33,7 +33,7 @@ Predicate           Arity   Meaning
 ==================  ======  ============================================
 
 Additional predicates can be registered by calling
-:meth:`deeplog.grounding.prolog.grounder.PrologGrounder.add_builtin`.
+:meth:`~deeplog.grounding.prolog.grounder.PrologGrounder.add_builtin`.
 
 .. seealso::
 

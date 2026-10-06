@@ -41,7 +41,7 @@ def test_a_boolean_variable_inherits_its_domain_from_its_structure():
 
 
 def test_a_structure_without_values_hands_out_no_domain():
-    """REAL defines no operators and no values; it must not stand in for one."""
+    """REAL's values are not enumerable; it must not stand in for a domain."""
     with pytest.raises(ValueError, match="declares no values"):
         Domain.of_structure(REAL)
 
@@ -54,3 +54,14 @@ def test_a_tensor_domain_enumerates_its_rows_and_has_no_value_names():
     assert domain.as_tensor().shape == (10, 2)
     with pytest.raises(ValueError, match="have no names"):
         _ = domain.values
+
+
+def test_tensor_domains_of_equal_values_are_equal():
+    """Two declarations of one range of numbers declare one domain."""
+    assert Domain.of_tensor(torch.arange(3)) == Domain.of_tensor(torch.arange(3))
+    assert hash(Domain.of_tensor(torch.arange(3))) == hash(
+        Domain.of_tensor(torch.arange(3))
+    )
+    assert Domain.of_tensor(torch.arange(3)) != Domain.of_tensor(torch.arange(1, 4))
+    assert Domain.of_tensor(torch.arange(3)) != Domain.of_tensor(torch.arange(4))
+    assert TensorDomain(torch.arange(3)) != Domain.of(range(3))

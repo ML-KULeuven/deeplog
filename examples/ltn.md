@@ -12,153 +12,122 @@ kernelspec:
 
 # Logic Tensor Networks
 
-Adapted from the LTN Tutorial: https://github.com/logictensornetworks/logictensornetworks/blob/master/tutorials/2-grounding_connectives.ipynb
+This notebook follows the LTN tutorial [Grounding connectives and quantifiers](https://github.com/logictensornetworks/logictensornetworks/blob/master/tutorials/2-grounding_connectives.ipynb): the same fuzzy semantics and the same connectives, named as LTN names them, with each formula compiled into a PyTorch module.
 
 ```{code-cell} ipython3
-from deeplog import DeepLogModuleFactory, AggregationModule, with_structure, Predicate, AlgebraicStructure, Domain
-from deeplog.formula import Atom, BinaryOp, UnaryOp, Aggregation
 import torch
-from functools import partial
+
+from deeplog import AlgebraicStructure, Compiler, Domain, Predicate, with_structure
+from deeplog import Aggregation, Atom, BinaryOp, UnaryOp
 ```
 
+## The fuzzy algebra
+
+LTN's semantics is an algebra over truth values in `[0, 1]`: the product t-norm for `and`, the probabilistic sum for `or`, the standard negation, and Reichenbach's implication. Its quantifiers are the algebra's aggregators, which receive a formula's truth values over a variable's domain stacked along dimension 1. As in the tutorial, `exists` is the p-mean with `p = 5`, and `forall` the p-mean error with `p = 2`.
+
 ```{code-cell} ipython3
-ltn_fuzzy = AlgebraicStructure(
-    name='fuzzy',
+def p_mean(values, p):
+    return values.pow(p).mean(dim=1).pow(1 / p)
+
+
+fuzzy = AlgebraicStructure(
+    name="fuzzy",
     operator_fns={
         "and": lambda a, b: a * b,
-        "or": lambda x, y: x + y - x * y,
-        "implies": lambda x, y: 1 - x + x * y,
-        "not": lambda x: 1.0 - x,
+        "or": lambda a, b: a + b - a * b,
+        "implies": lambda a, b: 1 - a + a * b,
+        "not": lambda a: 1 - a,
+    },
+    aggregation_fns={
+        "exists": lambda values: p_mean(values, 5),
+        "forall": lambda values: 1 - p_mean(1 - values, 2),
     },
 )
 ```
 
-```{code-cell} ipython3
-def generalized_mean(x, p):
-    return torch.mean(x**p, dim=1)**(1/p)
+## The predicate
 
-def _agg(name, op):
-    return lambda child, vars, _params, domains: AggregationModule(child, vars, domains, name=name, op=op)
-
-exists = _agg('exists', lambda x: generalized_mean(x, 6))
-forall = _agg('forall', lambda x: 1 - generalized_mean(1-x, 4))
-```
+`eq` measures how close two points are, `exp(-‖x - y‖)`. It is a predicate in the fuzzy algebra, evaluated in one batch over every pair of points it is asked about.
 
 ```{code-cell} ipython3
-class EqualityPredicate(Predicate):
-    functor = 'eq'
-    arity = 2
-    structure = 'fuzzy'
+class Closeness(Predicate):
+    def __init__(self, atoms):
+        super().__init__(atoms, (Domain.of_values(), Domain.of_values()))
 
-    def forward_predicate(self, x: torch.Tensor, y:torch.Tensor):
+    def forward_predicate(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         return torch.exp(-torch.norm(x - y, dim=1))
 ```
 
-```{code-cell} ipython3
-x, y = ('x',), ('y',)
+The compiler knows the algebra, the predicate and the domains of the two variables: `X` ranges over ten points in the plane and `Y` over five, drawn as in the tutorial.
 
-# One factory builds *and* lowers. Connectives/quantifiers are assembled as a
-# formula AST (below); `ltn_factory.compile(formula)` then materializes it into a
-# fuzzy circuit (using `structures`) and lowers it to a module (wiring in the
-# predicate builders and enumerating the quantifiers over the variable domains).
-ltn_factory = DeepLogModuleFactory(
-    structures = {'fuzzy': ltn_fuzzy},
-    aggregators = {'forall': forall, 'exists': exists},
-    variables = {
+```{code-cell} ipython3
+torch.manual_seed(0)
+x, y = ("X",), ("Y",)
+
+compiler = Compiler(
+    structures={"fuzzy": fuzzy},
+    variables={
         x: Domain.of_tensor(torch.randn(10, 2)),
         y: Domain.of_tensor(torch.randn(5, 2) * 2),
     },
-    atom_builders = {('eq', 2, 'fuzzy'): EqualityPredicate},
+    atom_builders={("eq", 2, "fuzzy"): Closeness},
 )
 ```
 
-```{code-cell} ipython3
-# Not = ltn.Wrapper_Connective(ltn.fuzzy_ops.Not_Std())
-# And = ltn.Wrapper_Connective(ltn.fuzzy_ops.And_Prod())
-# Or = ltn.Wrapper_Connective(ltn.fuzzy_ops.Or_ProbSum())
-# Implies = ltn.Wrapper_Connective(ltn.fuzzy_ops.Implies_Reichenbach())
-# Forall = ltn.Wrapper_Quantifier(ltn.fuzzy_ops.Aggreg_pMeanError(p=2),semantics="forall")
-# Exists = ltn.Wrapper_Quantifier(ltn.fuzzy_ops.Aggreg_pMean(p=5),semantics="exists")
-# Eq = ltn.Predicate.Lambda(lambda args: tf.exp(-tf.norm(args[0]-args[1],axis=1)))
-```
+## Connectives
+
+As in LTN, each connective and quantifier is a function that builds a formula. The formula is data, and prints as the text it stands for.
 
 ```{code-cell} ipython3
-Not = lambda a: UnaryOp('not', a)
-And = lambda a, b: BinaryOp('and', a, b)
-Or = lambda a, b: BinaryOp('or', a, b)
-Implies = lambda a, b: BinaryOp('implies', a, b)
+Not = lambda a: UnaryOp("not", a)
+And = lambda a, b: BinaryOp("and", a, b)
+Or = lambda a, b: BinaryOp("or", a, b)
+Implies = lambda a, b: BinaryOp("implies", a, b)
 Equiv = lambda a, b: And(Implies(a, b), Implies(b, a))
-Forall = lambda vars, a: Aggregation('forall', tuple(vars), (), a)
-Exists = lambda vars, a: Aggregation('exists', tuple(vars), (), a)
-Eq = lambda vars: Atom(with_structure(('eq', *vars), 'fuzzy'))
+Forall = lambda variables, a: Aggregation("forall", tuple(variables), (), a)
+Exists = lambda variables, a: Aggregation("exists", tuple(variables), (), a)
+Eq = lambda terms: Atom(with_structure(("eq", *terms), "fuzzy"))
+
+print(Implies(Eq([x, y]), Eq([x, y])))
 ```
 
-## Evaluating connectives directly
-
-The connectives and quantifiers (`Not`, `And`, `Or`, `Implies`, `Equiv`, `Forall`, `Exists`) build a *formula AST* — cheap, inert data. To evaluate one on concrete tensors, compile it with `ltn_factory.compile(formula)` to get a callable `DeepLogModule`, then pass input tensors.
+`compiler.compile` turns a formula into a module whose inputs are its free variables, here a point for `X` and one for `Y`, each of shape `(batch, 1, 2)`.
 
 ```{code-cell} ipython3
-# Evaluate the Eq predicate on a single pair of inputs
-eq_module = ltn_factory.compile(Eq([x, y]))
-# Inputs need shape (batch, num_variables, features) — here (1, 1, 2)
-out = eq_module(torch.tensor([[[0.5, 0.5]]]), torch.tensor([[[0.5, 0.5]]]))
-print("Eq([0.5,0.5], [0.5,0.5]) =", out.item())
+point_x = torch.tensor([[[1.0, 0.0]]])
+point_y = torch.tensor([[[0.5, 0.5]]])
+
+close = Eq([x, y])
+for formula in [
+    close,
+    Not(close),
+    And(close, close),
+    Or(close, close),
+    Implies(close, close),
+    Equiv(close, close),
+]:
+    print(f"{compiler.compile(formula)(point_x, point_y).item():.4f}  {formula}")
 ```
 
+Reichenbach's implication gives `p → p` the value `1 - p + p²`, which is below one unless `p` is 0 or 1: neither `Implies(p, p)` nor `Equiv(p, p)` is a tautology.
+
++++
+
+## Quantifiers
+
+A quantifier binds its variables: they range over their domains inside the module and are no longer inputs. `Forall([x], Eq([x, y]))` leaves `Y` free, so its module takes a point for `Y`.
+
 ```{code-cell} ipython3
-# Implies(Eq(x,y), Eq(x,y)) — in Reichenbach fuzzy logic, p → p is not a strict tautology
-node = Implies(Eq([x, y]), Eq([x, y]))
-module = ltn_factory.compile(node)
-out = module(torch.tensor([[[0.5, 0.5]]]), torch.tensor([[[1.0, 0.0]]]))
-print("Implies(Eq(x,y), Eq(x,y)) =", out.item())
+compiler.compile(Forall([x], Eq([x, y])))(point_y).item()
 ```
 
-```{code-cell} ipython3
-# And, Or, Not on Eq predicates
-and_node = And(Eq([x, y]), Eq([x, y]))
-or_node = Or(Eq([x, y]), Eq([x, y]))
-not_node = Not(Eq([x, y]))
-
-x_val = torch.tensor([[[1.0, 0.0]]])
-y_val = torch.tensor([[[0.5, 0.5]]])
-
-for label, n in [("And", and_node), ("Or", or_node), ("Not", not_node)]:
-    m = ltn_factory.compile(n)
-    print(f"{label}: {m(x_val, y_val).item():.4f}")
-```
+Binding both variables leaves no inputs at all.
 
 ```{code-cell} ipython3
-# Equiv is defined as And(Implies(p,q), Implies(q,p))
-equiv_node = Equiv(Eq([x, y]), Eq([x, y]))
-module = ltn_factory.compile(equiv_node)
-out = module(torch.tensor([[[0.3, 0.7]]]), torch.tensor([[[0.1, 0.9]]]))
-print("Equiv(Eq(x,y), Eq(x,y)) =", out.item())
-```
-
-```{code-cell} ipython3
-# A quantified formula is just inert AST until compiled
-Forall([x], Eq([x, y]))
-```
-
-```{code-cell} ipython3
-# Forall over x leaves y free, so the compiled module takes one input (y)
-ltn_factory.compile(Forall([x], Eq([x, y])))(torch.tensor([[[0.1, -0.2]]]))
-```
-
-```{code-cell} ipython3
-Forall([x, y], Eq([x, y]))
-```
-
-```{code-cell} ipython3
-# Both variables bound → no free inputs
-ltn_factory.compile(Forall([x, y], Eq([x, y])))()
-```
-
-```{code-cell} ipython3
-ltn_factory.compile(Exists([x, y], Eq([x, y])))()
-```
-
-```{code-cell} ipython3
-# Nested quantifiers: forall x . exists y . Eq(x, y)
-ltn_factory.compile(Forall([x], Exists([y], Eq([x, y]))))()
+for formula in [
+    Forall([x, y], Eq([x, y])),
+    Exists([x, y], Eq([x, y])),
+    Forall([x], Exists([y], Eq([x, y]))),
+]:
+    print(f"{compiler.compile(formula)().item():.4f}  {formula}")
 ```
