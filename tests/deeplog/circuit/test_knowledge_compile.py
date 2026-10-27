@@ -106,8 +106,7 @@ def test_constant_ad_bakes_branches_into_circuit():
     assert list(mod.get_output_shape()) == [
         with_structure(sym, "probability") for sym in (("a",), ("b",), ("c",))
     ]
-    # WrappedModule with vmap=True needs at least a batch axis; pass
-    # an empty trailing dim.
+    # The module needs at least a batch axis; pass an empty trailing dim.
     out = mod(torch.zeros((1, 0)))
     assert torch.allclose(out, torch.tensor([[0.3, 0.5, 0.2]]), atol=1e-5)
 

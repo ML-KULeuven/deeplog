@@ -1,11 +1,14 @@
 #  Copyright (c) 2024-2026. KU Leuven
 """Tests for compile_to_module."""
 
+from functools import partial
+
 import pytest
 import torch
 
 from deeplog import Compiler
 from deeplog import Domain
+from deeplog import NetworkPredicate
 from deeplog import Predicate
 from deeplog import SymTensor
 from deeplog import enumeration
@@ -252,6 +255,82 @@ def test_an_unlabelled_atom_weighs_by_its_own_value_in_probability():
         ("_", ("a",), ("probability",))
     ]
     torch.testing.assert_close(module(torch.tensor([[0.3]])), torch.tensor([[0.3]]))
+
+
+_SELF_LABELLED = "d(x,0)::d(x,0); d(x,1)::d(x,1); d(x,2)::d(x,2).\n"
+
+
+@pytest.mark.parametrize(
+    "queries, expected",
+    [
+        ("?- d(x,1).", 0.3),
+        ("q :- not(d(x,1)).\n?- q.", 0.7),
+        (":- d(x,2).\n?- d(x,1).", 0.6),
+    ],
+    ids=["a value", "a negated value", "given evidence"],
+)
+def test_a_disjunction_labelled_by_its_own_atoms_reads_them_as_inputs(
+    queries, expected
+):
+    """``d(x,v)::d(x,v)`` says the program does not label ``d(x)``: its caller does."""
+    program = tuple(str_to_rules(_SELF_LABELLED + queries))
+    result = Solver(SimpleGrounder()).get_query_result(program)
+
+    atoms = [("_", ("d", ("x",), (str(v),)), ("probability",)) for v in range(3)]
+    module = reshape(compile_to_module(result, Compiler()), input=SymTensor(atoms))
+
+    torch.testing.assert_close(
+        module(torch.tensor([[0.2, 0.3, 0.5]])), torch.tensor([[expected]])
+    )
+
+
+class _Rows(Predicate):
+    """``d(X, V)`` in probability: 0.2, 0.3 and 0.5 for the values of ``V``."""
+
+    def __init__(self, atoms):
+        super().__init__(atoms, (Domain.of_values(), Domain.of(range(3))))
+
+    def resolve_argument(self, symbol, index):
+        return 0.0
+
+    def forward_predicate(self, x, value):
+        return torch.tensor([0.2, 0.3, 0.5])[value.long()]
+
+
+def test_a_disjunction_labelled_by_its_own_atoms_is_its_predicates_builder():
+    """The caller's builder for ``d/2`` in probability is then ``d(x)``'s labelling."""
+    program = tuple(str_to_rules(_SELF_LABELLED + ":- d(x,2).\n?- d(x,1)."))
+    result = Solver(SimpleGrounder()).get_query_result(program)
+
+    module = compile_to_module(
+        result, Compiler(atom_builders={("d", 2, "probability"): _Rows})
+    )
+
+    assert list(get_all_symbols(module.get_input_shape())) == []
+    torch.testing.assert_close(module(), torch.tensor([[0.6]]))
+
+
+def test_a_network_may_have_the_name_of_the_predicate_it_labels():
+    """``nn(digit, [X], D, [0..2]) :: digit(X, D).`` labels each atom by itself."""
+    program = tuple(
+        str_to_rules(
+            "nn(digit, [X], D, [0..2]) :: digit(X, D).\n:- digit(x,2).\n?- digit(x,1)."
+        )
+    )
+    result = Solver(SimpleGrounder()).get_query_result(program)
+    compiler = Compiler(
+        atom_builders={
+            ("digit", 2, "probability"): partial(
+                NetworkPredicate, module=torch.nn.Identity(), domain=Domain.of(range(3))
+            )
+        }
+    )
+
+    module = compile_to_module(result, compiler)
+
+    torch.testing.assert_close(
+        module(torch.tensor([[[0.2, 0.3, 0.5]]])), torch.tensor([[0.6]])
+    )
 
 
 def test_a_random_atom_whose_predicate_has_a_builder_is_refused():

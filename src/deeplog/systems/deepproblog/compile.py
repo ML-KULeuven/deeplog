@@ -9,7 +9,10 @@ distribution is the product of the atoms themselves in probability, each
 extended with its binder, such as
 ``burglary(B)`` or ``digit(i1, D)``. What the program's labels say is those
 atoms' labelling function, which :func:`compile_to_module` declares to the
-compiler for their predicates.
+compiler for their predicates. A variable whose every value is labelled by the
+atom asserting it has no labelling of the program's own: the compiler computes
+its factor as it computes any atom, with its builder for it or from an input per
+ground atom.
 """
 
 from __future__ import annotations
@@ -65,9 +68,10 @@ def compile_to_module(result: EngineResult, compiler: Compiler) -> DeepLogModule
     equal proofs still get one column each.
 
     Raises:
-        ValueError: If ``result`` has no formula, a random atom's predicate
-            already has a builder in ``compiler``, or a label is neither a
-            number nor an atom in probability.
+        ValueError: If ``result`` has no formula, a random atom whose label is
+            not itself has a predicate that already has a builder in
+            ``compiler``, or a label is neither a number nor an atom in
+            probability.
     """
     lifting = _Lifting(result)
     queries = [lifting.expectation(formula) for formula in result.formulas.values()]
@@ -110,6 +114,14 @@ class _Variable:
     def at(self, value: Symbol) -> Symbol:
         """The factor with ``value`` in the binder's position."""
         return apply_substitution(self.factor, {self.binder: value})
+
+    @property
+    def labels_itself(self) -> bool:
+        """Whether every value is labelled by the factor at that value."""
+        return all(
+            not label.complement and label.source == self.at(value)
+            for value, label in zip(self.domain.values, self.labels, strict=True)
+        )
 
 
 #: The truth values, which a fact's binder ranges over.
@@ -172,10 +184,13 @@ class _Lifting:
         """The builder of each factor's predicate: the variables' labelling function.
 
         A label naming an atom ``compiler`` has a builder for is that builder's
-        value, and one it has none for is an input named after the atom.
+        value, and one it has none for is an input named after the atom. A
+        variable that labels itself has no builder here.
         """
         keys: dict[tuple[str, int, str], list[_Variable]] = {}
         for variable in self.variables:
+            if variable.labels_itself:
+                continue
             key = (variable.factor[0], len(variable.factor) - 1, PROBABILITY.name)
             keys.setdefault(key, []).append(variable)
         return {

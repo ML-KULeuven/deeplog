@@ -79,10 +79,8 @@ class ConstantPrefillModule(nn.Module):
 
     def forward(self, x):
         """Scatter ``x`` into the free slots, prefill the rest with constants."""
-        # x has shape (..., len(free_slots)) per the WrappedModule's
-        # vmap convention. Build a (..., n_total) tensor by starting
-        # from the constants and overwriting free slots. Out-of-place
-        # ops only — vmap doesn't support in-place index_copy_.
+        # x has shape (..., len(free_slots)). Build a (..., n_total) tensor
+        # by starting from the constants and overwriting free slots.
         out_shape = x.shape[:-1] + (self._n_total,)
         full = self._const_template.to(dtype=x.dtype).expand(out_shape)
         idx = self._free_idx_buf.expand(out_shape[:-1] + (self._free_idx_buf.shape[0],))
@@ -210,7 +208,10 @@ def lower_klay(
     for root_id in root_ids:
         klay_circuit.set_root(node_to_klay[root_id])
 
-    torch_module = klay_circuit.to_torch_module(*klay_semiring(circuit.structure))
+    # Compiling the module is the caller's choice, as for any torch module.
+    torch_module = klay_circuit.to_torch_module(
+        klay_semiring(circuit.structure), compile=False
+    )
     input_symbols = list(leaf_nodes)
     # The constant slots are named like any other atom: the symbol the constant
     # was written as. They are pre-filled, so the names are internal only.
@@ -246,7 +247,6 @@ def _wrap_with_constant_prefill(
             SymTensor(input_symbols),
             SymTensor(output_symbols),
             name=name,
-            vmap=True,
         )
     free_slot_indices = [
         i for i in range(n_total_slots) if i not in constant_slot_values
@@ -262,7 +262,6 @@ def _wrap_with_constant_prefill(
         SymTensor(free_input_symbols),
         SymTensor(output_symbols),
         name=name,
-        vmap=True,
     )
 
 

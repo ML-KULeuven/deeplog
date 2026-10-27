@@ -23,8 +23,8 @@ def supply_empty_batch(module: DeepLogModule, args: tuple) -> tuple | None:
     When every declared input channel is zero-width — all features were baked
     into the wrapped module (a fully-constant circuit) — there is nothing to
     pass but the batch size, so a no-argument call stands in for "evaluate one
-    row" and gets the empty ``(1, 0)`` tensor per channel that ``vmap`` maps
-    over. Returning the new args replaces the call's inputs; this hook is
+    row" and gets an empty ``(1, 0)`` tensor per channel: one row with no
+    values. Returning the new args replaces the call's inputs; this hook is
     *prepended*, so it runs before shape validation. Any non-bare call (or a
     real, non-zero-width input) is left untouched.
 

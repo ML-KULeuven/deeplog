@@ -31,12 +31,10 @@ if TYPE_CHECKING:
 #: Keyed by structure object rather than by name, so membership asserts that this
 #: structure's product and sum *are* that semiring's. An unregistered structure
 #: goes to the generic evaluator.
-_KLAY_SEMIRINGS: dict[AlgebraicStructure, tuple[str, bool]] = {}
+_KLAY_SEMIRINGS: dict[AlgebraicStructure, str] = {}
 
 
-def register_klay_semiring(
-    structure: AlgebraicStructure, semiring: str, log: bool = False
-) -> None:
+def register_klay_semiring(structure: AlgebraicStructure, semiring: str) -> None:
     """Declare that Klay's ``semiring`` implements ``structure``'s semantics.
 
     Makes it eligible for the Klay fast path. ``structure`` must be a
@@ -50,7 +48,7 @@ def register_klay_semiring(
             f"implement. Leave it to the generic evaluator, which honours its "
             f"'operator_fns' directly."
         )
-    _KLAY_SEMIRINGS[structure] = (semiring, log)
+    _KLAY_SEMIRINGS[structure] = semiring
 
 
 register_klay_semiring(BOOLEAN, "godel")
@@ -59,7 +57,7 @@ register_klay_semiring(LOGPROBABILITY, "log")
 register_klay_semiring(MPE, "mpe")
 
 
-def klay_semiring(structure: AlgebraicStructure) -> tuple[str, bool]:
+def klay_semiring(structure: AlgebraicStructure) -> str:
     """Resolve the Klay semiring to evaluate ``structure`` in.
 
     Raises when none is registered rather than falling back to ``real``, which

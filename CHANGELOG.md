@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.1] - 2026-10-27
+
+### Fixed
+- DeepProbLog compiles an annotated disjunction whose branches are each labelled by their own atom, such as `d(x,0)::d(x,0); d(x,1)::d(x,1).`, and so a neural annotation whose network has the name of the predicate it labels, `nn(digit, [X], D, [0..9]) :: digit(X, D).`. Such a label says the atom's probability is its own value in probability, which the program does not define: the compiler computes it, with the builder it has for the predicate or from an input per ground atom. `compile_to_module` declared the program's labelling for that predicate all the same, a function reading the very columns it produced, so with a builder for the predicate it raised `A builder is already registered`, and without one it compiled a module that took no input.
+- A formula evaluated as written gives each operation that repeats an operand its own value (#154). `(a times a) plus (b times b)` gave 0.18 for 0.45 at `a = 0.3`, `b = 0.6`, and `(a and a) or (b and b)` was false where `b` is true, without a warning: Klay, which evaluates such circuits, hashed a node's children so that a repeated child cancelled out, and merged nodes with equal hashes, so `a times a` and `b times b` became one node. klaycircuits 0.1.1 fixed this (klay#30), and DeepLog now requires 0.1.2, the first release that also evaluates integer inputs in a batch and runs on MPS. Klay's circuit is now called on the whole batch, where `torch.vmap` mapped it over the rows, since 0.1's reductions have no batching rule and would run once per row; it is not compiled, which, as for any torch module, is the caller's choice (`torch.compile`).
+
 ## [5.0.0] - 2026-10-06
 
 ### Added

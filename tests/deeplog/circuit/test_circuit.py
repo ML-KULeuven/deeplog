@@ -197,6 +197,41 @@ class TestCircuitToModule:
         with pytest.raises(ValueError, match="can only negate literals"):
             circuit.to_module({result: ("result",)})
 
+    @pytest.mark.parametrize(
+        "structure,build,inputs,expected",
+        [
+            (
+                "probability",
+                lambda op, a, b: op("plus")(op("times")(a, a), op("times")(b, b)),
+                [0.3, 0.6],
+                0.45,
+            ),
+            (
+                "probability",
+                lambda op, a, b: op("plus")(op("times")(op("times")(a, a), b), b),
+                [0.3, 0.6],
+                0.654,
+            ),
+            (
+                "boolean",
+                lambda op, a, b: op("or")(op("and")(a, a), op("and")(b, b)),
+                [0.0, 1.0],
+                1.0,
+            ),
+        ],
+    )
+    def test_a_node_repeating_a_child_keeps_its_own_value(
+        self, structure, build, inputs, expected
+    ):
+        """``a times a`` and ``b times b`` are two nodes, though each repeats a child (#154)."""
+        circuit = Circuit(structure)
+        a, b = [circuit.get_leaf_node((x,)) for x in "ab"]
+        result = build(circuit.get_operator, a, b)
+        module = circuit.to_module({result: ("result",)})
+
+        output = module(torch.tensor([inputs], dtype=torch.float32))
+        assert output[0].item() == pytest.approx(expected, rel=1e-5)
+
     @pytest.mark.parametrize("counted", [False, True])
     def test_to_module_input_shape_scoped_to_roots(self, counted):
         """A sub-root compile only takes the leaves reachable from its roots.
@@ -474,6 +509,17 @@ class TestCompiledDtype:
         out = module(torch.tensor([[0.25]], dtype=dtype))
         assert out.dtype == dtype
         assert out.item() == pytest.approx(0.125, rel=1e-3)
+
+    @pytest.mark.parametrize("dtype", [torch.int64, torch.int32])
+    def test_klay_evaluates_integer_truth_values_in_a_batch(self, dtype):
+        circuit = Circuit("boolean")
+        a, b = [circuit.get_leaf_node((x,)) for x in "ab"]
+        result = circuit.get_operator("or")(a, circuit.get_operator("and")(a, b))
+        module = circuit.to_module({result: ("result",)})
+
+        out = module(torch.tensor([[0, 1], [1, 0], [0, 0]], dtype=dtype))
+        assert out.dtype == dtype
+        assert out.flatten().tolist() == [0, 1, 0]
 
     @pytest.mark.parametrize("dtype", [torch.float64, torch.float32, torch.float16])
     def test_generic_preserves_dtype_through_a_constant(self, dtype):
