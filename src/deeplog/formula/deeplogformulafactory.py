@@ -47,6 +47,10 @@ class DeepLogFormulaFactory[T](ABC):
         """Build an aggregation node over ``binders`` applying ``operation`` to ``child``."""
 
     @abstractmethod
+    def create_aggregation_op(self, operation: str, operands: Sequence[T]) -> T:
+        """Build an aggregation applying ``operation`` to ``operands``, of which there is one at least."""
+
+    @abstractmethod
     def create_transformation(self, structure: str, child: T) -> T:
         """Build a structure-conversion node that maps ``child`` to ``structure``."""
 

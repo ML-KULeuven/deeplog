@@ -222,13 +222,20 @@ class CircuitAlgebra(DeepLogFormulaFactory[int]):
             f"Provide an explicit operator_mapping that includes '{operator}'."
         )
 
-    # A circuit has no node for the three eliminators below.
+    # A circuit has no node for the four eliminators below.
 
     def create_transformation(self, structure: str, child: int) -> int:
         """Unreachable: a circuit holds no cross-structure boundary."""
         raise NotImplementedError(
             f"{type(self).__name__} folds circuit nodes; a circuit has no "
             f"transformation, only the structure it was built in."
+        )
+
+    def create_aggregation_op(self, operation: str, operands: Sequence[int]) -> int:
+        """Unreachable: a circuit holds no aggregation."""
+        raise NotImplementedError(
+            f"{type(self).__name__} folds circuit nodes; a circuit has no "
+            f"aggregation, only operators."
         )
 
     def create_aggregation(

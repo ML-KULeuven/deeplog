@@ -4,6 +4,7 @@ A module that provides the Symbol type.
 """
 
 from collections import deque
+from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Mapping
 from itertools import chain
@@ -142,80 +143,34 @@ def get_term_variables(symbol: Symbol) -> Iterable[Symbol]:
         yield from chain.from_iterable(get_term_variables(arg) for arg in symbol[1:])
 
 
+def free_variables(symbol: Symbol) -> tuple[Symbol, ...]:
+    """The variables free in ``symbol``, each once, in the order they first occur.
+
+    A ``binders(V1, ..., Vn)`` argument binds its variables in the arguments
+    beside it, as an aggregation's name does: ``sum(binders(X), p(X, Y))`` has
+    ``Y`` free and not ``X``.
+    """
+    found: dict[Symbol, None] = {}
+
+    def visit(term: Symbol, bound: frozenset[Symbol]) -> None:
+        if is_variable(term):
+            if term not in bound:
+                found.setdefault(term, None)
+            return
+        arguments = term[1:]
+        binding = [a for a in arguments if a[0] == "binders"]
+        inner = bound.union(*(set(get_term_variables(b)) for b in binding))
+        for argument in arguments:
+            if argument[0] != "binders":
+                visit(argument, inner)  # pyright: ignore[reportArgumentType]
+
+    visit(symbol, frozenset())
+    return tuple(found)
+
+
+#: The functors :func:`symbol_to_pretty_string` writes between their operands.
 infix_functors = {":-", "?-", "::", ";", ",", "is", "_"}
 associative_infix_functors = {",", ";"}  # chain to the right, as Prolog's xfy
-infix_parse_order = [":-", "?-", "::", ";", ",", "is", "_"]
-
-#: Each infix functor's priority, the higher the more loosely it binds, as
-#: ``infix_parse_order`` splits on the loosest first.
-_infix_priority = {
-    functor: len(infix_parse_order) - position
-    for position, functor in enumerate(infix_parse_order)
-}
-#: The loosest priority an argument is written without brackets, just below
-#: that of ``,``, which separates the arguments.
-_argument_priority = _infix_priority[","] - 1
-
-
-def _split_infix_parts(
-    symbol_str: str, functor: str, require_whitespace: bool
-) -> list[str] | None:
-    depth = 0
-    parts: list[str] = []
-    last = 0
-    i = 0
-    while i < len(symbol_str):
-        sym = symbol_str[i]
-        if sym in "([":
-            depth += 1
-        elif sym in ")]":
-            depth -= 1
-        elif depth == 0 and symbol_str.startswith(functor, i):
-            if require_whitespace:
-                before = symbol_str[i - 1] if i > 0 else " "
-                after_idx = i + len(functor)
-                after = symbol_str[after_idx] if after_idx < len(symbol_str) else " "
-                if before.isspace() and after.isspace():
-                    parts.append(symbol_str[last:i].strip())
-                    i += len(functor)
-                    last = i
-                    continue
-            else:
-                parts.append(symbol_str[last:i].strip())
-                i += len(functor)
-                last = i
-                continue
-        i += 1
-    if parts:
-        parts.append(symbol_str[last:].strip())
-        return parts
-    return None
-
-
-def _parse_infix(symbol_str: str) -> Symbol | None:
-    for functor in infix_parse_order:
-        # ``,``/``;`` are unambiguous at depth 0 (the inside-args case is gated
-        # by bracket depth in ``_split_infix_parts``), so they don't need
-        # surrounding whitespace. Alphabetic functors (``is``) and ``_`` do —
-        # they'd otherwise merge into adjacent identifiers / wildcards.
-        require_whitespace = functor.isalnum() or functor == "_"
-        parts = _split_infix_parts(symbol_str, functor, require_whitespace)
-        if parts is None:
-            continue
-        if functor in associative_infix_functors and len(parts) >= 2:
-            parsed_parts = [parse_symbol(p) for p in parts]
-            acc = parsed_parts[-1]
-            for part in reversed(parsed_parts[:-1]):
-                acc = (functor, part, acc)
-            return acc
-        if len(parts) != 2:
-            return None
-        lhs_str, rhs_str = parts
-        if not lhs_str or not rhs_str:
-            continue
-        lhs, rhs = parse_symbol(lhs_str), parse_symbol(rhs_str)
-        return functor, lhs, rhs
-    return None
 
 
 def _closing_bracket(text: str, opening: int) -> int | None:
@@ -231,25 +186,34 @@ def _closing_bracket(text: str, opening: int) -> int | None:
     return None
 
 
-def parse_symbol(symbol_str: str) -> Symbol:
-    """
-    A simple parsing function for turning strings into symbols.
-    :param symbol_str: The string to parse into a symbol.
-    :return: The parsed symbol.
-    Brackets group as in Prolog: ``(a;b),c`` is a conjunction whose first
-    operand is a disjunction, and ``f((a,b))`` is ``f`` of one ``,`` term.
+def parse_symbol(
+    symbol_str: str, parse_argument: Callable[[str], Symbol] | None = None
+) -> Symbol:
+    """Read the symbol ``symbol_str``.
 
-    :raises ValueError: If a term's arguments are not closed, text follows the
-        bracket closing them, or brackets enclose nothing.
+    A symbol is a constant or variable ``a``, a compound term ``f(a, b)``, a list
+    ``[a, b | T]``, or a structure-tagged symbol ``a _ s``, and brackets around
+    a symbol group it. Text without brackets that is none of these, such as
+    ``X is Y``, is one constant.
+
+    Args:
+        symbol_str: The text to read.
+        parse_argument: Reads each argument, list element, side of ``_`` and
+            bracketed symbol; :func:`parse_symbol` itself by default.
+
+    Raises:
+        ValueError: If a term's arguments are not closed, text follows the
+            bracket closing them, or brackets enclose nothing.
     """
+    parse_argument = parse_argument or parse_symbol
     symbol_str = symbol_str.strip()
     if symbol_str == "_":
         return ("_",)
     if symbol_str.startswith("[") and symbol_str.endswith("]"):
-        return _parse_list(symbol_str)
-    infix = _parse_infix(symbol_str)
-    if infix is not None:
-        return infix
+        return _parse_list(symbol_str, parse_argument)
+    parts = list(bracket_aware_split(symbol_str, " _ "))
+    if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+        return "_", parse_argument(parts[0]), parse_argument(parts[1])
     first_bracket = symbol_str.find("(")
     if first_bracket == -1:
         return (symbol_str,)
@@ -259,16 +223,16 @@ def parse_symbol(symbol_str: str) -> Symbol:
     if final_bracket != len(symbol_str) - 1:
         raise ValueError(
             f"{symbol_str!r} continues after the bracket closing its arguments. "
-            "An alphabetic infix functor, or `_`, is written with spaces around it."
+            "A structure tag `_` is written with spaces around it."
         )
     functor = symbol_str[:first_bracket]
     args_str = symbol_str[first_bracket + 1 : final_bracket]
     if not functor:
         if not args_str.strip():
             raise ValueError(f"{symbol_str!r} brackets nothing.")
-        return parse_symbol(args_str)
+        return parse_argument(args_str)
     args = tuple(bracket_aware_split(args_str, ","))
-    return functor, *(parse_symbol(a) for a in args)
+    return functor, *(parse_argument(a) for a in args)
 
 
 @overload
@@ -289,38 +253,35 @@ def to_symbol(arg: object) -> Symbol | list[Symbol]:
 
 
 def symbol_to_str(symbol: Symbol) -> str:
-    """Format ``symbol`` as the canonical compact string.
+    """Format ``symbol`` as the text :func:`parse_symbol` reads back.
 
-    Output round-trips through :func:`parse_symbol` and fits inside the Lark
-    grammar's ``SYMBOL`` token (no whitespace). Infix functors that would
-    otherwise merge into adjacent identifiers (alphabetic functors like ``is``,
-    and ``_``) are still surrounded by spaces; the rest are written tight. An
-    operand is bracketed as Prolog brackets it, where its functor binds more
-    loosely than its place allows: ``f((a,b))``, ``(a;b),c`` and ``(a,b),c``.
+    A compound term is ``f(a,b)``, whatever its functor, so ``is(X,Y)`` for
+    ``X is Y``, and a structure tag is ``a _ s``. Brackets group an operand
+    that would read otherwise: a side of a tag that is itself tagged, as in
+    ``(a _ s) _ t``, and an argument whose functor holds a comma, as in
+    ``f((,(a,b)))``. A functor holding a bracket does not read back.
 
-    Use :func:`symbol_to_pretty_string` for human-readable, always-spaced output.
+    Use :func:`symbol_to_pretty_string` for human-readable output.
     """
     functor = symbol[0]
     if len(symbol) == 1:
         return functor
-    if functor in infix_functors and len(symbol) == 3:
-        needs_space = functor.isalnum() or functor == "_"
-        sep = f" {functor} " if needs_space else functor
-        priority = _infix_priority[functor]
-        chained = functor in associative_infix_functors
-        lhs = _operand_str(symbol[1], priority - 1)
-        rhs = _operand_str(symbol[2], priority if chained else priority - 1)
-        return f"{lhs}{sep}{rhs}"
-    args = ",".join(_operand_str(s, _argument_priority) for s in symbol[1:])
+    if functor == "_" and len(symbol) == 3:
+        return f"{_tagged_str(symbol[1])} _ {_tagged_str(symbol[2])}"
+    args = ",".join(_argument_str(s) for s in symbol[1:])
     return f"{functor}({args})"
 
 
-def _operand_str(symbol: Symbol, priority: int) -> str:
-    """``symbol`` written where at most ``priority`` binds without brackets."""
+def _tagged_str(symbol: Symbol) -> str:
+    """``symbol`` written as a side of a structure tag, bracketed if it is one."""
     text = symbol_to_str(symbol)
-    if len(symbol) == 3 and _infix_priority.get(symbol[0], 0) > priority:
-        return f"({text})"
-    return text
+    return f"({text})" if len(symbol) == 3 and symbol[0] == "_" else text
+
+
+def _argument_str(symbol: Symbol) -> str:
+    """``symbol`` written as an argument, bracketed if its functor holds a comma."""
+    text = symbol_to_str(symbol)
+    return f"({text})" if "," in symbol[0] else text
 
 
 def symbol_to_pretty_string(symbol: Symbol) -> str:
@@ -438,7 +399,7 @@ def calculate_mgu(term1: Symbol, term2: Symbol) -> dict[Symbol, Symbol] | None:
     return substitution
 
 
-def _parse_list(list_str: str) -> Symbol:
+def _parse_list(list_str: str, parse_argument: Callable[[str], Symbol]) -> Symbol:
     assert list_str[0] == "[" and list_str[-1] == "]"
     inner = list_str[1:-1].strip()
     head_part, tail_part = _split_list_head_tail(inner)
@@ -449,9 +410,9 @@ def _parse_list(list_str: str) -> Symbol:
             element_str = element_str.strip()
             if not element_str:
                 continue
-            elements.append(parse_symbol(element_str))
+            elements.append(parse_argument(element_str))
 
-    tail_symbol = parse_symbol(tail_part.strip()) if tail_part else ("nil",)
+    tail_symbol = parse_argument(tail_part.strip()) if tail_part else ("nil",)
     current = tail_symbol
     for element in reversed(elements):
         current = ("cons", element, current)

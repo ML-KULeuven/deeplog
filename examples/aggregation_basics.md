@@ -115,7 +115,7 @@ print("expectation:", expectation().item())
 
 The sum evaluates every assignment, as written. The expectation is computed by knowledge compilation: the compiler compiles `φ` into a circuit where reading `or` as a sum is exact, and weighs each value a test reads by its weight, so the sum over assignments happens inside the circuit. A variable's weights may also sum below one. The expectation then gives the rest of the mass to a missing value, where every test of the variable is false, as ProbLog reads an annotated disjunction whose probabilities sum below one; the sum has no such value.
 
-Without a distribution, the variables are independent, and the probability of each value `φ` tests is an input. The `formula_to_module` notebook uses such an expectation as a constraint on a classifier.
+Without a distribution, the variables are independent, each distributed by the predicate named after it: `expectation(Burglary): φ` is `expectation(Burglary; burglary(Burglary)_probability): φ`, and `burglary(true) _ probability` is an input. The `formula_to_module` notebook uses such an expectation as a constraint on a classifier.
 
 +++
 

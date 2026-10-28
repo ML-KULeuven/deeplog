@@ -12,10 +12,9 @@ weights therefore need not sum to one; the mass they leave is the missing
 outcome's, as ProbLog reads an annotated disjunction whose probabilities sum
 below one. They must not sum above one. A factor that mentions no binder scales
 the expectation, and every binder needs a factor. Without ``P``, the binders are
-independent variables in probability, each naming the values ``φ`` tests it for:
-the value ``v`` of ``V`` weighs as the leaf ``=(V, v)`` in probability, an input
-of the compiled module, and the mass the named values leave is ``V``'s missing
-outcome. Every leaf over a binder must be such a test.
+independent variables in probability: each binder ``V`` has the factor
+``'V'(V)``, so its value ``v`` weighs as the ground atom ``'V'(v)``, an input of
+the compiled module.
 
 :func:`weighted_model_count` computes it by knowledge compilation in probability
 and log-probability, and :func:`enumeration` by evaluating every assignment.
@@ -90,12 +89,11 @@ def weighted_model_count(
 
     An expectation is counted when its body is a boolean circuit lump, every leaf
     of which tests one of its binders for a named value of the binder's domain,
-    and it either has no distribution or one, in probability or log-probability,
-    that is a product of atoms the compiler has builders for, one for each binder
-    and mentioning only that binder, as an argument. The leaf testing ``V`` for
+    and its distribution, in probability or log-probability, is a product of
+    atoms, one for each binder and mentioning only that binder, as an argument. The leaf testing ``V`` for
     ``v`` then weighs as ``V``'s factor with ``v`` substituted, which its
     predicate reads as ``V`` holding ``v``, since the argument's sort is ``V``'s
-    domain; or, without a distribution, as itself. Expectations over one circuit,
+    domain. Expectations over one circuit,
     counted into one algebra, whose factors agree on the binders they share, are
     one group, and each group takes one knowledge compilation. A group reaching
     two values of one binder compiles with mv-sdd, which ``pydeeplog[mvsdd]``
@@ -123,9 +121,8 @@ def enumeration(
     Raises:
         ValueError: If an expectation's body is not boolean, it has more than one
             param, its distribution's algebra has no sum and product, one of its
-            binders has no factor, a leaf that is not boolean reads a binder
-            that may have no value, or, without a distribution, a leaf reads a
-            binder other than by testing it for a value.
+            binders has no factor, or a leaf that is not boolean reads a binder
+            that may have no value.
     """
     columns = []
     for node in nodes:
@@ -218,14 +215,13 @@ _COUNTED: tuple[Algebra, ...] = (PROBABILITY, LOGPROBABILITY)
 class _Group:
     """Expectations counted together: one circuit, one algebra, agreeing factors.
 
-    ``factors`` maps each binder to its factor atom, bare; it is ``None`` for
-    expectations without a distribution. ``domains`` maps each binder to its
+    ``factors`` maps each binder to its factor atom, bare. ``domains`` maps each binder to its
     named values, and ``members`` pairs each expectation with its body.
     """
 
     circuit: Circuit
     algebra: Semiring
-    factors: dict[Symbol, Symbol] | None
+    factors: dict[Symbol, Symbol]
     domains: dict[Symbol, Domain] = field(default_factory=dict)
     members: list[tuple[Aggregation, CircuitNode]] = field(default_factory=list)
 
@@ -235,10 +231,7 @@ class _Group:
             return False
         if reading.algebra is not self.algebra:
             return False
-        if self.factors is None or reading.factors is None:
-            if self.factors is not None or reading.factors is not None:
-                return False
-        elif any(
+        if any(
             self.factors.get(binder, factor) != factor
             for binder, factor in reading.factors.items()
         ):
@@ -270,7 +263,7 @@ class _Reading:
 
     body: CircuitNode
     algebra: Semiring
-    factors: dict[Symbol, Symbol] | None
+    factors: dict[Symbol, Symbol]
     domains: dict[Symbol, Domain]
 
 
@@ -286,8 +279,7 @@ def _groups(nodes: Sequence[Aggregation], lowering: Lowering) -> list[_Group]:
         if group is None:
             group = _Group(reading.body.circuit, reading.algebra, reading.factors)
             groups.append(group)
-        if group.factors is not None and reading.factors is not None:
-            group.factors.update(reading.factors)
+        group.factors.update(reading.factors)
         group.domains.update(reading.domains)
         group.members.append((node, reading.body))
     return groups
@@ -302,9 +294,9 @@ def _read(node: Aggregation, lowering: Lowering, tests: _Tests) -> _Reading | No
         return None
     if not node.params:
         tested = tests.of(body)
-        if tested is None or not tested <= set(node.binders):
+        if tested is None or tested:
             return None
-        return _Reading(body, PROBABILITY, None, _named(body, lowering))
+        return _Reading(body, PROBABILITY, {}, {})
     (distribution,) = node.params
     if not isinstance(distribution, CircuitNode) or distribution.feeders:
         return None
@@ -337,23 +329,6 @@ def _direct(atom: Symbol, binder: Symbol) -> bool:
     return 0 < sum(argument == binder for argument in arguments) == occurrences
 
 
-def _named(body: CircuitNode, lowering: Lowering) -> dict[Symbol, Domain]:
-    """Each variable ``body`` tests, with the values it tests it for, in domain order.
-
-    Every leaf of ``body`` must be a test ``=(V, v)``.
-    """
-    tested: dict[Symbol, set[Symbol]] = {}
-    for leaf in body.circuit.reachable_leaf_names([body.node]):
-        _, binder, value = without_structure(leaf)
-        tested.setdefault(binder, set()).add(value)
-    return {
-        binder: Domain.of(
-            [v for v in lowering.compiler.domain(binder).values if v in values]
-        )
-        for binder, values in tested.items()
-    }
-
-
 def _factors(
     distribution: CircuitNode, binders: Sequence[Symbol], lowering: Lowering
 ) -> dict[Symbol, Symbol] | None:
@@ -378,8 +353,7 @@ def _factors(
         if atom is None:
             return None
         mentioned = _over(atom, binders)
-        builder = lowering.compiler.atom_builder(atom[0], len(atom) - 1, algebra.name)
-        if len(mentioned) != 1 or mentioned[0] in factors or builder is None:
+        if len(mentioned) != 1 or mentioned[0] in factors:
             return None
         if not _direct(atom, mentioned[0]):
             return None
@@ -508,33 +482,24 @@ def _count(group: _Group, lowering: Lowering) -> dict[int, tuple[DeepLogModule, 
     }
 
 
-def _weight(
-    factors: dict[Symbol, Symbol] | None, structure: str, leaf: Symbol
-) -> Symbol:
-    """The weight of ``leaf``, ``=(V, v)``: ``V``'s factor with ``v`` substituted.
-
-    Without ``factors``, the weight is ``leaf`` itself.
-    """
-    if factors is None:
-        return with_structure(leaf, structure)
+def _weight(factors: dict[Symbol, Symbol], structure: str, leaf: Symbol) -> Symbol:
+    """The weight of ``leaf``, ``=(V, v)``: ``V``'s factor with ``v`` substituted."""
     _, binder, value = leaf
     return with_structure(
         apply_substitution(factors[binder], {binder: value}), structure
     )
 
 
-def _weight_leaf(
-    factors: dict[Symbol, Symbol] | None, structure: str, leaf: Symbol
-) -> Symbol:
+def _weight_leaf(factors: dict[Symbol, Symbol], structure: str, leaf: Symbol) -> Symbol:
     """The counted circuit's leaf for ``leaf``, ``=(V, v)``, named by it and ``V``'s factor.
 
     It is fed its weight (:func:`_count`): :func:`_weight` for a named value, and
     the complement of ``V``'s named values' total for the missing one.
     """
-    if factors is None:
-        return with_structure(("@weight", leaf), structure)
     _, binder, _ = leaf
-    return with_structure(("@weight", leaf, factors[binder]), structure)
+    return with_structure(
+        ("@weight", ("binders", binder), leaf, factors[binder]), structure
+    )
 
 
 # -- Enumeration and sampling -------------------------------------------------
@@ -568,15 +533,11 @@ def _distribution(
 ) -> tuple[FormulaNode, Semiring, tuple[_Variable, ...]]:
     """``node``'s body, its distribution's algebra, and its variables.
 
-    An expectation without a distribution has a variable for each binder its
-    body tests, and none if it tests none.
-
     Raises:
         ValueError: If the body is not boolean, ``node`` has more than one param,
             the distribution's algebra has no sum and product, a binder has no
-            factor, a leaf that is not boolean reads a binder that may be
-            missing, or, without a distribution, a leaf reads a binder other
-            than by testing it for a value.
+            factor, or a leaf that is not boolean reads a binder that may be
+            missing.
     """
     if node.child.structure != BOOLEAN.name:
         raise ValueError(
@@ -587,7 +548,7 @@ def _distribution(
             f"An expectation takes one param, its distribution, got {len(node.params)}."
         )
     if not node.params:
-        return _default(node, lowering)
+        return node.child, PROBABILITY, ()
     (distribution,) = node.params
     algebra = lowering.compiler.algebra(str(distribution.structure))
     if not isinstance(algebra, Semiring):
@@ -884,74 +845,3 @@ def _expect(
         gradient,
     )
     return [(module, distinct.index(e)) for e in expectations]
-
-
-def _default(
-    node: Aggregation, lowering: Lowering
-) -> tuple[FormulaNode, Semiring, tuple[_Variable, ...]]:
-    """``node`` without a distribution: its body, and a variable per binder it tests.
-
-    A binder's weight is, at each value its body tests it for, that test in
-    probability, and zero at every other.
-
-    Raises:
-        ValueError: If a leaf reads a binder other than as a test ``=(V, v)``.
-    """
-    variables = []
-    for binder, tests in _tests(node.child, node.binders).items():
-        weight = reduce(
-            partial(BinaryOp, PROBABILITY.sum),
-            (
-                BinaryOp(
-                    PROBABILITY.product,
-                    Transformation(
-                        PROBABILITY.name, Atom(with_structure(test, BOOLEAN.name))
-                    ),
-                    Atom(with_structure(test, PROBABILITY.name)),
-                )
-                for test in tests
-            ),
-        )
-        variables.append(
-            _Variable((binder,), (lowering.compiler.domain(binder),), weight, True)
-        )
-    return node.child, PROBABILITY, tuple(variables)
-
-
-def _tests(body: FormulaNode, binders: Sequence[Symbol]) -> dict[Symbol, list[Symbol]]:
-    """The leaves of ``body`` testing each of ``binders`` for a value, ``=(V, v)``.
-
-    Raises:
-        ValueError: If a leaf reads one of ``binders`` other than as such a test.
-    """
-    found: dict[Symbol, dict[Symbol, None]] = {}
-    seen: set[int] = set()
-    stack = [body]
-    while stack:
-        node = stack.pop()
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        if isinstance(node, Atom):
-            atom = unwrap_structure(node.atom)
-            over = _over(atom, binders)
-            if not over:
-                continue
-            if (
-                node.structure != BOOLEAN.name
-                or len(atom) != 3
-                or atom[0] != "="
-                or atom[1] not in binders
-                or _over(atom[2], binders)
-            ):
-                raise ValueError(
-                    f"{node} reads {symbol_to_pretty_string(over[0])} other than as "
-                    f"a test =(V, v), the one way an expectation without a "
-                    f"distribution weighs a binder; give it a distribution."
-                )
-            found.setdefault(atom[1], {})[atom] = None
-        elif isinstance(node, CircuitNode):
-            stack.extend(node.children)
-        else:
-            stack.extend(operands(node))
-    return {binder: list(found[binder]) for binder in binders if binder in found}

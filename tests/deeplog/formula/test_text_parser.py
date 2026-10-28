@@ -5,6 +5,7 @@ from lark import LexError
 from lark import ParseError
 
 from deeplog import Aggregation
+from deeplog import AggregationOp
 from deeplog import Atom
 from deeplog import BinaryOp
 from deeplog import SymTensor
@@ -297,3 +298,34 @@ def test_bare_numeric_leaf_compiles_to_constant():
     module = parse_formula_to_module("1.0_fuzzy", _fuzzy_compiler("fuzzy"))
     assert module.get_input_shape() == SymTensor([])
     torch.testing.assert_close(module(torch.zeros(3, 0)), torch.ones(3, 1))
+
+
+def test_parse_an_aggregation_of_operands():
+    """``operation[operand, ...]``, each operand a formula."""
+    text = "sum[a_probability, b_probability times c_probability]"
+    a, b, c = (Atom(("_", (name,), ("probability",))) for name in "abc")
+
+    assert parse_formula(text) == AggregationOp("sum", (a, BinaryOp("times", b, c)))
+    assert str(parse_formula(text)) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "sum[a_probability] and b_probability",
+        "max[sum(X): p(X)_real, q_real]",
+        "sum(X): sum[p(X)_real, q_real]",
+        "not sum[a_probability, sum[b_probability]]",
+    ],
+)
+def test_an_aggregation_of_operands_nests_and_reads_back(text):
+    assert str(parse_formula(text)) == text
+
+
+@pytest.mark.parametrize("text", ["x[1]_probability", "sum[]_fuzzy"])
+def test_a_symbol_holding_brackets_is_still_an_atom(text):
+    """Brackets after a name read an aggregation only around formulas."""
+    formula = parse_formula(text)
+
+    assert isinstance(formula, Atom)
+    assert str(formula) == text

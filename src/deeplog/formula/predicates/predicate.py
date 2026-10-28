@@ -21,7 +21,6 @@ from ...symbol import symbol_to_pretty_string
 from ...symbol import without_structure
 from ...util import as_tuple
 from ...variable import Domain
-from ...variable import SymbolicDomain
 from ...variable import ValueDomain
 
 
@@ -39,26 +38,19 @@ class Predicate[*Ts](DeepLogModule, ABC):
     An argument position asks for each *distinct* symbol once, not once per
     evaluation: ``digit(i1,0) … digit(i1,9)`` are ten evaluations over one
     input, so the input shape holds ``i1`` once. Positions are expanded back
-    to one row per evaluation before :meth:`forward_predicate` sees them,
-    unless the position is listed in :attr:`distinct_arguments`.
+    to one row per evaluation before :meth:`forward_predicate` sees them.
 
     Each argument ranges over a domain, its sort (:meth:`domains_of`). A value
     written where it ranges over a named or a tensor domain is read as what a
-    variable there holds: its position among the domain's names, or the number
-    it writes. So an atom reads the same whether an aggregation feeds its
-    variable a value or the value is written into it. Where it ranges over the
-    values (:meth:`~deeplog.variable.Domain.of_values`), a written argument is
-    what :meth:`resolve_argument` says: by default a number it writes, or else
-    the name of an input.
+    variable there holds: the domain's element it writes
+    (:meth:`~deeplog.variable.Domain.index`), its position among the domain's
+    names or the domain's own number, in the domain's dtype. So an atom reads
+    the same whether an aggregation feeds its variable a value or the value is
+    written into it. Where it ranges over the values
+    (:meth:`~deeplog.variable.Domain.of_values`), a written argument is what
+    :meth:`resolve_argument` says: by default a number it writes, or else the
+    name of an input.
     """
-
-    #: Argument positions handed to :meth:`forward_predicate` as one row per
-    #: distinct symbol rather than one row per evaluation. A predicate opts in
-    #: when its computation is expensive and factors as "compute over this
-    #: argument, then select using the others" — it must then map its result
-    #: back to evaluations itself, using :meth:`evaluation_slots`. Positions
-    #: carrying constants cannot be opted in.
-    distinct_arguments: tuple[int, ...] = ()
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Refuse a subclass defining a name no predicate is read by any more.
@@ -145,14 +137,6 @@ class Predicate[*Ts](DeepLogModule, ABC):
             self.register_buffer(f"_constants_{j}", constants.get(j, torch.empty(0)))
         self._positions_with_constants: frozenset[int] = frozenset(constants)
 
-        overlap = sorted(set(self.distinct_arguments) & self._positions_with_constants)
-        if overlap:
-            raise ValueError(
-                f"{type(self).__name__} lists argument position(s) {overlap} in "
-                "distinct_arguments, but they carry constants; only fully "
-                "symbolic positions can be passed unexpanded."
-            )
-
     def _classify_arguments(
         self, all_arguments: list[tuple[Symbol, ...]]
     ) -> tuple[
@@ -205,16 +189,6 @@ class Predicate[*Ts](DeepLogModule, ABC):
     def _constants(self, j: int) -> torch.Tensor:
         return getattr(self, f"_constants_{j}")
 
-    def evaluation_slots(self, j: int) -> torch.Tensor:
-        """Which input row of position ``j`` each evaluation reads.
-
-        A ``[n_symbolic_evaluations]`` index into the distinct symbols of that
-        position — the map a predicate listing ``j`` in
-        :attr:`distinct_arguments` uses to expand its result back over the
-        evaluations.
-        """
-        return self._slots(j)
-
     def _materialize_position(
         self, j: int, x_j: torch.Tensor | None, batch_size: int
     ) -> torch.Tensor:
@@ -223,18 +197,13 @@ class Predicate[*Ts](DeepLogModule, ABC):
 
         ``x_j`` is the caller-supplied symbol input for this position — one
         row per distinct symbol — or ``None`` when no rows at this position
-        are symbolic (eager case). Positions listed in
-        :attr:`distinct_arguments` are handed over unexpanded instead, as
-        ``[batch * n_distinct, *feature_shape]``.
+        are symbolic (eager case).
         """
         constants = self._constants(j)
 
         if x_j is None:
             base = constants.unsqueeze(0).expand(batch_size, *constants.shape)
             return base.reshape(-1, *constants.shape[1:])
-
-        if j in self.distinct_arguments:
-            return x_j.reshape(-1, *x_j.shape[2:])
 
         # One row per symbol-valued evaluation, gathered from the distinct rows.
         expanded = x_j[:, self._slots(j).to(x_j.device)]
@@ -435,20 +404,18 @@ class Predicate[*Ts](DeepLogModule, ABC):
         """
 
 
-def value_of(symbol: Symbol, domain: Domain) -> int | float | None:
+def value_of(symbol: Symbol, domain: Domain) -> torch.Tensor | None:
     """What a variable over ``domain`` holds where its value is ``symbol``.
 
-    A named value is its position among the domain's names, and an unnamed one
-    the number ``symbol`` writes, if the domain holds it. ``None`` if ``symbol``
-    is no value of ``domain``.
+    The element of ``domain`` that ``symbol`` writes
+    (:meth:`~deeplog.variable.Domain.index`): a named value's position among the
+    domain's names, or a number of a tensor domain as the domain holds it, in
+    its dtype. ``None`` if ``symbol`` writes no value of ``domain``.
     """
-    if isinstance(domain, SymbolicDomain):
-        return domain.index(symbol) if symbol in domain.names else None
-    number = number_of(symbol)
-    values = domain.as_tensor()
-    if number is None or values.dim() != 1 or not bool((values == number).any()):
+    try:
+        return domain.as_tensor()[domain.index(symbol)]
+    except ValueError:
         return None
-    return number
 
 
 def number_of(symbol: Symbol) -> float | None:

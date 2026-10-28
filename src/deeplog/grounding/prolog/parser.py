@@ -5,6 +5,7 @@ The head / body / functor splitting is generic and knows only plain Prolog; an
 operator such as ``::`` is read as the ordinary binary term it is.
 """
 
+import re
 from collections.abc import Callable
 from collections.abc import Iterable
 from itertools import count
@@ -19,14 +20,195 @@ from .program import RuleType
 from .program import create_rule
 
 
+#: The operators :func:`parse_term` reads before arithmetic, in the order it
+#: splits a term on them: a term is read around the first one outside brackets.
+#: ``is`` is split on only where space surrounds it.
+_OPERATORS = (":-", "?-", "::", ";", ",", " is ")
+
+#: Prolog's infix arithmetic operators and their priorities. The lower the
+#: priority, the tighter the operator binds; ``^`` groups to the right, the
+#: others to the left.
+_ARITHMETIC_PRIORITIES = {
+    "+": 500,
+    "-": 500,
+    "/\\": 500,
+    "\\/": 500,
+    "xor": 500,
+    "*": 400,
+    "/": 400,
+    "//": 400,
+    "rem": 400,
+    "mod": 400,
+    "div": 400,
+    "<<": 400,
+    ">>": 400,
+    "^": 200,
+}
+_ARITHMETIC_HINT = re.compile(r"[-+*/\\^<>]|\b(?:xor|rem|mod|div)\b")
+_ARITHMETIC_TOKEN = re.compile(
+    r"""
+    (?P<space>\s+)
+    | (?P<number>\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)
+    | (?P<quoted>'(?:[^'\\]|\\.)*')
+    | (?P<name>[^\W\d]\w*)
+    | (?P<symbol>[-+*/\\^<>=~:.?@#&$]+)
+    | (?P<group>[(\[])
+    """,
+    re.VERBOSE,
+)
+
+
+def parse_term(text: str) -> Symbol:
+    """Read the Prolog term ``text``.
+
+    A term is read around the first of ``:-``, ``?-``, ``::``, ``;``, ``,`` and
+    ``is`` outside brackets; ``,`` and ``;`` group to the right. Otherwise, text
+    made of operands joined by the arithmetic operators ``+ - * / // mod rem div
+    ^ /\\ \\/ xor << >>`` is read with Prolog's priorities and associativity:
+    ``Z is (N1 + N2) mod 10`` is ``is(Z, mod(+(N1, N2), 10))``. Any other text
+    is read by :func:`~deeplog.symbol.parse_symbol`, with each argument read as
+    a Prolog term.
+    """
+    text = text.strip()
+    term = _parse_operator(text)
+    if term is None:
+        term = _parse_arithmetic(text)
+    if term is None:
+        term = parse_symbol(text, parse_argument=parse_term)
+    return term
+
+
+def _parse_operator(text: str) -> Symbol | None:
+    """Read ``text`` around one of :data:`_OPERATORS`, or return ``None``."""
+    for operator in _OPERATORS:
+        parts = list(bracket_aware_split(text, operator))
+        if len(parts) == 1:
+            continue
+        functor = operator.strip()
+        if functor in (",", ";"):
+            term = parse_term(parts[-1])
+            for part in reversed(parts[:-1]):
+                term = (functor, parse_term(part), term)
+            return term
+        if len(parts) != 2:
+            return None
+        left, right = parts
+        if not left.strip() or not right.strip():
+            continue
+        return functor, parse_term(left), parse_term(right)
+    return None
+
+
+def _parse_arithmetic(text: str) -> Symbol | None:
+    """Read ``text`` as infix arithmetic, or return ``None`` if it is not.
+
+    ``N1 + N2 * 2`` is ``+(N1, *(N2, 2))``: the operands are read on their own
+    and the operators bind by their Prolog priority. Only text that alternates
+    operands and arithmetic operators is read, so a lone atom, a signed number
+    and ``X =:= Y + 1`` (an operator this does not read) all return ``None``.
+    """
+    if not _ARITHMETIC_HINT.search(text):
+        return None
+    tokens = _arithmetic_tokens(text)
+    if tokens is None or len(tokens) < 3 or len(tokens) % 2 == 0:
+        return None
+    operands, operators = tokens[0::2], tokens[1::2]
+    if any(kind == "symbol" for kind, _ in operands) or any(
+        kind not in ("symbol", "name") or text not in _ARITHMETIC_PRIORITIES
+        for kind, text in operators
+    ):
+        return None
+    terms = [
+        parse_term(text[1:-1] if text.startswith("(") else text) for _, text in operands
+    ]
+    tree, _ = _fold_arithmetic(terms, [text for _, text in operators], 0, 1200)
+    return tree
+
+
+def _arithmetic_tokens(text: str) -> list[tuple[str, str]] | None:
+    """Split ``text`` into its operands and operators, or ``None`` if it cannot.
+
+    Each token is ``(kind, text)``. A ``term`` is an operand: a number, a quoted
+    atom, a bracketed group, or a name or quoted atom with its arguments. A
+    ``symbol`` is a run of symbol characters and a ``name`` a bare identifier,
+    either of which may be an operator.
+    """
+    tokens: list[tuple[str, str]] = []
+    position = 0
+    while position < len(text):
+        match = _ARITHMETIC_TOKEN.match(text, position)
+        if match is None:
+            return None
+        kind, start, position = match.lastgroup, match.start(), match.end()
+        if kind == "space":
+            continue
+        if kind == "group" or (
+            kind in ("name", "quoted") and text.startswith("(", position)
+        ):
+            end = _bracket_group_end(
+                text, position - 1 if kind == "group" else position
+            )
+            if end is None:
+                return None
+            kind, position = "term", end
+        elif kind in ("number", "quoted"):
+            kind = "term"
+        tokens.append((str(kind), text[start:position]))
+    return tokens
+
+
+def _bracket_group_end(text: str, start: int) -> int | None:
+    """The index just past the bracket group opening at ``start``, or ``None``."""
+    depth = 0
+    quoted = False
+    position = start
+    while position < len(text):
+        char = text[position]
+        if quoted:
+            if char == "\\":
+                position += 1
+            elif char == "'":
+                quoted = False
+        elif char == "'":
+            quoted = True
+        elif char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+            if depth == 0:
+                return position + 1
+        position += 1
+    return None
+
+
+def _fold_arithmetic(
+    terms: list[Symbol], operators: list[str], index: int, max_priority: int
+) -> tuple[Symbol, int]:
+    """Fold ``terms[index:]`` while the next operator's priority is at most ``max_priority``.
+
+    ``operators[i]`` joins ``terms[i]`` and ``terms[i + 1]``. Returns the folded
+    tree and the index of the first operator left unfolded.
+    """
+    tree = terms[index]
+    while index < len(operators):
+        operator = operators[index]
+        priority = _ARITHMETIC_PRIORITIES[operator]
+        if priority > max_priority:
+            break
+        right_priority = priority if operator == "^" else priority - 1
+        right, index = _fold_arithmetic(terms, operators, index + 1, right_priority)
+        tree = (operator, tree, right)
+    return tree, index
+
+
 def parse_atoms(
     atoms_str: str,
     split_str: str,
-    atom_parser: Callable[[str], Symbol] = parse_symbol,
+    atom_parser: Callable[[str], Symbol] = parse_term,
 ) -> Iterable[Symbol]:
     """Parse ``atoms_str`` split on ``split_str`` with ``atom_parser`` per atom.
 
-    ``atom_parser`` defaults to the plain term parser; an extension passes its
+    ``atom_parser`` defaults to :func:`parse_term`; an extension passes its
     own (e.g. one that peels a ``p ::`` label prefix) to reuse this splitting.
     """
     for atom_str in bracket_aware_split(atoms_str, split_str):
@@ -37,7 +219,7 @@ def parse_atoms(
 
 
 def parse_rule(
-    line: str, atom_parser: Callable[[str], Symbol] = parse_symbol
+    line: str, atom_parser: Callable[[str], Symbol] = parse_term
 ) -> RuleType:
     """Parse one clause line ``h1 ; ... <functor> b1 , ...`` ending in ``.``.
 

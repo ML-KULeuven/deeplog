@@ -7,9 +7,10 @@ domain to substitute each value into the body, and knowledge compilation sizes
 one compiler variable per declared domain.
 
 A domain is *symbolic*, an ordered tuple of value names, whose position is the
-value's identity; a *tensor* of values that have no names of their own; or the
-open domain of *values*, such as numbers or images, which is never enumerated.
-Each answers only the view it has: asking a tensor domain for its value names
+value's identity; a *tensor* of values that have no names of their own, which
+writes those that are numbers by their numerals; or the open domain of
+*values*, such as numbers or images, which is never enumerated. Each answers
+only the view it has: asking a tensor domain of images for its value names
 raises rather than inventing them.
 
 A variable is linked to the atoms it occurs in, not to atoms per value: see
@@ -23,6 +24,7 @@ from abc import abstractmethod
 from collections.abc import Iterable
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cached_property
 
 import torch
 from torch import Tensor
@@ -30,6 +32,7 @@ from torch import Tensor
 from .algebraic import AlgebraicStructure
 from .symbol import Symbol
 from .symbol import apply_substitution
+from .symbol import symbol_to_pretty_string
 from .symbol import to_symbol
 
 
@@ -86,7 +89,7 @@ class Domain(ABC):
 
     @property
     def values(self) -> tuple[Symbol, ...]:
-        """The value names, in value order.
+        """The symbol writing each value, in value order.
 
         Raises:
             ValueError: If this domain's values have no names.
@@ -94,6 +97,18 @@ class Domain(ABC):
         raise ValueError(
             f"{type(self).__name__} values have no names; it can only be "
             f"enumerated as a tensor."
+        )
+
+    def index(self, value: Symbol) -> int:
+        """The position of the value ``value`` writes.
+
+        Raises:
+            ValueError: If this domain's values have no names, or ``value``
+                writes none of them.
+        """
+        raise ValueError(
+            f"{type(self).__name__} values have no names, so "
+            f"{symbol_to_pretty_string(value)} writes none of them."
         )
 
 
@@ -136,6 +151,11 @@ class SymbolicDomain(Domain):
 class TensorDomain(Domain):
     """A domain whose values are the rows of a tensor and carry no names.
 
+    Where the rows are finite real numbers, each is written by a numeral
+    (:attr:`values`): an integer by its digits, and a float by the fewest
+    digits that read back as it in the tensor's dtype, so 0.1 in float32 is
+    written ``0.1``. Any other row, such as an image, has no writing.
+
     Two tensor domains are equal when they hold equal values in the same order.
     """
 
@@ -160,6 +180,78 @@ class TensorDomain(Domain):
     def as_tensor(self) -> Tensor:
         """The values themselves."""
         return self.tensor
+
+    @property
+    def values(self) -> tuple[Symbol, ...]:
+        """The numeral writing each number, in value order.
+
+        Raises:
+            ValueError: If the values are not finite real numbers, which have
+                no names, or the domain holds a number twice.
+        """
+        return tuple(self._positions)
+
+    def index(self, value: Symbol) -> int:
+        """The position of the number ``value`` writes, as :attr:`values` writes it.
+
+        Raises:
+            ValueError: If the values have no writing (:attr:`values`), or
+                ``value`` is not one of their numerals.
+        """
+        position = self._positions.get(value)
+        if position is None:
+            raise ValueError(
+                f"{symbol_to_pretty_string(value)} is not a value of this domain, "
+                f"whose values are written {_listed(self.values)}."
+            )
+        return position
+
+    @cached_property
+    def _positions(self) -> dict[Symbol, int]:
+        """The position of each number, by the numeral writing it.
+
+        Raises:
+            ValueError: If the values are not finite real numbers, or the domain
+                holds a number twice.
+        """
+        numbers = self.tensor
+        if (
+            numbers.dim() != 1
+            or numbers.is_complex()
+            or numbers.dtype == torch.bool
+            or not bool(torch.isfinite(numbers).all())
+        ):
+            raise ValueError(
+                "TensorDomain values that are not finite real numbers have no "
+                "names; it can only be enumerated as a tensor."
+            )
+        positions: dict[Symbol, int] = {}
+        for position, number in enumerate(numbers.tolist()):
+            numeral = (_numeral(number, numbers.dtype),)
+            if numeral in positions:
+                raise ValueError(
+                    f"The tensor domain holds {numeral[0]} twice, so that numeral "
+                    "names no single value."
+                )
+            positions[numeral] = position
+        return positions
+
+
+def _numeral(number: float, dtype: torch.dtype) -> str:
+    """How a :class:`TensorDomain` of ``dtype`` writes ``number``."""
+    if not dtype.is_floating_point:
+        return str(number)
+    for digits in range(1, 18):
+        text = f"{number:.{digits}g}"
+        if torch.tensor(float(text), dtype=dtype).item() == number:
+            return repr(float(text))
+    return repr(number)
+
+
+def _listed(values: tuple[Symbol, ...]) -> str:
+    """The first few of ``values``, as an error message shows them."""
+    shown = ", ".join(symbol_to_pretty_string(value) for value in values[:5])
+    return shown + (", ..." if len(values) > 5 else "")
 
 
 @dataclass(frozen=True)

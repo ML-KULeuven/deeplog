@@ -23,16 +23,16 @@ if TYPE_CHECKING:
 
 
 def _needs_wrap(s: str) -> bool:
-    """Return True if ``s`` has a space outside all parentheses.
+    """Return True if ``s`` has a space outside all parentheses and brackets.
 
     Such strings need to be parenthesised when used as an operand so the
     parser does not mis-associate them.
     """
     depth = 0
     for c in s:
-        if c == "(":
+        if c in "([":
             depth += 1
-        elif c == ")":
+        elif c in ")]":
             depth -= 1
         elif c == " " and depth == 0:
             return True
@@ -56,6 +56,10 @@ class SymbolicFormulaFactory(DeepLogFormulaFactory[str]):
         binder_text = ", ".join(symbol_to_str(b) for b in binders)
         params_section = f"; {', '.join(params)}" if params else ""
         return f"{operation}({binder_text}{params_section}): {child}"
+
+    def create_aggregation_op(self, operation: str, operands: Sequence[str]) -> str:
+        """Encode an aggregation of operands as ``operation[operand, ...]``."""
+        return f"{operation}[{', '.join(operands)}]"
 
     def create_transformation(self, structure: str, child: str) -> str:
         """Wrap ``child`` with a structure transformation: ``(child)_structure``."""

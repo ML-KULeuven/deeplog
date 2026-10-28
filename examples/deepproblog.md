@@ -47,7 +47,7 @@ from functools import partial
 import torch
 from torch import nn
 
-from deeplog import Compiler, NetworkPredicate, SymTensor, reshape
+from deeplog import Compiler, Domain, NetworkPredicate, SymTensor, reshape
 from deeplog import symbol_to_pretty_string, to_dict
 from deeplog.grounding.prolog import SimpleGrounder, str_to_rules
 from deeplog.systems.deepproblog import Solver, compile_to_module
@@ -139,7 +139,7 @@ nn(classifier, [X], Y, [0..1]) :: digit(X,Y).
 
 That is the same annotated disjunction, written once over a free image instead of enumerated per image: the network `classifier` is applied to `X`, its output ranges over `Y` in `0..1`, and `digit(X,Y)` takes the probability the network gives row `Y`. Because the annotation declares the domain, the rule no longer has to enumerate it either.
 
-Binding the name `classifier` to an actual module is the compiler's side of the deal. [`NetworkPredicate`](deeplog.formula.predicates.builtin_predicates.NetworkPredicate) is the predicate that runs a module, and `Compiler` registers it, with the module bound, in `atom_builders` under the `(functor, arity, structure)` signature it implements. The network then lives *inside* the compiled module, whose inputs are the images themselves.
+Binding the name `classifier` to an actual module is the compiler's side of the deal. [`NetworkPredicate`](deeplog.formula.predicates.builtin_predicates.NetworkPredicate) is the predicate that runs a module, and `Compiler` registers it, with the module and the values of its output rows, `0` and `1`, bound, in `atom_builders` under the `(functor, arity, structure)` signature it implements. The network then lives *inside* the compiled module, whose inputs are the images themselves.
 
 ```{code-cell} ipython3
 NEURAL_MINI = """
@@ -155,7 +155,9 @@ program = tuple(str_to_rules(NEURAL_MINI))
 result = Solver(SimpleGrounder()).get_query_result(program)
 compiler = Compiler(
     atom_builders={
-        ("classifier", 2, "probability"): partial(NetworkPredicate, module=tiny)
+        ("classifier", 2, "probability"): partial(
+            NetworkPredicate, module=tiny, domain=Domain.of(range(2))
+        )
     }
 )
 
@@ -281,7 +283,9 @@ program = tuple(str_to_rules(ADDITION))
 result = Solver(SimpleGrounder()).get_query_result(program)
 compiler = Compiler(
     atom_builders={
-        ("classifier", 2, "probability"): partial(NetworkPredicate, module=mnist_net)
+        ("classifier", 2, "probability"): partial(
+            NetworkPredicate, module=mnist_net, domain=Domain.of(range(10))
+        )
     }
 )
 
@@ -425,7 +429,9 @@ from deeplog import sampling
 
 sampled_compiler = Compiler(
     atom_builders={
-        ("classifier", 2, "probability"): partial(NetworkPredicate, module=mnist_net)
+        ("classifier", 2, "probability"): partial(
+            NetworkPredicate, module=mnist_net, domain=Domain.of(range(10))
+        )
     },
     aggregation_builders={"expectation": sampling(samples=1_000)},
 )

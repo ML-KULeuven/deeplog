@@ -27,6 +27,7 @@ from ..symbol import Symbol
 from ..symbol import strip_literal_structure
 from ..symbol import unwrap_structure
 from .ast import Aggregation
+from .ast import AggregationOp
 from .ast import BinaryOp
 from .ast import CircuitNode
 from .ast import FormulaNode
@@ -116,6 +117,12 @@ class CircuitFactory(DeepLogFormulaFactory[FormulaNode]):
         leaf_id = target.get_leaf_node(leaf_name)
         feeder = Transformation(structure, child)
         return self._node(target, leaf_id, ((leaf_name, feeder),))
+
+    def create_aggregation_op(
+        self, operation: str, operands: Sequence[FormulaNode]
+    ) -> FormulaNode:
+        """Rebuild the aggregation: no circuit has a node for an aggregator."""
+        return AggregationOp(operation, tuple(operands))
 
     def create_aggregation(
         self,

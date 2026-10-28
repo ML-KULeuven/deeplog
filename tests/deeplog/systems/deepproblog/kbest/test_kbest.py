@@ -8,6 +8,7 @@ import torch
 
 from deeplog import BinaryOp
 from deeplog import Compiler
+from deeplog import Domain
 from deeplog import NetworkPredicate
 from deeplog import UnaryOp
 from deeplog.grounding.prolog import JanusGrounder
@@ -494,7 +495,7 @@ def test_categorical_with_tensor_input():
         tensors={("img1",): torch.tensor([0.1, 0.6, 0.1, 0.1, 0.1])},
         atom_builders={
             ("classifier", 2, "probability"): partial(
-                NetworkPredicate, module=_DummyClassifier()
+                NetworkPredicate, module=_DummyClassifier(), domain=Domain.of(range(5))
             ),
         },
     )

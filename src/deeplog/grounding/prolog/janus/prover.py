@@ -13,10 +13,10 @@ from typing import Any
 from deeplog.symbol import Symbol
 from deeplog.symbol import apply_substitution
 from deeplog.symbol import get_predicate
-from deeplog.symbol import parse_symbol
 
 from ..grounder import Builtin
 from ..grounder import UnknownPredicateException
+from ..parser import parse_term
 
 
 try:
@@ -117,7 +117,7 @@ class JanusProver:
 
 def _translate(err: Exception) -> Exception | None:
     """The Python exception for an error DeepLog's Prolog library throws, if any."""
-    thrown = parse_symbol(repr(err))
+    thrown = parse_term(repr(err))
     if len(thrown) != 3 or thrown[0] != "error" or len(thrown[1]) != 3:
         return None
     kind, name, arity = thrown[1]

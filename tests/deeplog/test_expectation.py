@@ -57,8 +57,33 @@ EARTHQUAKE_ATOM = ("=", EARTHQUAKE, TRUE)
 BURGLARY_BOOL_SYM = ("_", BURGLARY_ATOM, ("boolean",))
 EARTHQUAKE_BOOL_SYM = ("_", EARTHQUAKE_ATOM, ("boolean",))
 
-BURGLARY_PROB_SYM = ("_", BURGLARY_ATOM, ("probability",))
-EARTHQUAKE_PROB_SYM = ("_", EARTHQUAKE_ATOM, ("probability",))
+BURGLARY_PROB_SYM = ("_", ("burglary", TRUE), ("probability",))
+EARTHQUAKE_PROB_SYM = ("_", ("earthquake", TRUE), ("probability",))
+NOT_BURGLARY_PROB_SYM = ("_", ("burglary", FALSE), ("probability",))
+NOT_EARTHQUAKE_PROB_SYM = ("_", ("earthquake", FALSE), ("probability",))
+
+#: The inputs of an expectation over ``Burglary`` and ``Earthquake`` without a
+#: distribution: each binder's factor at each of its values.
+DISTRIBUTION = [
+    NOT_BURGLARY_PROB_SYM,
+    BURGLARY_PROB_SYM,
+    NOT_EARTHQUAKE_PROB_SYM,
+    EARTHQUAKE_PROB_SYM,
+]
+
+
+#: The same, for binders ``B`` and ``E``.
+DISTRIBUTION_BE = [
+    "b(false) _ probability",
+    "b(true) _ probability",
+    "e(false) _ probability",
+    "e(true) _ probability",
+]
+
+
+def _both(probabilities: torch.Tensor) -> torch.Tensor:
+    """Each column ``p``, a binder's probability of true, as its factor ``(1 - p, p)``."""
+    return torch.stack([1 - probabilities, probabilities], dim=-1).flatten(-2)
 
 
 def _expectation(binders, child, params=()):
@@ -96,23 +121,21 @@ def test_expectation_boolean_disjunction():
 
     module = reshape(
         Compiler().compile(exp),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+        input=SymTensor(DISTRIBUTION),
     )
 
-    assert module.get_input_shape() == SymTensor(
-        [BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]
-    )
+    assert module.get_input_shape() == SymTensor(DISTRIBUTION)
     assert len(list(module.get_output_shape())) == 1
 
     # Inputs are probability values for each atom
     # With P(B=true)=0.5, P(E=true)=0.5 (uniform):
     # E[B or E] = 0.75
-    result = module(torch.tensor([[0.5, 0.5]]))
+    result = module(_both(torch.tensor([[0.5, 0.5]])))
     torch.testing.assert_close(result, torch.tensor([[0.75]]))
 
     # With P(B=true)=0.8, P(E=true)=0.3:
     # E[B or E] = 1 - P(B=false)*P(E=false) = 1 - 0.2*0.7 = 0.86
-    result2 = module(torch.tensor([[0.8, 0.3]]))
+    result2 = module(_both(torch.tensor([[0.8, 0.3]])))
     torch.testing.assert_close(result2, torch.tensor([[0.86]]))
 
 
@@ -122,17 +145,18 @@ def test_expectation_single_variable():
     b_circuit = UnaryOp("not", UnaryOp("not", Atom(BURGLARY_BOOL_SYM)))
     exp = _expectation([BURGLARY], b_circuit)
 
-    module = reshape(Compiler().compile(exp), input=SymTensor([BURGLARY_PROB_SYM]))
+    distribution = SymTensor([NOT_BURGLARY_PROB_SYM, BURGLARY_PROB_SYM])
+    module = reshape(Compiler().compile(exp), input=distribution)
 
-    assert module.get_input_shape() == SymTensor([BURGLARY_PROB_SYM])
+    assert module.get_input_shape() == distribution
     assert len(list(module.get_output_shape())) == 1
 
     # E[B] with P(B=true)=0.5 -> 0.5
-    result = module(torch.tensor([[0.5]]))
+    result = module(_both(torch.tensor([[0.5]])))
     torch.testing.assert_close(result, torch.tensor([[0.5]]))
 
     # E[B] with P(B=true)=0.7 -> 0.7
-    result2 = module(torch.tensor([[0.7]]))
+    result2 = module(_both(torch.tensor([[0.7]])))
     torch.testing.assert_close(result2, torch.tensor([[0.7]]))
 
 
@@ -143,16 +167,14 @@ def test_expectation_conjunction():
 
     module = reshape(
         Compiler().compile(exp),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+        input=SymTensor(DISTRIBUTION),
     )
 
-    assert module.get_input_shape() == SymTensor(
-        [BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]
-    )
+    assert module.get_input_shape() == SymTensor(DISTRIBUTION)
     assert len(list(module.get_output_shape())) == 1
 
     # E[B and E] with uniform (0.5, 0.5) = 0.25
-    result = module(torch.tensor([[0.5, 0.5]]))
+    result = module(_both(torch.tensor([[0.5, 0.5]])))
     torch.testing.assert_close(result, torch.tensor([[0.25]]))
 
 
@@ -167,7 +189,7 @@ def _builders(builder: str) -> Compiler:
 def test_two_values_of_a_binder_are_exclusive_without_a_distribution(
     builder, operator, expected
 ):
-    """``=(B,true)`` and ``=(B,false)`` each weigh by their own input, as one variable.
+    """``=(B,true)`` and ``=(B,false)`` weigh by ``b(true)`` and ``b(false)``, as one variable.
 
     The mass the two leave is ``B``'s missing value, where both are false.
     """
@@ -175,7 +197,7 @@ def test_two_values_of_a_binder_are_exclusive_without_a_distribution(
         f"expectation(B): =(B,true)_boolean {operator} =(B,false)_boolean"
     )
     true, false = (
-        ("_", ("=", ("B",), (value,)), ("probability",)) for value in ("true", "false")
+        ("_", ("b", (value,)), ("probability",)) for value in ("true", "false")
     )
 
     module = reshape(
@@ -194,17 +216,20 @@ def test_a_leaf_over_no_binder_is_not_random_without_a_distribution(builder):
 
     module = reshape(
         _builders(builder).compile(formula),
-        input=SymTensor(["=(B,true) _ probability", "a _ boolean"]),
+        input=SymTensor(
+            ["b(false) _ probability", "b(true) _ probability", "a _ boolean"]
+        ),
     )
 
     torch.testing.assert_close(
-        module(torch.tensor([[0.6, 1.0], [0.6, 0.0]])), torch.tensor([[0.6], [0.0]])
+        module(torch.tensor([[0.4, 0.6, 1.0], [0.4, 0.6, 0.0]])),
+        torch.tensor([[0.6], [0.0]]),
     )
 
 
 @pytest.mark.parametrize("builder", ["counted", "enumerated"])
-def test_both_spellings_of_a_test_are_one_input_without_a_distribution(builder):
-    """``=(X,a)`` and ``=(a,X)`` test ``X`` for one value, weighed by one input."""
+def test_both_spellings_of_a_test_are_one_value_without_a_distribution(builder):
+    """``=(X,a)`` and ``=(a,X)`` test ``X`` for one value, weighed by ``x(a)``."""
     aggregation_builders = {} if builder == "counted" else {"expectation": enumeration}
     compiler = Compiler(
         variables={("X",): Domain.of(["a", "b"])},
@@ -215,27 +240,38 @@ def test_both_spellings_of_a_test_are_one_input_without_a_distribution(builder):
         parse_formula("expectation(X): =(X,a)_boolean or =(a,X)_boolean")
     )
 
-    assert set(get_all_symbols(module.get_input_shape())) == {
-        ("_", ("=", ("X",), ("a",)), ("probability",))
-    }
-    torch.testing.assert_close(module(torch.tensor([[0.3]])), torch.tensor([[0.3]]))
+    distribution = SymTensor(["x(a) _ probability", "x(b) _ probability"])
+    module = reshape(module, input=distribution)
+
+    torch.testing.assert_close(
+        module(torch.tensor([[0.3, 0.7]])), torch.tensor([[0.3]])
+    )
 
 
-def test_a_binder_its_body_does_not_test_weighs_nothing_without_a_distribution():
-    """A binder the body never tests has no named value, so its mass is all missing."""
-    module = Compiler().compile(parse_formula("expectation(B, E): =(B,true)_boolean"))
+def test_a_binder_its_body_does_not_test_weighs_one_without_a_distribution():
+    """A binder the body never tests weighs its values and its missing one: one."""
+    module = reshape(
+        Compiler().compile(parse_formula("expectation(B, E): =(B,true)_boolean")),
+        input=SymTensor(DISTRIBUTION_BE),
+    )
 
-    assert module.get_input_shape() == (SymTensor(["=(B,true) _ probability"]),)
-    torch.testing.assert_close(module(torch.tensor([[0.6]])), torch.tensor([[0.6]]))
+    torch.testing.assert_close(
+        module(torch.tensor([[0.4, 0.6, 0.5, 0.1]])), torch.tensor([[0.6]])
+    )
 
 
 @pytest.mark.parametrize("builder", ["counted", "enumerated"])
-def test_a_binder_read_but_not_tested_is_refused_without_a_distribution(builder):
-    """Only a test ``=(V, v)`` names a value an input can weigh."""
-    formula = parse_formula("expectation(X): q(X)_boolean")
+def test_without_a_distribution_a_binder_is_distributed_by_its_own_predicate(builder):
+    """``expectation(X): φ`` is ``expectation(X; x(X)_probability): φ``."""
+    compiler = Compiler(variables={("X",): Domain.of(["a", "b"])})
+    implicit = compiler.compile(parse_formula("expectation(X): q(X)_boolean"))
+    explicit = compiler.compile(
+        parse_formula("expectation(X; x(X)_probability): q(X)_boolean")
+    )
 
-    with pytest.raises(ValueError, match="give it a distribution"):
-        _builders(builder).compile(formula)
+    assert implicit.get_input_shape() == explicit.get_input_shape()
+    inputs = [torch.tensor([[v]]) for v in (0.9, 0.2, 0.3, 0.7)]
+    torch.testing.assert_close(implicit(*inputs), explicit(*inputs))
 
 
 def test_an_expectation_without_a_distribution_is_counted(compilations):
@@ -260,11 +296,11 @@ def test_registering_enumeration_gives_the_default_numbers_without_compiling(
 
     module = reshape(
         compiler.compile(exp),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+        input=SymTensor(DISTRIBUTION),
     )
 
     torch.testing.assert_close(
-        module(torch.tensor([[0.8, 0.3]])), torch.tensor([[0.86]])
+        module(_both(torch.tensor([[0.8, 0.3]]))), torch.tensor([[0.86]])
     )
     assert compilations == []
 
@@ -556,6 +592,43 @@ def test_a_complete_distribution_leaves_no_missing_mass(builder, algebra, zero):
     assert logits.grad is not None and torch.isfinite(logits.grad).all()
 
 
+class _CountedSoftmax(torch.nn.Module):
+    """A softmax keeping the rows of each call."""
+
+    def __init__(self):
+        super().__init__()
+        self.rows: list[int] = []
+
+    def forward(self, x):
+        self.rows.append(x.shape[0])
+        return torch.softmax(x, -1)
+
+
+@pytest.mark.parametrize("builder", ["enumerated", "sampled"])
+def test_an_expectation_over_a_network_runs_it_once_per_image(builder):
+    """The network's rows are computed before the expectation, which reads them per outcome."""
+    network = _CountedSoftmax()
+    domain = Domain.of(["a", "b", "c"])
+    compiler = Compiler(
+        variables={("X",): domain},
+        atom_builders={
+            ("digit", 2, "probability"): partial(
+                NetworkPredicate, module=network, domain=domain
+            )
+        },
+        aggregation_builders={
+            "expectation": enumeration if builder == "enumerated" else sampling(10)
+        },
+    )
+    formula = parse_formula(
+        "expectation(X; digit(img,X)_probability): not =(X,a)_boolean"
+    )
+
+    compiler.compile(formula)(torch.randn(8, 1, 3))
+
+    assert network.rows == [8]
+
+
 def test_enumeration_counts_as_counting_does_in_log_space():
     """The same value and gradient, where enumeration used to have no cast (glab #149)."""
     formula = parse_formula(
@@ -793,13 +866,13 @@ def test_compiling_two_expectations_shares_one_knowledge_compilation(compilation
 
     module = reshape(
         Compiler().compile(disjunction, conjunction),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+        input=SymTensor(DISTRIBUTION),
     )
 
     assert compilations == [2]
 
     # E[B or E] = 1 - (1-0.8)(1-0.3) = 0.86; E[B and E] = 0.8*0.3 = 0.24
-    out = module(torch.tensor([[0.8, 0.3]]))
+    out = module(_both(torch.tensor([[0.8, 0.3]])))
     torch.testing.assert_close(out, torch.tensor([[0.86, 0.24]]))
 
 
@@ -817,13 +890,13 @@ def test_counts_under_different_roots_share_one_knowledge_compilation(compilatio
 
     module = reshape(
         Compiler().compile(disjunction, BinaryOp("times", conjunction, one)),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+        input=SymTensor(DISTRIBUTION),
     )
 
     assert compilations == [2]
 
     # E[B or E] = 0.86; E[B and E] = 0.24, times one.
-    out = module(torch.tensor([[0.8, 0.3]]))
+    out = module(_both(torch.tensor([[0.8, 0.3]])))
     torch.testing.assert_close(out, torch.tensor([[0.86, 0.24]]))
 
 
@@ -838,7 +911,7 @@ def _sampling(samples: int) -> Compiler:
     "text",
     [
         f"expectation(B, E; {_P}): {_BURGLARY_OR_EARTHQUAKE}",
-        # Without a distribution, each binder weighs the values its body tests.
+        # Without a distribution, each binder is distributed by its own predicate.
         f"expectation(B, E): {_BURGLARY_OR_EARTHQUAKE}",
         # One factor over both binders makes them one variable.
         f"expectation(B, E; p(B,0.8)_probability times p(E,0.3)_probability "
@@ -849,13 +922,13 @@ def test_sampling_estimates_the_expectation(text):
     torch.manual_seed(0)
     formula = parse_formula(text)
     exact, estimate = Compiler().compile(formula), _sampling(20_000).compile(formula)
-    symbols = list(get_all_symbols(exact.get_input_shape()))
-    assert list(get_all_symbols(estimate.get_input_shape())) == symbols
+    symbols = list(get_all_symbols(estimate.get_input_shape()))
+    assert set(get_all_symbols(exact.get_input_shape())) <= set(symbols)
     if symbols:
         exact, estimate = (
             reshape(module, input=SymTensor(symbols)) for module in (exact, estimate)
         )
-    inputs = [torch.full((1, len(symbols)), 0.6)] if symbols else []
+    inputs = [torch.full((1, len(symbols)), 0.5)] if symbols else []
 
     torch.testing.assert_close(estimate(*inputs), exact(*inputs), atol=0.02, rtol=0)
 
@@ -934,10 +1007,16 @@ def test_one_draw_estimates_the_gradient_without_a_baseline():
     gradient is ``1 / 1``.
     """
     formula = parse_formula("expectation(B): =(B,true)_boolean")
-    module = _sampling(1).compile(formula)
+    module = reshape(
+        _sampling(1).compile(formula),
+        input=(
+            SymTensor(["b(false) _ probability"]),
+            SymTensor(["b(true) _ probability"]),
+        ),
+    )
     x = torch.tensor([[1.0]], requires_grad=True)
 
-    value = module(x)
+    value = module(torch.tensor([[0.0]]), x)
     (gradient,) = torch.autograd.grad(value.sum(), x)
 
     torch.testing.assert_close(value.detach(), torch.tensor([[1.0]]))

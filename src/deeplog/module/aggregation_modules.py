@@ -9,128 +9,185 @@ from functools import reduce
 
 import torch
 
+from ..algebraic import AggregationFn
 from ..algebraic import Algebra
 from ..algebraic import Semiring
 from ..shape import Shape
 from ..shape import SymTensor
 from ..shape import get_all_symbols
 from ..symbol import Symbol
+from ..symbol import free_variables
 from ..symbol import retag
 from ..symbol import without_structure
 from ..util import as_tuple
-from .abstract_aggregation_module import AbstractAggregationModule
 from .deeplog_module import DeepLogModule
 from .reshape import construct_transformation
 
 
-class AggregationModule(AbstractAggregationModule):
-    """Reduce an inner module's output over the joint domain of one or more variables.
+class AggregationModule(DeepLogModule):
+    """Aggregate a body's columns over every assignment of its binders.
 
-    For each combination of values from ``domains`` (one tensor per variable
-    in ``variables``), the inner module is evaluated with those values bound
-    to the corresponding input symbols. Each of its output columns is stacked
-    over the combinations along a new dimension 1, and ``op`` reduces the
-    stacked columns to one.
+    The body gives its columns behind their symbols an axis for each binder
+    they hold, in the order they first occur there: the columns at each value
+    of that binder. A binder no column holds ranges over its domain all the
+    same.
 
-    The aggregated variables are removed from this module's input shape —
-    they become internal "loop" variables, not external inputs. Any other
-    input symbols of the inner module remain as inputs of the aggregation.
-
-    Example (sum aggregation over a single variable ``X`` with a 3-element
-    domain): ``output = sum(inner(other_inputs, X=v) for v in domain)``.
+    Example (sum over a single variable ``X`` with a 3-element domain):
+    ``output = sum(body(X=v) for v in domain)``, the body's column given with
+    an axis of 3 for ``X``.
     """
 
     def __init__(
         self,
-        aggregated_module: DeepLogModule,
-        variables: list[Symbol],
-        domains: list[torch.Tensor],
-        name: str,
-        op: Callable[..., torch.Tensor],
+        binders: Sequence[tuple[Symbol, int]],
+        body: DeepLogModule,
+        reductions: Sequence[tuple[str, AggregationFn, Sequence[Symbol]]],
     ):
-        """Configure a joint aggregation over ``variables`` of ``aggregated_module``.
+        """Configure the reductions of ``body``'s columns.
 
-        The output is one column, named ``(name, ("binders", *variables),
-        *columns)`` for the inner module's columns, and labelled with the
-        algebra of the first.
+        The output is a column per reduction, named ``(name, ("binders",
+        *binders), *columns)`` for the columns it reads, and labelled with the
+        algebra of the first. The inputs are ``body``'s.
 
         Args:
-            aggregated_module: The inner module whose output is aggregated.
-                Must output one symbolic tensor. A variable it does not read
-                leaves its output the same at each of that variable's values.
-            variables: Symbols to aggregate over.
-            domains: Tensor of values per variable, in the same order as
-                ``variables``. The joint domain is the Cartesian product.
-            name: Identifies the reduction in the output's name.
-            op: Receives each output column of the inner module, stacked over
-                the joint domain, as a tensor of shape ``(batch, combinations,
-                1)``, in column order, and returns their reduction, of shape
-                ``(batch, 1)``.
+            binders: Each binder with the size of its domain.
+            body: Outputs one symbolic tensor, its columns over the binders.
+            reductions: For each output column, the name identifying the
+                reduction, its aggregator, and the columns of ``body`` it
+                reads, which it receives, in order, each of shape ``(batch,
+                assignments, 1)``, the assignments in row-major order of
+                ``binders``.
 
         Raises:
-            ValueError: If ``len(variables) != len(domains)``, or if the inner
-                module outputs no column or more than one tensor.
+            ValueError: If there is no binder, ``body`` outputs other than one
+                symbolic tensor, or a reduction reads no column.
         """
-        self._validate_binders(variables, domains)
-        input_symbols = list(
-            dict.fromkeys(get_all_symbols(aggregated_module.get_input_shape()))
-        )
-        output = aggregated_module.get_output_shape()
-        if not isinstance(output, SymTensor) or output.is_empty():
-            raise ValueError(
-                f"An aggregation reduces the columns of one symbolic tensor, got "
-                f"{output!r} from {aggregated_module}."
+        if not binders:
+            raise ValueError("Aggregation requires at least one binder.")
+        output = body.get_output_shape()
+        if not isinstance(output, SymTensor):
+            raise ValueError(f"A body outputs one symbolic tensor, got {output!r}.")
+        variables = tuple(variable for variable, _ in binders)
+        columns = list(output)
+        names = []
+        for name, _, read in reductions:
+            if not read:
+                raise ValueError(f"The reduction {name!r} reads no column.")
+            reduced = (name, ("binders", *variables), *map(without_structure, read))
+            names.append(retag(reduced, read[0]))
+        super().__init__(body.get_input_shape(), SymTensor(names))
+        held = [
+            variable
+            for variable in dict.fromkeys(
+                v for column in columns for v in free_variables(column)
             )
-        self.name = name
-        self.op = op
-
-        agg_input_shape = aggregated_module.get_input_shape()
-        if isinstance(agg_input_shape, SymTensor):
-            input_shape: Shape = self._remaining_input_shape(
-                input_symbols, set(variables)
-            )
-        else:
-            input_shape = tuple(
-                st
-                for st in (
-                    SymTensor([sym for sym in st if sym not in set(variables)])
-                    for st in agg_input_shape
-                )
-                if not st.is_empty()
-            )
-
-        columns = list(get_all_symbols(output))
-        reduced = (name, ("binders", *variables), *map(without_structure, columns))
-        super().__init__(input_shape, SymTensor([retag(reduced, columns[0])]))
-        self._init_binders(variables, domains)
-
-        self._pre_transform = construct_transformation(
-            as_tuple(input_shape) + tuple(SymTensor(v) for v in variables),
-            aggregated_module.get_input_shape(),
-        )
-        self._aggregated_module = aggregated_module
+            if variable in variables
+        ]
+        #: The body's axes in the order of the binders, and the positions among
+        #: the binders of those the body gives no axis for.
+        self._order = tuple(2 + held.index(v) for v in variables if v in held)
+        self._missing = tuple(k for k, v in enumerate(variables) if v not in held)
+        self._sizes = [size for _, size in binders]
+        self._body = body
+        self._reductions = [
+            (op, tuple(columns.index(column) for column in read))
+            for _, op, read in reductions
+        ]
 
     def forward(self, *x: torch.Tensor) -> torch.Tensor:
-        """Evaluate the inner module across the joint variable domain and reduce.
-
-        Enumerates every combination of variable assignments, feeds each
-        (along with the caller's inputs) through the inner module, stacks
-        the results along dim 1, and applies :attr:`op` to its columns.
-        """
-        batch_size, flat = self._enumerate_domain(*x)
-        x = self._pre_transform(*flat)
-        y = self._aggregated_module(*as_tuple(x))
-        y = y.view(batch_size, -1, *y.shape[1:])
-        return self.op(*y.split(1, dim=2))
+        """Each reduction of its columns over the assignments, a column per reduction."""
+        y = self._body(*x).permute(0, 1, *self._order)
+        for k in self._missing:
+            y = y.unsqueeze(2 + k)
+        y = y.expand(*y.shape[:2], *self._sizes).flatten(2)
+        return torch.cat(
+            [op(*(y[:, i, :, None] for i in read)) for op, read in self._reductions],
+            dim=1,
+        )
 
     def to_graph(self, graph=None):
-        """Render the aggregation as a graph node connected to the inner module."""
-        graph, in_node, out_node = self._aggregated_module.to_graph(graph)
-        _, new_in_node, new_out_node = super().to_graph(graph)
-        graph.add_edge(
-            new_out_node, in_node, label=str(self._aggregated_module.get_input_shape())
+        """Render the aggregation as a graph node connected to its body."""
+        graph, node, _ = super().to_graph(graph)
+        graph, inner, _ = self._body.to_graph(graph)
+        graph.add_edge(node, inner, label=str(self._body.get_input_shape()))
+        return graph, node, node
+
+
+class AggregationOpModule(DeepLogModule):
+    """Columns each aggregating some of the input columns with an aggregator.
+
+    The inputs are read in one operation and split among the outputs. The
+    outputs of one aggregator over as many operands are one call of it, each
+    output a row of the batch it is called on.
+    """
+
+    _read: torch.Tensor
+    _order: torch.Tensor
+
+    def __init__(
+        self,
+        inputs: Sequence[Symbol],
+        outputs: Sequence[tuple[Symbol, AggregationFn, Sequence[int]]],
+    ):
+        """Compute each of ``outputs`` from ``inputs``.
+
+        Args:
+            inputs: The input columns.
+            outputs: For each output, its column, its aggregator, and the
+                positions among ``inputs`` of the columns it aggregates, in
+                order. The aggregator receives them as a tensor of shape
+                ``(batch, operands, 1)`` and returns their aggregation, of shape
+                ``(batch, 1)`` (:data:`~deeplog.algebraic.AggregationFn`).
+
+        Raises:
+            ValueError: If an output aggregates no column.
+        """
+        super().__init__(
+            SymTensor(list(inputs)), SymTensor([column for column, _, _ in outputs])
         )
-        return graph, new_in_node, out_node
+        groups: dict[tuple[AggregationFn, int], list[int]] = {}
+        for index, (column, aggregation_fn, read) in enumerate(outputs):
+            if not read:
+                raise ValueError(f"The column {column} aggregates no column.")
+            groups.setdefault((aggregation_fn, len(read)), []).append(index)
+        grouped = [index for members in groups.values() for index in members]
+        #: Each group's aggregator, its number of operands and of outputs.
+        self._groups = [
+            (aggregation_fn, count, len(members))
+            for (aggregation_fn, count), members in groups.items()
+        ]
+        self.register_buffer(
+            "_read",
+            torch.tensor(
+                [position for index in grouped for position in outputs[index][2]],
+                dtype=torch.long,
+            ),
+            persistent=False,
+        )
+        order = [0] * len(grouped)
+        for position, index in enumerate(grouped):
+            order[index] = position
+        self.register_buffer(
+            "_order", torch.tensor(order, dtype=torch.long), persistent=False
+        )
+        self._in_order = grouped == sorted(grouped)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Each output's aggregation of its columns, a column per output."""
+        batch = x.shape[0]
+        read = x.index_select(1, self._read).split(
+            [count * members for _, count, members in self._groups], dim=1
+        )
+        values = [
+            aggregation_fn(chunk.reshape(batch * members, count, 1)).reshape(
+                batch, members
+            )
+            for (aggregation_fn, count, members), chunk in zip(
+                self._groups, read, strict=True
+            )
+        ]
+        joined = values[0] if len(values) == 1 else torch.cat(values, dim=1)
+        return joined if self._in_order else joined.index_select(1, self._order)
 
 
 @dataclass(frozen=True, eq=False)

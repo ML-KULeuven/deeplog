@@ -39,7 +39,7 @@ def test_the_expectation_over_its_variables_is_the_probability_it_holds():
 
     module = reshape(
         Compiler().compile(expectation),
-        input=SymTensor(["=(V1,true) _ probability", "=(V2,true) _ probability"]),
+        input=SymTensor(["v1(true) _ probability", "v2(true) _ probability"]),
     )
 
     torch.testing.assert_close(

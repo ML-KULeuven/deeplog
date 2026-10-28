@@ -1,6 +1,7 @@
 #  Copyright (c) 2024-2026. KU Leuven
 import torch
 
+from deeplog.util import bracket_aware_split
 from deeplog.util import broadcast_tensors
 
 
@@ -22,3 +23,11 @@ def test_broadcast_tensors():
         c_b,
         torch.tensor([[[5, 6], [5, 6], [5, 6], [7, 8], [7, 8], [7, 8]]]),
     )
+
+
+def test_bracket_aware_split_splits_on_a_separator_outside_brackets():
+    assert list(bracket_aware_split("a :- b(c :- d), [e :- f]", " :- ")) == [
+        "a",
+        "b(c :- d), [e :- f]",
+    ]
+    assert list(bracket_aware_split("f(a,b),c", ",")) == ["f(a,b)", "c"]

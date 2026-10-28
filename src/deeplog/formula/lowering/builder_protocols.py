@@ -59,11 +59,15 @@ class AtomBuilder(Protocol):
     """
 
     def __call__(self, atoms: Sequence[Symbol], /) -> DeepLogModule:
-        """The module with a column named by each of ``atoms``.
+        """A module holding each of ``atoms``, by name, among its outputs.
 
-        ``atoms`` are every atom of the builder's predicate that a level asks
-        for, each labelled with its algebra. The module declares the domain of
-        each argument of its atoms (:class:`DeclaresDomains`).
+        ``atoms`` are atoms of the builder's predicate, each labelled with its
+        algebra; a compile may call the builder more than once, with different
+        atoms. The module may hold them anywhere among its outputs, in any
+        shape, and beside other atoms of the predicate. In place of an atom it
+        may hold the atom's ground atoms at the variables it does not read, and
+        the atom is read from them at those variables' values. It declares the
+        domain of each argument of its atoms (:class:`DeclaresDomains`).
         """
         ...
 

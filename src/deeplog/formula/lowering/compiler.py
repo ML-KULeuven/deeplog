@@ -55,8 +55,7 @@ class Compiler:
     atom. Where it reads variables an aggregation binds, it is its ground atoms
     instead, an input each, named by substituting those variables' values, and
     read at the values the aggregation gives them; such a variable must range
-    over named values. A test ``=(V, v)`` outside ``boolean`` does not read
-    ``V``: it is the label of ``V``'s value ``v``.
+    over named values.
 
     Every argument of an atom has a sort, the domain its predicate declares for
     it (:meth:`~deeplog.formula.predicates.predicate.Predicate.domains_of`). A
@@ -134,7 +133,11 @@ class Compiler:
         Equal subformulas of all the formulas are first made one object, and
         construction runs under one memo, so a subformula is built once however
         many formulas write it, their shared atoms are one circuit leaf, and
-        counts over one boolean circuit take one knowledge compilation.
+        counts over one boolean circuit take one knowledge compilation. The atoms
+        whose builder's module reads none of their variables are computed before
+        any aggregation, by one module per predicate, so a network fed no
+        variable runs once per input, however many aggregations read it and
+        however deep.
 
         Raises:
             TypeError: If a mapping is given beside formulas.
@@ -166,7 +169,7 @@ class Compiler:
             for _, formula in named
         ]
         distinct = {root: i for i, root in enumerate(dict.fromkeys(roots))}
-        module = Lowering(self).lower(*distinct)
+        module = Lowering(self)._lower_roots(*distinct)
         columns = list(get_all_symbols(module.get_output_shape()))
         outputs: dict[Symbol, Symbol] = {}
         for (name, _), root in zip(named, roots, strict=True):

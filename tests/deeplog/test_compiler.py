@@ -17,6 +17,7 @@ import torch
 from deeplog import PROBABILITY
 from deeplog import REAL
 from deeplog import Aggregation
+from deeplog import AggregationOp
 from deeplog import Algebra
 from deeplog import AlgebraicStructure
 from deeplog import Atom
@@ -43,6 +44,7 @@ from deeplog.shape import sole_structure
 from deeplog.symbol import without_structure
 from deeplog.variable import Domain
 
+from .testing_modules import TRUTH
 from .testing_modules import VALUES
 from .testing_modules import Forecast
 from .testing_modules import IndexClassifier
@@ -147,7 +149,7 @@ def test_an_atom_no_builder_computes_over_a_free_variable_is_one_input():
 
 
 def test_an_equality_reads_the_same_whichever_side_its_variable_is_on():
-    """``=(a,X)`` is ``=(X,a)``: the label of ``X``'s value ``a``, not ground over ``X``."""
+    """``=(a,X)`` is ``=(X,a)``: one atom, ground over ``X`` like any other."""
     compiler = Compiler(variables={("X",): Domain.of(["a", "b"])})
     written, swapped = (
         compiler.compile(parse_formula(f"sum(X): {test}_probability"))
@@ -155,8 +157,8 @@ def test_an_equality_reads_the_same_whichever_side_its_variable_is_on():
     )
 
     assert swapped.get_input_shape() == written.get_input_shape()
-    x = torch.tensor([[0.25]])
-    torch.testing.assert_close(swapped(x), written(x))
+    x = (torch.tensor([[0.25]]), torch.tensor([[0.5]]))
+    torch.testing.assert_close(swapped(*x), written(*x))
 
 
 def test_a_lump_leaf_reads_the_equality_feeding_it_whichever_its_spelling():
@@ -178,9 +180,23 @@ def test_a_lump_leaf_reads_the_equality_feeding_it_whichever_its_spelling():
     )
 
 
-def test_an_atom_no_builder_computes_over_unnamed_values_is_refused():
-    """Its ground atoms would have no names to be inputs under."""
+def test_an_atom_no_builder_computes_over_numbers_is_read_from_its_ground_atoms():
+    """``w(X)`` over 0, 1 and 2 reads the inputs ``w(0)``, ``w(1)`` and ``w(2)``: 1 + 2 + 3."""
     compiler = Compiler(variables={("X",): Domain.of_tensor(torch.arange(3))})
+    names = [with_structure(("w", (str(v),)), "real") for v in range(3)]
+
+    module = compiler.compile(parse_formula("sum(X): w(X)_real"))
+
+    assert set(get_all_symbols(module.get_input_shape())) == set(names)
+    module = reshape(module, input=SymTensor(names))
+    torch.testing.assert_close(
+        module(torch.tensor([[1.0, 2.0, 3.0]])), torch.tensor([[6.0]])
+    )
+
+
+def test_an_atom_no_builder_computes_over_unnamed_values_is_refused():
+    """Over images, its ground atoms would have no names to be inputs under."""
+    compiler = Compiler(variables={("X",): Domain.of_tensor(torch.randn(3, 2))})
 
     with pytest.raises(ValueError, match="register a builder for w/1"):
         compiler.compile(parse_formula("sum(X): w(X)_real"))
@@ -249,8 +265,8 @@ def test_p_weighs_only_truth_values(builder):
         )
 
 
-def test_a_test_outside_boolean_is_the_label_of_its_value_at_every_value():
-    """``=(B, true)`` in probability names ``B``'s value ``true``; it reads no ``B``."""
+def test_a_test_outside_boolean_is_an_atom_ground_at_each_value():
+    """``=(B, true)`` in probability is labelled at each value of ``B``, as any atom is."""
     module = Compiler().compile(
         parse_formula(
             "sum(B): (=(B,true)_boolean)_probability times =(B,true)_probability"
@@ -258,7 +274,8 @@ def test_a_test_outside_boolean_is_the_label_of_its_value_at_every_value():
     )
 
     assert list(get_all_symbols(module.get_input_shape())) == [
-        with_structure(("=", ("B",), ("true",)), "probability")
+        with_structure(("=", (value,), ("true",)), "probability")
+        for value in ("false", "true")
     ]
 
 
@@ -314,7 +331,9 @@ def test_mnist_addition():
     atom_builders = {
         ("sums", 3, "boolean"): _Sums,
         ("digit", 2, "probability"): partial(
-            NetworkPredicate, module=IndexClassifier(num_classes=10)
+            NetworkPredicate,
+            module=IndexClassifier(num_classes=10),
+            domain=digit_domain,
         ),
     }
 
@@ -373,7 +392,9 @@ def test_a_lump_runs_a_network_once_for_all_its_leaves():
     classifier = _Counted(IndexClassifier(num_classes=3))
     compiler = Compiler(
         atom_builders={
-            ("digit", 2, "probability"): partial(NetworkPredicate, module=classifier)
+            ("digit", 2, "probability"): partial(
+                NetworkPredicate, module=classifier, domain=Domain.of(range(3))
+            )
         }
     )
     leaves = [_digit(image, (str(v),)) for image in ("i1", "i2") for v in range(3)]
@@ -396,10 +417,13 @@ def test_a_lump_under_an_aggregation_runs_its_network_once():
     class they both favour: 0.9 * 0.05 + 0.05 * 0.05 + 0.05 * 0.9.
     """
     classifier = _Counted(IndexClassifier(num_classes=3))
+    classes = Domain.of_tensor(torch.arange(3))
     compiler = Compiler(
-        {("N",): Domain.of_tensor(torch.arange(3))},
+        {("N",): classes},
         atom_builders={
-            ("digit", 2, "probability"): partial(NetworkPredicate, module=classifier)
+            ("digit", 2, "probability"): partial(
+                NetworkPredicate, module=classifier, domain=classes
+            )
         },
     )
     body = BinaryOp("times", _digit("i1", ("N",)), _digit("i2", ("N",)))
@@ -426,7 +450,11 @@ def test_leaves_reach_their_atom_builder_in_one_call_across_lumps():
     builds the predicate once before, to read its sorts.
     """
     calls = []
-    network = partial(NetworkPredicate, module=IndexClassifier(num_classes=3))
+    network = partial(
+        NetworkPredicate,
+        module=IndexClassifier(num_classes=3),
+        domain=Domain.of(range(3)),
+    )
 
     def recording(atoms):
         calls.append(sorted(map(str, atoms)))
@@ -454,10 +482,13 @@ def test_an_operand_read_twice_runs_once():
     square.
     """
     classifier = _Counted(IndexClassifier(num_classes=3))
+    classes = Domain.of_tensor(torch.arange(3))
     compiler = Compiler(
-        {("N",): Domain.of_tensor(torch.arange(3))},
+        {("N",): classes},
         atom_builders={
-            ("digit", 2, "probability"): partial(NetworkPredicate, module=classifier)
+            ("digit", 2, "probability"): partial(
+                NetworkPredicate, module=classifier, domain=classes
+            )
         },
     )
     total = Aggregation("sum", (("N",),), (), _digit("i1", ("N",)))
@@ -499,7 +530,7 @@ class _Over(WrappedModule):
         return (VALUES,) * len(arguments)
 
 
-def test_a_builder_without_a_column_for_its_atom_is_refused():
+def test_a_builder_whose_module_holds_no_atom_it_is_given_is_refused():
     """Its module would be dropped, and the atom made an input in its place."""
 
     def build(atoms):
@@ -508,7 +539,7 @@ def test_a_builder_without_a_column_for_its_atom_is_refused():
 
     compiler = Compiler(atom_builders={("p", 1, "probability"): build})
 
-    with pytest.raises(ValueError, match=r"no column for p\(x\) _ probability"):
+    with pytest.raises(ValueError, match=r"holding no p\(x\) _ probability"):
         compiler.compile(parse_formula("p(x)_probability times q_probability"))
 
 
@@ -745,22 +776,26 @@ def test_a_predicate_under_two_casts_is_built_once():
     """A predicate whose leaves sit in two lumps is one module for both.
 
     Each cast re-leafs its own boolean sub-circuit, so ``=(X, true)`` and
-    ``=(Y, true)`` are leaves of two lumps; both lumps are in the sum's body, so
-    the ``=`` predicate is built once for the two of them. ``X ∧ Y`` is the
-    single model of the four assignments.
+    ``=(X, false)`` are leaves of two lumps; both lumps are in the sum's body, so
+    the ``=`` predicate is built once for the two of them. No value of ``X`` is
+    both.
     """
     factory = CircuitFactory()
-    leaf_x = ("_", ("=", ("X",), TRUE), ("boolean",))
-    leaf_y = ("_", ("=", ("Y",), TRUE), ("boolean",))
-    cast_x = factory.create_transformation("probability", factory.create_atom(leaf_x))
-    cast_y = factory.create_transformation("probability", factory.create_atom(leaf_y))
-    product = factory.create_binary_node("times", cast_x, cast_y)
+    leaf_true = ("_", ("=", ("X",), TRUE), ("boolean",))
+    leaf_false = ("_", ("=", ("X",), FALSE), ("boolean",))
+    cast_true = factory.create_transformation(
+        "probability", factory.create_atom(leaf_true)
+    )
+    cast_false = factory.create_transformation(
+        "probability", factory.create_atom(leaf_false)
+    )
+    product = factory.create_binary_node("times", cast_true, cast_false)
 
-    summed = Aggregation("sum", (("X",), ("Y",)), (), product)
+    summed = Aggregation("sum", (("X",),), (), product)
     module = Compiler().compile(summed)
 
-    result = module()  # one model (X ∧ Y) out of four assignments
-    torch.testing.assert_close(result, torch.tensor([[1.0]], dtype=result.dtype))
+    result = module()
+    torch.testing.assert_close(result, torch.tensor([[0.0]], dtype=result.dtype))
 
     eq_instances = [
         m for m in module.modules() if type(m).__name__ == "EqualityPredicate"
@@ -999,6 +1034,433 @@ def test_a_reduction_reads_one_formula_in_several_places():
     truth = torch.exp(-torch.norm(compiler.variables[x].as_tensor() - point[0], dim=1))
     expected = (truth * truth).sum() / truth.sum()
     torch.testing.assert_close(module(point), expected.reshape(1, 1))
+
+
+def _near_compiler():
+    """The LTN compiler with ``near`` and ``within``, and the rows ``near`` evaluates.
+
+    ``near(P, Q)`` is how close two points are, as ``eq``, and appends the number
+    of rows of each evaluation to the rows returned. ``within(P, Q, R)`` is
+    whether they are closer than the radius ``R``. ``Z`` ranges over three points.
+    """
+    rows: list[int] = []
+
+    class Near(Predicate):
+        def __init__(self, atoms):
+            super().__init__(atoms, (VALUES, VALUES))
+
+        def forward_predicate(self, p, q):
+            rows.append(p.shape[0])
+            return torch.exp(-torch.norm(p - q, dim=1))
+
+    class Within(Predicate):
+        def __init__(self, atoms):
+            super().__init__(atoms, (VALUES, VALUES, VALUES))
+
+        def forward_predicate(self, p, q, radius):
+            return torch.sigmoid(radius - torch.norm(p - q, dim=1))
+
+    _, compiler = _ltn_compiler()
+    compiler = compiler.declaring(
+        {("Z",): Domain.of_tensor(torch.randn(3, 2))},
+        {("near", 2, "fuzzy"): Near, ("within", 3, "fuzzy"): Within},
+    )
+    return compiler, rows
+
+
+def _fuzzy(functor, *arguments):
+    """The fuzzy atom of ``functor`` over ``arguments``."""
+    return Atom(with_structure((functor, *arguments), "fuzzy"))
+
+
+def test_a_subformula_is_evaluated_once_per_assignment_of_the_binders_it_reads():
+    """``near(X, A)`` runs at the 10 points of ``X`` and ``near(Y, B)`` at the 5 of ``Y``.
+
+    Only their conjunction and the guard read both binders, so only those are
+    evaluated at the 50 pairs.
+    """
+    compiler, rows = _near_compiler()
+    x, y, a, b, r = (("X",), ("Y",), ("A",), ("B",), ("R",))
+    body = BinaryOp("and", _fuzzy("near", x, a), _fuzzy("near", y, b))
+    guarded = Aggregation("weighted", (x, y), (_fuzzy("within", x, y, r),), body)
+
+    module = reshape(
+        compiler.compile(guarded),
+        input=(SymTensor([a]), SymTensor([b]), SymTensor([r])),
+    )
+    first, second = torch.full((1, 1, 2), 0.25), torch.full((1, 1, 2), -0.5)
+    result = module(first, second, torch.full((1, 1), 1.5))
+
+    assert sorted(rows) == [5, 10]
+    xs, ys = (compiler.variables[v].as_tensor() for v in (x, y))
+    truth = torch.exp(-torch.norm(xs - first[0], dim=1))[:, None] * torch.exp(
+        -torch.norm(ys - second[0], dim=1)
+    )
+    weight = torch.sigmoid(1.5 - torch.norm(xs[:, None] - ys[None], dim=2))
+    expected = (truth * weight).sum() / weight.sum()
+    torch.testing.assert_close(result, expected.reshape(1, 1))
+
+
+def test_aggregations_over_the_same_binders_evaluate_a_shared_body_once():
+    """Three guards over one body: the body's atoms run as often as for one."""
+    compiler, rows = _near_compiler()
+    x, y, a, b = (("X",), ("Y",), ("A",), ("B",))
+    radii = [(f"R{i}",) for i in range(3)]
+    body = BinaryOp("and", _fuzzy("near", x, a), _fuzzy("near", y, b))
+
+    module = reshape(
+        compiler.compile(
+            *(
+                Aggregation("weighted", (x, y), (_fuzzy("within", x, y, r),), body)
+                for r in radii
+            )
+        ),
+        input=(SymTensor([a]), SymTensor([b]), *(SymTensor([r]) for r in radii)),
+    )
+    first, second = torch.full((1, 1, 2), 0.25), torch.full((1, 1, 2), -0.5)
+    given = [0.5, 1.5, 2.5]
+    result = module(first, second, *(torch.full((1, 1), radius) for radius in given))
+
+    assert sorted(rows) == [5, 10]
+    xs, ys = (compiler.variables[v].as_tensor() for v in (x, y))
+    truth = torch.exp(-torch.norm(xs - first[0], dim=1))[:, None] * torch.exp(
+        -torch.norm(ys - second[0], dim=1)
+    )
+    distance = torch.norm(xs[:, None] - ys[None], dim=2)
+    expected = torch.stack(
+        [
+            (truth * weight).sum() / weight.sum()
+            for weight in (torch.sigmoid(radius - distance) for radius in given)
+        ]
+    )
+    torch.testing.assert_close(result, expected.reshape(1, 3))
+
+
+def test_an_aggregation_inside_another_is_evaluated_at_the_binders_it_reads():
+    """``exists Z: near(X, Z)`` reads ``X`` alone: 10 points times the 3 of ``Z``."""
+    compiler, rows = _near_compiler()
+    x, y, z, b = (("X",), ("Y",), ("Z",), ("B",))
+    inner = Aggregation("exists", (z,), (), _fuzzy("near", x, z))
+    outer = Aggregation(
+        "forall", (x, y), (), BinaryOp("and", inner, _fuzzy("near", y, b))
+    )
+
+    module = compiler.compile(outer)
+    point = torch.full((1, 1, 2), 0.25)
+    result = module(point)
+
+    assert sorted(rows) == [5, 30]
+    xs, ys, zs = (compiler.variables[v].as_tensor() for v in (x, y, z))
+    near = torch.exp(-torch.norm(xs[:, None] - zs[None], dim=2))
+    exists = torch.mean(near**6, dim=1) ** (1 / 6)
+    truth = exists[:, None] * torch.exp(-torch.norm(ys - point[0], dim=1))
+    expected = 1 - torch.mean((1 - truth.reshape(-1)) ** 4) ** (1 / 4)
+    torch.testing.assert_close(result, expected.reshape(1, 1))
+
+
+def test_an_operand_reading_none_of_two_binders_is_evaluated_once():
+    """``near(A, B)`` is the same at every pair, so it runs for the batch row alone."""
+    compiler, rows = _near_compiler()
+    x, y, a, b = (("X",), ("Y",), ("A",), ("B",))
+    body = BinaryOp("and", _fuzzy("near", a, b), _fuzzy("near", x, y))
+
+    module = reshape(
+        compiler.compile(Aggregation("exists", (x, y), (), body)),
+        input=(SymTensor([a]), SymTensor([b])),
+    )
+    first, second = torch.full((1, 1, 2), 0.25), torch.full((1, 1, 2), -0.5)
+    result = module(first, second)
+
+    assert sorted(rows) == [1, 50]
+    xs, ys = (compiler.variables[v].as_tensor() for v in (x, y))
+    truth = torch.exp(-torch.norm(first[0] - second[0])) * torch.exp(
+        -torch.norm(xs[:, None] - ys[None], dim=2)
+    )
+    expected = torch.mean(truth.reshape(-1) ** 6) ** (1 / 6)
+    torch.testing.assert_close(result, expected.reshape(1, 1))
+
+
+class _Classifier(torch.nn.Module):
+    """A classifier of three features into ten digits, keeping the rows of each call."""
+
+    def __init__(self):
+        super().__init__()
+        torch.manual_seed(0)
+        self.linear = torch.nn.Linear(3, 10)
+        self.rows: list[int] = []
+
+    def forward(self, x):
+        self.rows.append(x.shape[0])
+        return torch.softmax(self.linear(x), dim=-1)
+
+
+def _digit_compiler(structure, **variables):
+    """The LTN compiler with ``digit``, a network over the ten digits, in ``structure``.
+
+    Each of ``variables`` ranges over the digits given for it.
+    """
+    classifier = _Classifier()
+    _, compiler = _ltn_compiler()
+    compiler = compiler.declaring(
+        {(name,): Domain.of(values) for name, values in variables.items()},
+        {
+            ("digit", 2, structure): partial(
+                NetworkPredicate, module=classifier, domain=Domain.of(range(10))
+            )
+        },
+    )
+    return compiler, classifier
+
+
+def _digit_of(image, value, structure):
+    """The atom ``digit(image, value)`` in ``structure``."""
+    return Atom(with_structure(("digit", image, value), structure))
+
+
+def test_a_network_runs_once_per_image_under_an_enumeration():
+    """``digit(x, D1)`` is ``digit(x, 0)`` to ``digit(x, 9)``, which one row of the network gives.
+
+    The two images of each of the 4 pairs are the 8 rows of one call, where
+    evaluating at every value of a digit variable took 10 rows per image.
+    """
+    compiler, classifier = _digit_compiler("fuzzy", D1=range(10), D2=range(10))
+    x, y, d1, d2 = (("x",), ("y",), ("D1",), ("D2",))
+    body = BinaryOp("and", _digit_of(x, d1, "fuzzy"), _digit_of(y, d2, "fuzzy"))
+
+    module = reshape(
+        compiler.compile(Aggregation("exists", (d1, d2), (), body)),
+        input=(SymTensor([x]), SymTensor([y])),
+    )
+    first, second = torch.randn(4, 1, 3), torch.randn(4, 1, 3)
+    classifier.rows.clear()
+    result = module(first, second)
+
+    assert classifier.rows == [8]
+    px, py = (
+        torch.softmax(classifier.linear(v[:, 0]), dim=-1) for v in (first, second)
+    )
+    truth = (px[:, :, None] * py[:, None, :]).reshape(4, 100)
+    torch.testing.assert_close(
+        result, torch.mean(truth**6, dim=1, keepdim=True) ** (1 / 6)
+    )
+
+
+def test_a_network_under_nested_aggregations_runs_once_per_image():
+    """``sum(C): sum(D): w(C) times digit(x, D)`` weighs one distribution by each ``w(C)``: 0.6.
+
+    The inner aggregation reads ``C``, so it is evaluated at each value of
+    ``C``. The network reads ``x`` and no variable, so its rows are computed
+    before either aggregation, and the inner one reads them at every value.
+    """
+
+    class Weight(Predicate):
+        def __init__(self, atoms):
+            super().__init__(atoms, (Domain.of(["a", "b", "c"]),))
+
+        def forward_predicate(self, c):
+            return 0.1 * (c + 1)
+
+    compiler, classifier = _digit_compiler("probability", D=range(10), C="abc")
+    compiler = compiler.declaring({}, {("w", 1, "probability"): Weight})
+    x, c, d = (("x",), ("C",), ("D",))
+    inner = Aggregation(
+        "sum",
+        (d,),
+        (),
+        BinaryOp(
+            "times",
+            Atom(with_structure(("w", c), "probability")),
+            _digit_of(x, d, "probability"),
+        ),
+    )
+
+    module = compiler.compile(Aggregation("sum", (c,), (), inner))
+    classifier.rows.clear()
+    result = module(torch.randn(4, 1, 3))
+
+    assert classifier.rows == [4]
+    torch.testing.assert_close(result, torch.full((4, 1), 0.6))
+
+
+def test_aggregations_reading_one_network_run_it_once():
+    """``(sum(D): digit(x, D)) times (sum(E): digit(x, E))`` is one distribution's total, squared."""
+    compiler, classifier = _digit_compiler("probability", D=range(10), E=range(10))
+    x = ("x",)
+    totals = [
+        Aggregation("sum", (v,), (), _digit_of(x, v, "probability"))
+        for v in (("D",), ("E",))
+    ]
+
+    module = compiler.compile(BinaryOp("times", *totals))
+    classifier.rows.clear()
+    result = module(torch.randn(4, 1, 3))
+
+    assert classifier.rows == [4]
+    torch.testing.assert_close(result, torch.ones(4, 1))
+
+
+def test_an_aggregation_over_an_empty_named_domain_is_its_aggregator_s_over_nothing():
+    """A sum over no value is 0."""
+
+    class Weight(Predicate):
+        def __init__(self, atoms):
+            super().__init__(atoms, (Domain.of([]),))
+
+        def forward_predicate(self, d):
+            return torch.ones(d.shape[0])
+
+    compiler = Compiler(atom_builders={("t", 1, "real"): Weight})
+
+    module = compiler.compile(parse_formula("sum(D): t(D)_real"))
+
+    torch.testing.assert_close(module(), torch.zeros(1, 1))
+
+
+def test_atoms_holding_one_binder_read_their_ground_atoms_at_its_values():
+    """``sum(D): digit(x, D) times digit(y, D)`` is the two distributions' inner product."""
+    compiler, classifier = _digit_compiler("probability", D=range(10))
+    x, y, d = (("x",), ("y",), ("D",))
+    body = BinaryOp(
+        "times", _digit_of(x, d, "probability"), _digit_of(y, d, "probability")
+    )
+
+    module = reshape(
+        compiler.compile(Aggregation("sum", (d,), (), body)),
+        input=(SymTensor([x]), SymTensor([y])),
+    )
+    first, second = torch.randn(4, 1, 3), torch.randn(4, 1, 3)
+    classifier.rows.clear()
+    result = module(first, second)
+
+    assert classifier.rows == [8]
+    px, py = (
+        torch.softmax(classifier.linear(v[:, 0]), dim=-1) for v in (first, second)
+    )
+    torch.testing.assert_close(result, (px * py).sum(dim=1, keepdim=True))
+
+
+def test_an_atom_is_ground_at_the_values_its_binder_ranges_over():
+    """``D`` ranges over two of the ten digits, so two ground atoms are read."""
+    compiler, classifier = _digit_compiler("probability", D=[2, 5])
+    x, d = (("x",), ("D",))
+
+    module = compiler.compile(
+        Aggregation("sum", (d,), (), _digit_of(x, d, "probability"))
+    )
+    image = torch.randn(4, 1, 3)
+    classifier.rows.clear()
+    result = module(image)
+
+    assert classifier.rows == [4]
+    p = torch.softmax(classifier.linear(image[:, 0]), dim=-1)
+    torch.testing.assert_close(result, p[:, [2, 5]].sum(dim=1, keepdim=True))
+
+
+def test_an_atom_is_ground_at_each_value_of_a_binder_it_reads_as_a_value():
+    """``digit(X, D)`` holds ``D`` at a named sort and reads the points ``X`` as values.
+
+    Its ground atoms ``digit(X, 2)`` and ``digit(X, 5)`` run the network once
+    at the 10 points of ``X``, not at each of the 20 pairs.
+    """
+    classifier = _Classifier()
+    torch.manual_seed(1)
+    points = torch.randn(10, 3)
+    compiler = Compiler(
+        {("X",): Domain.of_tensor(points), ("D",): Domain.of([2, 5])},
+        atom_builders={
+            ("digit", 2, "probability"): partial(
+                NetworkPredicate, module=classifier, domain=Domain.of(range(10))
+            )
+        },
+    )
+    x, d = (("X",), ("D",))
+
+    module = compiler.compile(
+        Aggregation("sum", (x, d), (), _digit_of(x, d, "probability"))
+    )
+    classifier.rows.clear()
+    result = module()
+
+    assert classifier.rows == [10]
+    p = torch.softmax(classifier.linear(points), dim=-1)
+    torch.testing.assert_close(result, p[:, [2, 5]].sum().reshape(1, 1))
+
+
+def test_a_written_atom_among_another_s_ground_atoms_is_read_from_them():
+    """``digit(x, 3)`` is one of ``digit(x, D)``'s ground atoms: the network runs once."""
+    compiler, classifier = _digit_compiler("probability", D=range(10))
+    x, d = (("x",), ("D",))
+    body = BinaryOp(
+        "times", _digit_of(x, d, "probability"), _digit_of(x, ("3",), "probability")
+    )
+
+    module = compiler.compile(Aggregation("sum", (d,), (), body))
+    image = torch.randn(4, 1, 3)
+    classifier.rows.clear()
+    result = module(image)
+
+    assert classifier.rows == [4]
+    p = torch.softmax(classifier.linear(image[:, 0]), dim=-1)
+    torch.testing.assert_close(result, p[:, 3:4] * p.sum(dim=1, keepdim=True))
+
+
+def _enumerated_digit(domain, variable):
+    """``sum(D): digit(x, D)`` with ``digit`` over ``domain`` and ``D`` over ``variable``.
+
+    Returns the compiled module and the classifier, whose rows are cleared.
+    """
+    classifier = _Classifier()
+    builder = partial(NetworkPredicate, module=classifier, domain=domain)
+    x, d = (("x",), ("D",))
+    compiler = Compiler(
+        {d: variable}, atom_builders={("digit", 2, "probability"): builder}
+    )
+    module = compiler.compile(
+        Aggregation("sum", (d,), (), _digit_of(x, d, "probability"))
+    )
+    classifier.rows.clear()
+    return module, classifier
+
+
+def test_an_atom_is_ground_over_a_tensor_domain_of_numbers():
+    """A number written at an argument over a tensor domain is the value it holds."""
+    module, classifier = _enumerated_digit(
+        Domain.of_tensor(torch.arange(10)), Domain.of_tensor(torch.tensor([2, 5]))
+    )
+    image = torch.randn(4, 1, 3)
+
+    result = module(image)
+
+    assert classifier.rows == [4]
+    p = torch.softmax(classifier.linear(image[:, 0]), dim=-1)
+    torch.testing.assert_close(result, p[:, [2, 5]].sum(dim=1, keepdim=True))
+
+
+def test_a_predicate_reading_its_binders_is_given_them_not_its_ground_atoms():
+    """``rel(A, B)`` and ``rel(B, A)`` read the binders, so each is one atom read at every pair."""
+    table = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
+    built = []
+
+    class Related(Predicate):
+        def __init__(self, atoms):
+            atoms = list(atoms)
+            built.append([str(without_structure(atom)) for atom in atoms])
+            super().__init__(atoms, (TRUTH, TRUTH))
+
+        def forward_predicate(self, first, second):
+            return table[first.long(), second.long()]
+
+    compiler = Compiler(atom_builders={("rel", 2, "probability"): Related})
+    a, b = (("A",), ("B",))
+    forth = Atom(with_structure(("rel", a, b), "probability"))
+    back = Atom(with_structure(("rel", b, a), "probability"))
+
+    module = compiler.compile(
+        Aggregation("sum", (a, b), (), BinaryOp("times", forth, back))
+    )
+
+    torch.testing.assert_close(module(), (table * table.T).sum().reshape(1, 1))
+    assert built[-1] == [str(without_structure(node.atom)) for node in (forth, back)]
 
 
 def _recording_forall():
@@ -1569,3 +2031,56 @@ def test_a_sum_in_logprobability_is_a_sum_of_probabilities():
     result = Compiler().compile(formula)()
 
     torch.testing.assert_close(result, torch.tensor([[0.0]]))
+
+
+def test_an_aggregation_of_operands_is_its_aggregator_over_their_values():
+    """``sum[a, b, a]`` in probability is ``a + b + a``; ``exists[a, b]`` in Gödel logic their maximum."""
+    x = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
+    summed = reshape(
+        parse_formula_to_module("sum[a_probability, b_probability, a_probability]"),
+        input=SymTensor(["a _ probability", "b _ probability"]),
+    )
+    largest = reshape(
+        parse_formula_to_module("exists[a_godel, b_godel]"),
+        input=SymTensor(["a _ godel", "b _ godel"]),
+    )
+
+    torch.testing.assert_close(summed(x), torch.tensor([[0.4], [1.0]]))
+    torch.testing.assert_close(largest(x), torch.tensor([[0.2], [0.4]]))
+
+
+def test_an_aggregation_of_operands_under_an_aggregation_is_read_at_each_assignment():
+    """``sum(X): sum[w(X), v]`` over 0, 1 and 2 is ``w(0) + w(1) + w(2) + 3 v``."""
+    compiler = Compiler(variables={("X",): Domain.of_tensor(torch.arange(3))})
+    names = [with_structure(("w", (str(v),)), "real") for v in range(3)]
+
+    module = compiler.compile(parse_formula("sum(X): sum[w(X)_real, v_real]"))
+
+    module = reshape(module, input=SymTensor([*names, with_structure(("v",), "real")]))
+    torch.testing.assert_close(
+        module(torch.tensor([[1.0, 2.0, 3.0, 10.0]])), torch.tensor([[36.0]])
+    )
+
+
+def test_an_aggregation_of_operands_needs_its_algebra_s_aggregator():
+    with pytest.raises(NotImplementedError, match="no aggregator 'sum'"):
+        parse_formula_to_module("sum[a_godel, b_godel]")
+
+
+def test_an_operator_and_an_aggregation_of_one_name_and_operands_are_two_columns():
+    """``a plus b`` adds, and ``plus[a, b]`` takes the maximum, in an algebra defining both."""
+    both = AlgebraicStructure(
+        name="both",
+        operator_fns={"plus": lambda a, b: a + b},
+        aggregation_fns={"plus": lambda values: values.amax(dim=1)},
+    )
+    a, b = (Atom(("_", (name,), ("both",))) for name in "ab")
+
+    module = Compiler(structures={"both": both}).compile(
+        BinaryOp("plus", a, b), AggregationOp("plus", (a, b))
+    )
+
+    module = reshape(module, input=SymTensor(["a _ both", "b _ both"]))
+    torch.testing.assert_close(
+        module(torch.tensor([[1.0, 2.0]])), torch.tensor([[3.0, 2.0]])
+    )

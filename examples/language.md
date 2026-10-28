@@ -37,7 +37,7 @@ from deeplog import parse_formula, parse_formula_to_module
 
 ## Leaves and structures
 
-Leaves are written as `predicate(args)_structure`. Structures tag the algebra of the atom's value (e.g., `_boolean`, `_probability`, `_logprobability`).
+Leaves are written as `predicate(args)_structure`. Structures tag the algebra of the atom's value (e.g., `_boolean`, `_probability`, `_logprobability`). The fuzzy structures `_godel`, `_product` and `_lukasiewicz` read the Boolean connectives and quantifiers under a t-norm.
 
 ```{code-cell} ipython3
 text = "=(Burglary,true)_boolean"

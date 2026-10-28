@@ -138,7 +138,7 @@ test_dataloader = DataLoader(test_base, batch_size=512, num_workers=0)
 
 Exactly-one is a textbook CNF: one clause saying at least one output is on, and one clause per pair saying no two are on together. Forty-six clauses over ten variables are easier to generate than to write out, so we generate DIMACS text and let `parse_dimacs_cnf` read it into a boolean formula over the variables `V1`…`V10`, in which the literal `i` is the test `=(Vi,true)`.
 
-The semantic loss is the probability that the constraint holds when each output is on independently, with the probability the network gives it: an *expectation* over `V1`…`V10`. Without a distribution, the variables an expectation binds are independent, and the probability of each test `=(Vi,true)` is an input of the compiled module: here the ten network outputs, in order. The compiler computes the expectation by weighted model counting, so the module takes one probability per digit and returns the probability that exactly one of them is on.
+The semantic loss is the probability that the constraint holds when each output is on independently, with the probability the network gives it: an *expectation* over `V1`…`V10`. Without a distribution, the variables an expectation binds are independent, each distributed by the predicate named after it, so the probability that `Vi` is true is the input `vi(true)`: here the ten network outputs, in order. The compiler computes the expectation by weighted model counting, so the module takes one probability per digit and returns the probability that exactly one of them is on.
 
 ```{code-cell} ipython3
 from deeplog import Aggregation, Compiler, SymTensor, parse_dimacs_cnf, parse_symbol, reshape
@@ -166,7 +166,7 @@ exactly_one = Aggregation(
 # One input column per network output, in the network's order.
 constraint_module = reshape(
     Compiler().compile(exactly_one),
-    input=SymTensor([f"=(V{i},true) _ probability" for i in range(1, num_outputs + 1)]),
+    input=SymTensor([f"v{i}(true) _ probability" for i in range(1, num_outputs + 1)]),
 )
 print(constraint_module.get_input_shape())
 ```

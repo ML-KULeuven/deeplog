@@ -62,6 +62,30 @@ def reshape(
     return module
 
 
+def _per_source(
+    sources: list[int], offsets: list[int]
+) -> tuple[list[tuple[int, list[int]]], list[int] | None]:
+    """The columns an output reads of each source, and where they go.
+
+    ``sources`` and ``offsets`` give each output column's source and its column
+    there. The reads are each source's columns, in order of first use, and the
+    order is the position, among the columns read, of each output column:
+    ``None`` where they are already in output order.
+    """
+    by_source: dict[int, list[int]] = {}
+    placed: dict[int, list[int]] = {}
+    for position, (source, offset) in enumerate(zip(sources, offsets, strict=True)):
+        by_source.setdefault(source, []).append(offset)
+        placed.setdefault(source, []).append(position)
+    positions = [position for source in by_source for position in placed[source]]
+    if positions == sorted(positions):
+        return list(by_source.items()), None
+    order = [0] * len(positions)
+    for column, position in enumerate(positions):
+        order[position] = column
+    return list(by_source.items()), order
+
+
 def _gather_indices(labels: dict, output: SymTensor, *, raise_on: tuple) -> np.ndarray:
     """Build the flat gather indices for a single output SymTensor over ``labels``."""
     if output.array.size == 0:
@@ -112,12 +136,13 @@ class _TupleIndexingTransform(DeepLogModule):
     """Select+flatten+concat a tuple input once, then gather one or more output SymTensors.
 
     The concat packs every selected input into one ``(batch, n_symbols, *features)``
-    tensor, which requires the inputs to agree on their trailing feature shape. They
-    do not always: a module may mix a network predicate's data argument (one feature
-    *vector* per symbol, e.g. an image) with plain scalar atom probabilities. When the
+    tensor, which requires the inputs to agree on their trailing feature shape and
+    their dtype. They do not always: a module may mix a network predicate's data
+    argument (one feature *vector* per symbol, e.g. an image) with plain scalar atom
+    probabilities, or a variable's positions, integers, with probabilities. When the
     selected inputs disagree, the packing is skipped and each output is gathered
-    column-by-column straight from its source input instead — see
-    :attr:`_route_src` / :attr:`_route_off`.
+    straight from its source inputs instead, one read per source, so that every
+    value keeps its dtype.
     """
 
     _input_shape: tuple[SymTensor, ...]
@@ -154,14 +179,19 @@ class _TupleIndexingTransform(DeepLogModule):
         # unpacked path below.
         bounds = np.cumsum([0] + [int(s.array.size) for s in relevant])
 
+        unpacked: list[tuple[list[tuple[int, list[int]]], list[int] | None]] = []
         for i, out in enumerate(outputs):
             arr = _gather_indices(labels, out, raise_on=(input_shapes, output_shape))
             self.register_buffer(f"_indices_{i}", torch.from_numpy(arr))
             source = np.atleast_1d(np.searchsorted(bounds, arr, side="right") - 1)
             offset = np.atleast_1d(arr) - bounds[source]
-            self.register_buffer(f"_route_src_{i}", torch.from_numpy(source.ravel()))
-            self.register_buffer(f"_route_off_{i}", torch.from_numpy(offset.ravel()))
+            unpacked.append(
+                _per_source(source.ravel().tolist(), offset.ravel().tolist())
+            )
 
+        #: For each output, the columns it reads of each selected input, and
+        #: where the columns read go, where packing is skipped.
+        self._unpacked = tuple(unpacked)
         self._symbol_shapes = tuple(out.array.shape for out in outputs)
         self._empty_outputs = tuple(out.is_empty() for out in outputs)
         self._selected = tuple(selected)
@@ -184,7 +214,10 @@ class _TupleIndexingTransform(DeepLogModule):
             else x[i].unsqueeze(1)
             for i, end_dim in zip(self._selected, self._end_dims, strict=True)
         ]
-        if any(t.shape[2:] != flat[0].shape[2:] for t in flat[1:]):
+        if any(
+            t.shape[2:] != flat[0].shape[2:] or t.dtype != flat[0].dtype
+            for t in flat[1:]
+        ):
             return self._gather_unpacked(flat)
 
         concat = flat[0] if len(flat) == 1 else torch.cat(flat, dim=1)
@@ -201,11 +234,11 @@ class _TupleIndexingTransform(DeepLogModule):
     def _gather_unpacked(self, flat):
         """Gather each output straight from its sources, without packing them first.
 
-        The path for inputs whose feature shapes disagree, so ``torch.cat`` cannot
-        pack them. Each output column is read from the input that carries it; an
-        output must therefore still be internally homogeneous, which it is
-        whenever it feeds a single consumer (a predicate argument, a circuit's
-        atom channel).
+        The path for inputs whose feature shapes or dtypes disagree, so
+        ``torch.cat`` cannot pack them, or would change a dtype. Each output reads
+        its columns of each input in one operation; an output must therefore
+        still be internally homogeneous, which it is whenever it feeds a single
+        consumer (a predicate argument, a circuit's atom channel).
         """
         batch = flat[0].shape[0]
         gathered = []
@@ -213,10 +246,11 @@ class _TupleIndexingTransform(DeepLogModule):
             if self._empty_outputs[i]:
                 gathered.append(flat[0].new_zeros(batch, 0))
                 continue
-            source = getattr(self, f"_route_src_{i}").tolist()
-            offset = getattr(self, f"_route_off_{i}").tolist()
-            columns = [flat[s][:, o] for s, o in zip(source, offset, strict=True)]
-            stacked = torch.stack(columns, dim=1)
+            sources, order = self._unpacked[i]
+            read = [flat[source][:, columns] for source, columns in sources]
+            stacked = read[0] if len(read) == 1 else torch.cat(read, dim=1)
+            if order is not None:
+                stacked = stacked[:, order]
             # Restore the output's symbol dimensions, which ravelling flattened.
             gathered.append(
                 stacked.reshape(batch, *self._symbol_shapes[i], *stacked.shape[2:])

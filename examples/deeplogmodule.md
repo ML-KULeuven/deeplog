@@ -47,8 +47,8 @@ import torch
 from deeplog import ShapeMismatchException, WrappedModule
 
 
-features = SymTensor([f"X{i}" for i in range(4)])
-predictions = SymTensor([f"Y{i}" for i in range(2)])
+features = SymTensor([f"x{i}" for i in range(4)])
+predictions = SymTensor([f"y{i}" for i in range(2)])
 
 head = WrappedModule(lambda x: x[:, :2], features, predictions)
 buggy_head = WrappedModule(lambda x: x[:, :1], features, predictions)  # one column, not two
@@ -76,11 +76,11 @@ from torch import nn
 from deeplog import reshape
 
 
-hidden = SymTensor([f"Hidden{i}" for i in range(8)])
+hidden = SymTensor([f"hidden{i}" for i in range(8)])
 extractor = WrappedModule(nn.Linear(4, 8), features, hidden)
 batch = torch.randn(16, 4)
 
-narrow = reshape(extractor, output=SymTensor(["Hidden2", "Hidden5"]))
+narrow = reshape(extractor, output=SymTensor(["hidden2", "hidden5"]))
 
 print("output:", narrow.get_output_shape())
 print("result:", narrow(batch).shape)
@@ -89,7 +89,7 @@ print("result:", narrow(batch).shape)
 On the input side, each symbol the module reads is looked up in the layout you give. A batch whose columns come in reverse order is read column by column under their names, so the result is the extractor's:
 
 ```{code-cell} ipython3
-flipped = reshape(extractor, input=SymTensor(["X3", "X2", "X1", "X0"]))
+flipped = reshape(extractor, input=SymTensor(["x3", "x2", "x1", "x0"]))
 
 print("input:", flipped.get_input_shape())
 print("same result:", torch.allclose(flipped(batch.flip(1)), extractor(batch)))
@@ -102,7 +102,7 @@ from deeplog import TransformationNotPossible
 
 
 try:
-    reshape(extractor, output=SymTensor(["Hidden9"]))
+    reshape(extractor, output=SymTensor(["hidden9"]))
 except TransformationNotPossible as error:
     print("not possible:", error)
 ```

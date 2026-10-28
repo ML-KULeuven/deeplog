@@ -79,7 +79,8 @@ Getting started
 
       # A module names its inputs, so declare the layout of your data and
       # reshape the module onto it instead of matching its input order.
-      layout = SymTensor(["=(A,true) _ probability", "=(B,true) _ probability"])
+      # Without a distribution, A is distributed by a/1 and B by b/1.
+      layout = SymTensor(["a(true) _ probability", "b(true) _ probability"])
       module = reshape(module, layout)
 
       # Each row: [P(A=true), P(B=true)]

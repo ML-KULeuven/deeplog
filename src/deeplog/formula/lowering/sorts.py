@@ -40,6 +40,7 @@ from .builder_protocols import DeclaresDomains
 
 
 if TYPE_CHECKING:
+    from ...module.deeplog_module import DeepLogModule
     from .compiler import Compiler
 
 
@@ -52,7 +53,8 @@ class Sorts:
     argument gives a domain ranges over the compiler's default
     (:meth:`~deeplog.formula.lowering.compiler.Compiler.domain`). The sorts are
     read from the modules of the compiler's atom builders, each predicate built
-    once for the atoms read together.
+    once for the atoms read together, and each atom's module is kept
+    (:meth:`module`).
     """
 
     def __init__(self, compiler: Compiler) -> None:
@@ -66,6 +68,8 @@ class Sorts:
         #: The domain the arguments give each binder of an aggregation read so
         #: far, or its declared one, or ``None``, by node id.
         self._bound: dict[int, dict[Symbol, Domain | None]] = {}
+        #: The module its builder built for each atom read so far, by atom.
+        self._modules: dict[Symbol, DeepLogModule] = {}
 
     def free(self, nodes: Iterable[FormulaNode]) -> dict[Symbol, Domain]:
         """The domain the arguments give each undeclared variable free in ``nodes``.
@@ -112,6 +116,17 @@ class Sorts:
         """
         self._read([node])
         return frozenset(self._free[id(node)][1])
+
+    def module(self, node: Atom) -> DeepLogModule | None:
+        """The module ``node``'s builder built for it, with the atoms read beside it.
+
+        ``None`` for an atom no builder gives sorts.
+
+        Raises:
+            TypeError: If an atom builder returns a module that declares no sorts.
+        """
+        self._read([node])
+        return self._modules.get(node.atom)
 
     def _read(self, nodes: list[FormulaNode]) -> None:
         """Read ``nodes`` and every node beneath them not read yet, children first."""
@@ -178,6 +193,7 @@ class Sorts:
                     "(DeclaresDomains)."
                 )
             for atom in members:
+                self._modules[atom] = module
                 arguments = get_args(unwrap_structure(atom))
                 uses = self._atoms[atom]
                 for argument, sort in zip(

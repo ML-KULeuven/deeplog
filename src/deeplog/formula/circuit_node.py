@@ -20,18 +20,27 @@ from ..circuit.transform import transform_circuit
 from ..module.columnwise import ColumnwiseModule
 from ..module.deeplog_module import DeepLogModule
 from ..symbol import Symbol
+from ..symbol import free_variables
 from ..symbol import with_structure
 from .ast import CircuitNode
 
 
 def lump_name(node: CircuitNode) -> Symbol:
-    """The name a lump's value is compiled under: its node id in its circuit.
+    """The name a lump's value is compiled under: its node id in its circuit, over its variables.
+
+    Its arguments are the variables free in its leaves, which its value varies
+    with.
 
     Labelled with the circuit's algebra, as
     :func:`~deeplog.circuit.lower.dispatch.to_module` labels every root it
     compiles.
     """
-    return with_structure((f"{node.circuit.name}_n{node.node}",), node.structure)
+    variables = dict.fromkeys(
+        variable for leaf, _ in node.boundary for variable in free_variables(leaf)
+    )
+    return with_structure(
+        (f"{node.circuit.name}_n{node.node}", *variables), node.structure
+    )
 
 
 def cast_name(structure: str, source: Symbol) -> Symbol:

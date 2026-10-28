@@ -34,10 +34,10 @@ print("inputs:", constraint.get_input_shape())
 print("output:", constraint.get_output_shape())
 ```
 
-Without a distribution, an expectation's variables are independent, and the probability of each value the formula tests is an input, named by the test: `=(Rain,true) _ probability` is the probability that `Rain` is true. The output is named by `name`, in the algebra of its value. `reshape` lays the two inputs out as the one tensor the classifier produces, rain first, as in the `deeplogmodule` notebook. Each row is one image:
+Without a distribution, an expectation's variables are independent, each distributed by the predicate named after it: `rain(true) _ probability` is the probability that `Rain` is true. Counting reads only the values the formula tests, so here the inputs are `rain(true)` and `wet(true)`. The output is named by `name`, in the algebra of its value. `reshape` lays the two inputs out as the one tensor the classifier produces, rain first, as in the `deeplogmodule` notebook. Each row is one image:
 
 ```{code-cell} ipython3
-labels = SymTensor(["=(Rain,true) _ probability", "=(Wet,true) _ probability"])
+labels = SymTensor(["rain(true) _ probability", "wet(true) _ probability"])
 constraint = reshape(constraint, input=labels)
 
 predictions = torch.tensor([[0.9, 0.1], [0.9, 0.9], [0.1, 0.5]], requires_grad=True)
@@ -60,7 +60,7 @@ The probability is `1 - rain + rain * wet`, so its gradient is `wet - 1` for `ra
 
 ## A network feeding the constraint
 
-A classifier whose outputs are named `=(Rain,true) _ probability` and `=(Wet,true) _ probability` feeds the constraint by name: `compose_modules` wires each module to the one that produces what it reads, as in the `composition` notebook. The classifier here is a stand-in that reads eight features per image.
+A classifier whose outputs are named `rain(true) _ probability` and `wet(true) _ probability` feeds the constraint by name: `compose_modules` wires each module to the one that produces what it reads, as in the `composition` notebook. The classifier here is a stand-in that reads eight features per image.
 
 ```{code-cell} ipython3
 from torch import nn
@@ -69,7 +69,7 @@ from deeplog import WrappedModule, compose_modules
 
 
 torch.manual_seed(0)
-features = SymTensor([f"Feature{i}" for i in range(8)])
+features = SymTensor([f"feature{i}" for i in range(8)])
 classifier = WrappedModule(nn.Sequential(nn.Linear(8, 2), nn.Sigmoid()), features, labels)
 model = compose_modules(
     [classifier, constraint],
@@ -97,7 +97,7 @@ On its own, a constraint is easy to satisfy: predicting no rain, or wet everywhe
 
 ## How it is computed
 
-`parse_formula_to_module(text, compiler)` is `compiler.compile(parse_formula(text))`. A [`Compiler`](deeplog.formula.lowering.compiler.Compiler) holds what a formula compiles with: the domains of its variables, the predicates that evaluate its atoms, and a builder for each aggregation. Its builder for `expectation` decides how an expectation is computed. By default that is [`weighted_model_count`](deeplog.formula.lowering.expectation.weighted_model_count), which compiles the formula into a circuit where reading `or` as a sum is exact, and enumerates what it cannot count. [`enumeration`](deeplog.formula.lowering.expectation.enumeration) evaluates every assignment instead: the same number, without compiling. [`sampling`](deeplog.formula.lowering.expectation.sampling) estimates it from assignments drawn from the distribution, which reaches formulas too large to compile; its gradient is the score-function estimator. An estimate is never chosen for you: sampling is a builder you register.
+`parse_formula_to_module(text, compiler)` is `compiler.compile(parse_formula(text))`. A [`Compiler`](deeplog.formula.lowering.compiler.Compiler) holds what a formula compiles with: the domains of its variables, the predicates that evaluate its atoms, and a builder for each aggregation. Its builder for `expectation` decides how an expectation is computed. By default that is [`weighted_model_count`](deeplog.formula.lowering.expectation.weighted_model_count), which compiles the formula into a circuit where reading `or` as a sum is exact, and enumerates what it cannot count. [`enumeration`](deeplog.formula.lowering.expectation.enumeration) evaluates every assignment instead: the same number, without compiling. [`sampling`](deeplog.formula.lowering.expectation.sampling) estimates it from assignments drawn from the distribution, which reaches formulas too large to compile; its gradient is the score-function estimator. An estimate is never chosen for you: sampling is a builder you register. Enumeration and sampling read the probability of every value of a variable, where counting needs only those the formula tests, so below each module is laid out over the whole distribution.
 
 ```{code-cell} ipython3
 from deeplog import Compiler, enumeration, parse_formula, sampling
@@ -106,6 +106,9 @@ from deeplog import Compiler, enumeration, parse_formula, sampling
 rain_implies_wet = parse_formula(
     "expectation(Rain, Wet): not =(Rain,true)_boolean or =(Wet,true)_boolean"
 )
+distribution = SymTensor(
+    [f"{v}({value}) _ probability" for v in ("rain", "wet") for value in ("false", "true")]
+)
 
 torch.manual_seed(0)
 for name, compiler in [
@@ -113,8 +116,8 @@ for name, compiler in [
     ("enumeration", Compiler(aggregation_builders={"expectation": enumeration})),
     ("sampling", Compiler(aggregation_builders={"expectation": sampling(samples=10_000)})),
 ]:
-    module = reshape(compiler.compile(rain_implies_wet), input=labels)
-    print(f"{name:11s}:", module(torch.tensor([[0.9, 0.1]])).item())
+    module = reshape(compiler.compile(rain_implies_wet), input=distribution)
+    print(f"{name:11s}:", module(torch.tensor([[0.1, 0.9, 0.9, 0.1]])).item())
 ```
 
 ## Next steps

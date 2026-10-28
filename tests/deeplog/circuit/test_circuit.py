@@ -380,6 +380,83 @@ class TestGenericEvaluator:
         torch.testing.assert_close(out[0, 0], torch.tensor(0.75))
         torch.testing.assert_close(out[0, 1], torch.tensor(0.25))
 
+    def test_the_generic_module_reads_its_leaves_in_one_operation(self):
+        """Its input reaches the gradient through one node, however many leaves it has."""
+        circuit, _ = self._make_fuzzy_circuit()
+        a = circuit.get_leaf_node(("a",))
+        b = circuit.get_leaf_node(("b",))
+        impl = circuit.get_operator("implies")(a, b)
+        conj = circuit.get_operator("and")(a, b)
+        module = circuit.to_module({impl: ("impl",), conj: ("conj",)})
+        inputs = torch.tensor([[0.5, 0.4]], requires_grad=True)
+
+        seen, stack, readers = set(), [module(inputs).grad_fn], 0
+        while stack:
+            node = stack.pop()
+            if node is None or node in seen:
+                continue
+            seen.add(node)
+            feeding = [fn for fn, _ in node.next_functions]
+            readers += any(getattr(fn, "variable", None) is inputs for fn in feeding)
+            stack.extend(feeding)
+
+        assert readers == 1
+
+    def test_the_nodes_of_a_depth_applying_one_operator_are_one_call(self):
+        """A thousand conjunctions of leaves are computed by one call of ``and``."""
+        from deeplog.algebraic import AlgebraicStructure
+
+        calls = []
+
+        def conjoin(a, b):
+            calls.append(a.shape)
+            return a * b
+
+        circuit = Circuit(
+            AlgebraicStructure(name="counted", operator_fns={"and": conjoin})
+        )
+        leaves = [circuit.get_leaf_node((f"x{i}",)) for i in range(40)]
+        conjunction = circuit.get_operator("and")
+        pairs = [(i % 40, (7 * i + 3) % 40) for i in range(1000)]
+        roots = [conjunction(leaves[i], leaves[j]) for i, j in pairs]
+        module = circuit.to_module({root: (f"r{k}",) for k, root in enumerate(roots)})
+        inputs = torch.rand(2, 40)
+
+        out = module(inputs)
+
+        assert calls == [torch.Size([2, 1000])]
+        first, second = zip(*pairs, strict=True)
+        torch.testing.assert_close(
+            out, inputs[:, list(first)] * inputs[:, list(second)], rtol=0, atol=0
+        )
+
+    def test_each_node_has_the_value_of_its_operator_on_its_operands(self):
+        """Nodes of several depths read leaves, constants and each other out of order."""
+        circuit, _ = self._make_fuzzy_circuit()
+        a, b, c = (circuit.get_leaf_node((name,)) for name in ("a", "b", "c"))
+        half = circuit.get_leaf_node(("0.5",))
+        conjoin, disjoin, negate, implies = (
+            circuit.get_operator(name) for name in ("and", "or", "not", "implies")
+        )
+        ba = conjoin(b, a)
+        not_c = negate(c)
+        either = disjoin(not_c, conjoin(half, ba))
+        top = implies(either, disjoin(a, not_c))
+        module = circuit.to_module({top: ("top",), not_c: ("not_c",), ba: ("ba",)})
+        inputs = torch.tensor([[0.2, 0.7, 0.4], [0.9, 0.1, 0.6]])
+        x, y, z = inputs.unbind(-1)
+
+        out = module(inputs)
+
+        def disjunction(p, q):
+            return p + q - p * q
+
+        expected_either = disjunction(1.0 - z, 0.5 * (y * x))
+        expected_top = 1.0 - expected_either + expected_either * disjunction(x, 1.0 - z)
+        torch.testing.assert_close(
+            out, torch.stack([expected_top, 1.0 - z, y * x], dim=-1)
+        )
+
     def test_single_leaf_root_is_pass_through(self):
         """Item C: a circuit whose root is just a leaf compiles to an identity
         — the degenerate case is handled on the circuit side, no special module.

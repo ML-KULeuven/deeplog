@@ -15,13 +15,17 @@ from .symbol import Symbol
 from .symbol import TrueSymbol
 
 
-# Type alias for operator functions
+#: Computes an operator element by element. It receives its operands' values,
+#: tensors of one shape, and returns a tensor of that shape, each entry of which
+#: is the operator applied to the operands' entries at its position.
 OperatorFn = Callable[..., Tensor]
 
 #: Aggregates a body over the assignments of its binders. It receives the body's
 #: values and then each param's, each stacked over the assignments into a tensor
 #: of shape ``(batch, assignments, 1)``, and returns the aggregation's value, of
-#: shape ``(batch, 1)``.
+#: shape ``(batch, 1)``, each row aggregating that row's values alone. An
+#: aggregation of operands (:class:`~deeplog.formula.ast.AggregationOp`) gives it
+#: the operands' values in place of the assignments' and no param.
 AggregationFn = Callable[..., Tensor]
 
 #: Resolves a symbol to the constant it names. ``None`` is not a failure — it says
@@ -152,6 +156,60 @@ def _min_over(values: Tensor) -> Tensor:
     return values.amin(dim=1)
 
 
+def _probabilistic_sum(a: Tensor, b: Tensor) -> Tensor:
+    """The conorm dual to the product: ``a + b - a * b``."""
+    return a + b - a * b
+
+
+def _bounded_difference(a: Tensor, b: Tensor) -> Tensor:
+    """The Łukasiewicz t-norm: ``max(0, a + b - 1)``."""
+    return (a + b - 1.0).clamp_min(0)
+
+
+def _bounded_sum(a: Tensor, b: Tensor) -> Tensor:
+    """The conorm dual to the Łukasiewicz t-norm: ``min(1, a + b)``."""
+    return (a + b).clamp_max(1)
+
+
+def _minimum_residuum(a: Tensor, b: Tensor) -> Tensor:
+    """The residuum of the minimum: one where ``a <= b``, and ``b`` elsewhere."""
+    return torch.where(a <= b, 1.0, b)
+
+
+def _product_residuum(a: Tensor, b: Tensor) -> Tensor:
+    """The residuum of the product: one where ``a <= b``, and ``b / a`` elsewhere.
+
+    Its gradient is zero where ``a <= b``, at ``a = 0`` too.
+    """
+    holds = a <= b
+    return torch.where(holds, 1.0, b / torch.where(holds, 1.0, a))
+
+
+def _bounded_residuum(a: Tensor, b: Tensor) -> Tensor:
+    """The residuum of the Łukasiewicz t-norm: ``min(1, 1 - a + b)``."""
+    return (1.0 - a + b).clamp_max(1)
+
+
+def _product_over(values: Tensor) -> Tensor:
+    """``values`` multiplied over the assignments."""
+    return values.prod(dim=1)
+
+
+def _probabilistic_sum_over(values: Tensor) -> Tensor:
+    """The probabilistic sum of ``values`` over the assignments."""
+    return 1.0 - (1.0 - values).prod(dim=1)
+
+
+def _bounded_difference_over(values: Tensor) -> Tensor:
+    """The Łukasiewicz t-norm of ``values`` over the assignments."""
+    return (values.sum(dim=1) - (values.shape[1] - 1)).clamp_min(0)
+
+
+def _bounded_sum_over(values: Tensor) -> Tensor:
+    """``values`` added over the assignments, and one where they exceed it."""
+    return values.sum(dim=1).clamp_max(1)
+
+
 @dataclass(kw_only=True, eq=False)
 class AlgebraicStructure:
     """Defines an algebraic structure: a set of values, with operators and aggregators over them."""
@@ -162,6 +220,7 @@ class AlgebraicStructure:
     #: variable associated with this structure inherits these as its domain
     #: (:meth:`~deeplog.variable.Domain.of_structure`).
     values: tuple[Symbol, ...] | None = None
+    #: The operators a formula over this structure applies, by name.
     operator_fns: dict[str, OperatorFn] = field(default_factory=dict, repr=False)
     #: The aggregators a formula over this structure can aggregate with (Def 1's
     #: ``Agg_R``), by the operation an aggregation names.
@@ -389,12 +448,64 @@ MPE = _ComplementedSemifield(
 #: are not finitely enumerable.
 REAL = Semiring(name="real", aggregation_fns={"sum": _sum_over})
 
+#: Gödel's fuzzy logic, truth values in ``[0, 1]`` under the minimum t-norm.
+#: ``and`` is the t-norm, ``or`` its dual conorm, the maximum, ``not`` the
+#: standard negation ``1 - x``, and ``implies`` the t-norm's residuum, the
+#: greatest ``c`` with ``a and c <= b``. ``forall`` is the t-norm over a
+#: variable's domain and ``exists`` the conorm. The minimum distributes over the
+#: maximum, so this is an :class:`Algebra`.
+GODEL = Algebra(
+    name="godel",
+    product="and",
+    product_fn=torch.minimum,
+    sum="or",
+    sum_fn=torch.maximum,
+    negation="not",
+    negation_fn=_complement,
+    operator_fns={"implies": _minimum_residuum},
+    aggregation_fns={"forall": _min_over, "exists": _max_over},
+)
+
+#: Product fuzzy logic, :data:`GODEL`'s connectives and quantifiers under the
+#: product t-norm, whose conorm is the probabilistic sum ``a + b - a * b``. The
+#: product does not distribute over that sum, so this is no :class:`Semiring`.
+PRODUCT = AlgebraicStructure(
+    name="product",
+    operator_fns={
+        "and": _times,
+        "or": _probabilistic_sum,
+        "not": _complement,
+        "implies": _product_residuum,
+    },
+    aggregation_fns={"forall": _product_over, "exists": _probabilistic_sum_over},
+)
+
+#: Łukasiewicz's fuzzy logic, :data:`GODEL`'s connectives and quantifiers under
+#: the t-norm ``max(0, a + b - 1)``, whose conorm is the bounded sum
+#: ``min(1, a + b)``. As with :data:`PRODUCT`, this is no :class:`Semiring`.
+LUKASIEWICZ = AlgebraicStructure(
+    name="lukasiewicz",
+    operator_fns={
+        "and": _bounded_difference,
+        "or": _bounded_sum,
+        "not": _complement,
+        "implies": _bounded_residuum,
+    },
+    aggregation_fns={
+        "forall": _bounded_difference_over,
+        "exists": _bounded_sum_over,
+    },
+)
+
 structure_registry: dict[str, AlgebraicStructure] = {
     "boolean": BOOLEAN,
     "probability": PROBABILITY,
     "logprobability": LOGPROBABILITY,
     "mpe": MPE,
     "real": REAL,
+    "godel": GODEL,
+    "product": PRODUCT,
+    "lukasiewicz": LUKASIEWICZ,
 }
 
 

@@ -1,5 +1,5 @@
 %  Copyright (c) 2024-2026. KU Leuven
-:- module(deeplog_janus_grounder, [prove_query/6]).
+:- module(deeplog_janus_grounder, [prove_query/6, prove_answers/5]).
 :- use_module(deeplog(grounding)).
 
 :- table prove_and_compile(_,_,_,lattice(disjoin_formulas/3)).
@@ -22,6 +22,18 @@ prove_query(ID,Prover,QuerySymbol,Factory,GroundQuery,Formula) :-
     prove_and_compile(ID:Query,Prover,Factory,Formula),
     to_symbol(Query,GroundQuery),
     retractall(factory(_)).
+
+% Every ground answer of the query with its formula, each a list of the two.
+% A table is of this call's Factory, so no later call reads it, and it holds
+% the formulas the proof built: the tables are dropped when the proof ends,
+% however it ends. They are the calling thread's private tables, and Prolog
+% frees their space only when all of those are dropped together.
+prove_answers(ID,Prover,QuerySymbol,Factory,Answers) :-
+    call_cleanup(
+        findall([GroundQuery,Formula],
+                prove_query(ID,Prover,QuerySymbol,Factory,GroundQuery,Formula),
+                Answers),
+        abolish_private_tables).
 
 % Entry point: dispatch to prove_compile which handles all goal types.
 prove_and_compile(Query,Prover,Factory,Formula) :-

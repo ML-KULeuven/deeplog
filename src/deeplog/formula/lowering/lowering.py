@@ -21,6 +21,7 @@ An aggregation's builder lowers what lies beneath it through
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections.abc import Collection
 from collections.abc import Sequence
 from functools import partial
 from itertools import product
@@ -30,7 +31,9 @@ from typing import assert_never
 import torch
 from torch import Tensor
 
+from ...module.aggregation_modules import AggregationOpModule
 from ...module.deeplog_module import DeepLogModule
+from ...module.module_circuit import ModuleCircuit
 from ...module.module_circuit import compose_modules
 from ...module.reshape import construct_transformation
 from ...module.reshape import reshape
@@ -39,6 +42,7 @@ from ...shape import SymTensor
 from ...shape import get_all_symbols
 from ...symbol import Symbol
 from ...symbol import apply_substitution
+from ...symbol import free_variables
 from ...symbol import get_args
 from ...symbol import get_predicate
 from ...symbol import get_term_variables
@@ -52,6 +56,7 @@ from ...symbol import without_structure
 from ...variable import Domain
 from ...variable import SymbolicDomain
 from ..ast import Aggregation
+from ..ast import AggregationOp
 from ..ast import Atom
 from ..ast import BinaryOp
 from ..ast import CircuitNode
@@ -87,6 +92,8 @@ class Lowering:
     - atoms go to their atom builders, one call per predicate;
     - unary and binary operators become the algebra's operator functions, read
       over their operands' columns;
+    - aggregations of operands become the algebra's aggregators, one module
+      reading all their operands' columns;
     - casts go to the builder registered for their pair of algebras;
     - aggregations go to the builder registered for their operation, one call
       per operation, apart from those where one binds a variable another
@@ -109,10 +116,19 @@ class Lowering:
         self._aggregations: dict[tuple, tuple[Aggregation, DeepLogModule]] = {}
         #: The variables the aggregations being built bind.
         self._binders: frozenset[Symbol] = frozenset()
+        #: The variables the innermost aggregations being built bind, which the
+        #: level being lowered ranges over: a column holding one has its axis.
+        self._own: frozenset[Symbol] = frozenset()
         #: While aggregations are built, each atom of their formulas that no
         #: builder computes and that reads variables they bind, with those
         #: variables.
         self._bound: dict[Symbol, tuple[Symbol, ...]] = {}
+        #: While :meth:`_lower_roots` runs, the atoms computed before any
+        #: aggregation, which every level reads as inputs.
+        self._once: frozenset[Symbol] | None = None
+        #: The symbols each module of :meth:`_held` reads and holds, by its id.
+        #: The module is kept beside them, so its id is not reused.
+        self._symbols: dict[int, tuple[DeepLogModule, frozenset, frozenset]] = {}
 
     @property
     def compiler(self) -> Compiler:
@@ -128,6 +144,94 @@ class Lowering:
         Raises:
             ValueError: If no node is given, or if two nodes name one column.
         """
+        return self._lower_above(nodes, ())
+
+    def _lower_roots(self, *nodes: FormulaNode) -> DeepLogModule:
+        """:meth:`lower` the formulas of a compile, computing first what reads no variable.
+
+        The atoms beneath ``nodes``, at any depth, whose builder's module reads
+        none of their variables are computed first, by one module per predicate,
+        and every level reads them as inputs: a network fed no variable runs
+        once, however many aggregations read its rows and however deep.
+        """
+        first = self._computed_once(nodes)
+        self._once = frozenset(
+            symbol for module in first for symbol in self._produced(module)
+        )
+        try:
+            main = self.lower(*nodes)
+        finally:
+            self._once = None
+        read = set(get_all_symbols(main.get_input_shape()))
+        used = [module for module in first if read & self._produced(module)]
+        if not used:
+            return main
+        return compose_modules([*used, main], main.get_output_shape())
+
+    def _computed_once(self, nodes: Sequence[FormulaNode]) -> list[DeepLogModule]:
+        """The modules computing the atoms beneath ``nodes`` that read no variable, one per predicate.
+
+        An atom is among them when the module its builder built for its sorts
+        (:meth:`~deeplog.formula.lowering.sorts.Sorts.module`) reads none of its
+        variables.
+        """
+        # Reading the sorts of all of them first builds each predicate once.
+        self._sorts.free(nodes)
+        grouped: dict[tuple[str, int, str], dict[Symbol, None]] = {}
+        for node in _atoms_beneath(nodes):
+            module = self._sorts.module(node)
+            if module is None or self._sorts.variables(node) & self._reads(module):
+                continue
+            structure = structure_of(node.atom)
+            assert structure is not None
+            key = (*get_predicate(unwrap_structure(node.atom)), structure)
+            grouped.setdefault(key, {})[node.atom] = None
+        builders = self._compiler._atom_builders
+        return [builders[key](list(atoms)) for key, atoms in grouped.items()]
+
+    def _held(self, node: Atom) -> frozenset[Symbol]:
+        """The variables of ``node`` at which its builder's module holds its ground atoms.
+
+        Those of its variables the module built for its sorts does not read,
+        where that module holds not ``node`` itself but, in its place, its
+        ground atoms (:meth:`_lower_atoms`). None for an atom no builder gives
+        sorts.
+        """
+        module = self._sorts.module(node)
+        if module is None:
+            return frozenset()
+        unread = self._sorts.variables(node) - self._reads(module)
+        if not unread or node.atom in self._produced(module):
+            return frozenset()
+        return unread
+
+    def _reads(self, module: DeepLogModule) -> frozenset[Symbol]:
+        """The symbols ``module`` reads."""
+        return self._symbols_of(module)[1]
+
+    def _produced(self, module: DeepLogModule) -> frozenset[Symbol]:
+        """The symbols ``module`` holds among its outputs."""
+        return self._symbols_of(module)[2]
+
+    def _symbols_of(
+        self, module: DeepLogModule
+    ) -> tuple[DeepLogModule, frozenset[Symbol], frozenset[Symbol]]:
+        if id(module) not in self._symbols:
+            self._symbols[id(module)] = (
+                module,
+                frozenset(get_all_symbols(module.get_input_shape())),
+                frozenset(get_all_symbols(module.get_output_shape())),
+            )
+        return self._symbols[id(module)]
+
+    def _lower_above(
+        self, nodes: Sequence[FormulaNode], given: Collection[FormulaNode]
+    ) -> DeepLogModule:
+        """:meth:`lower` ``nodes``, reading the column of each node of ``given`` as an input.
+
+        Nothing at or beneath a node of ``given`` is built. No node of ``nodes``
+        is among them.
+        """
         if not nodes:
             raise ValueError("At least one formula is required.")
         undeclared = {
@@ -137,7 +241,7 @@ class Lowering:
         }
         if undeclared:
             self._compiler = self._compiler._binding(undeclared)
-        level = _gather(nodes)
+        level = _gather(nodes, given)
         self._name_all(level)
         vertices = self._lower_aggregations(_of_type(level, Aggregation))
         vertices += self._lower_atoms(_of_type(level, Atom))
@@ -153,7 +257,40 @@ class Lowering:
         vertices += self._lower_binary_nodes(
             _one_per_column(_of_type(level, BinaryOp), self._column)
         )
-        return _compose(vertices, _distinct([self._column(node) for node in nodes]))
+        vertices += self._lower_aggregation_ops(
+            _one_per_column(_of_type(level, AggregationOp), self._column)
+        )
+        outputs = _distinct([self._column(node) for node in nodes])
+        if not self._own:
+            return _compose(vertices, outputs)
+        read = set(get_all_symbols(v.get_input_shape() for v in vertices))
+        made = set(get_all_symbols(v.get_output_shape() for v in vertices))
+        over = sorted(self._own, key=symbol_to_str)
+        vertices += [
+            self._values(binder)
+            for binder in over
+            if binder in read and binder not in made
+        ]
+        unique = list({id(v): v for v in vertices}.values())
+        return ModuleCircuit(unique, SymTensor(outputs))
+
+    def _lower_over(
+        self, binders: Sequence[Symbol], nodes: Sequence[FormulaNode]
+    ) -> DeepLogModule:
+        """:meth:`lower` ``nodes`` over ``binders``: a column holding one has its axis."""
+        enclosing = self._own
+        self._own = frozenset(binders)
+        try:
+            return self.lower(*nodes)
+        finally:
+            self._own = enclosing
+
+    def _values(self, binder: Symbol) -> DeepLogModule:
+        """The module giving ``binder``'s values along its axis, as its domain enumerates them."""
+        values = self._compiler.domain(binder).as_tensor()
+        return WrappedModule(
+            partial(_spread, values), SymTensor([]), SymTensor([binder]), name="values"
+        )
 
     def _name_all(self, nodes: list[FormulaNode]) -> None:
         """Name the column of each of ``nodes`` not named yet, in order.
@@ -180,53 +317,110 @@ class Lowering:
     def _lower_atoms(self, atoms: list[Atom]) -> list[DeepLogModule]:
         """Build every atom's predicate, one builder call per predicate.
 
-        A builder gets all the atoms of its predicate and makes one module with
-        a column named by each, so a network whose rows give
-        several atoms runs once for them. An atom with no builder, a baked
+        A builder gets all the atoms of its predicate and makes one module
+        holding each, by name, anywhere among its outputs and in any shape, so a
+        network whose rows give several atoms runs once for them. A module may
+        hold an atom's ground atoms in its place, at the variables of the atom
+        it does not read, and the atom is then read from them at those
+        variables' values (:meth:`_ground`). An atom with no builder, a baked
         constant among them, is an input of the module the walk returns, or,
         where it reads variables an aggregation binds, its ground atoms are
-        (:class:`~deeplog.formula.lowering.compiler.Compiler`, :meth:`_ground`).
-        A variable whose named domain is part of its argument's reaches the
-        predicate as a position in the argument's (:meth:`_translated`).
+        (:class:`~deeplog.formula.lowering.compiler.Compiler`). A variable whose
+        named domain is part of its argument's reaches the predicate as a
+        position in the argument's (:meth:`_translated`).
 
         The symbols the atoms of one predicate give an argument position share
         that position's input tensor, so they must share a feature shape.
 
         Raises:
             ValueError: If an atom carries no structure label, or a builder's
-                module has no column named for an atom it was given.
+                module holds neither an atom it was given nor its ground atoms.
             NotImplementedError: If a module other than a predicate reads a
                 variable over part of its argument's named domain.
         """
         builders = self._compiler._atom_builders
-        grouped: dict[tuple[str, int, str], dict[Symbol, None]] = {}
-        grounded: dict[Symbol, None] = {}
+        grouped: dict[tuple, dict[Symbol, None]] = {}
+        grounded: dict[Symbol, tuple[Symbol, ...]] = {}
         for node in atoms:
+            if self._once is not None and node.atom in self._once:
+                continue
             structure = structure_of(node.atom)
             if structure is None:
                 raise ValueError(f"Invalid atom: {node.atom}")
-            key = (*get_predicate(unwrap_structure(node.atom)), structure)
-            if key in builders:
+            key = (
+                *get_predicate(unwrap_structure(node.atom)),
+                structure,
+                frozenset(free_variables(node.atom)) & self._own,
+            )
+            if (variables := self._read_from_once(node)) is not None:
+                grounded[node.atom] = variables
+            elif key[:3] in builders:
                 grouped.setdefault(key, {})[node.atom] = None
             elif node.atom in self._bound:
-                grounded[node.atom] = None
-        modules = [self._ground(atom, self._bound[atom]) for atom in grounded]
+                grounded[node.atom] = self._bound[node.atom]
+        modules = [
+            self._ground(atom, variables) for atom, variables in grounded.items()
+        ]
         for key, members in grouped.items():
-            module = builders[key](list(members))
+            module = builders[key[:3]](list(members))
             produced = set(get_all_symbols(module.get_output_shape()))
-            if missing := [atom for atom in members if atom not in produced]:
-                functor, arity, structure = key
+            read = set(get_all_symbols(module.get_input_shape()))
+            held: dict[Symbol, tuple[Symbol, ...]] = {}
+            for atom in members:
+                if atom not in produced:
+                    held[atom] = tuple(
+                        dict.fromkeys(
+                            variable
+                            for argument in get_args(unwrap_structure(atom))
+                            for variable in get_term_variables(argument)
+                            if variable not in read
+                        )
+                    )
+            if missing := [
+                atom
+                for atom, variables in held.items()
+                if not set(self._ground_atoms(atom, variables) or [atom]) <= produced
+            ]:
+                functor, arity, structure, _ = key
                 raise ValueError(
-                    f"The builder for {functor}/{arity} in {structure!r} returned no "
-                    f"column for {', '.join(map(symbol_to_str, missing))}; its "
-                    f"columns are {module.get_output_shape()}. A builder names a "
-                    "column by each atom it is given."
+                    f"The builder for {functor}/{arity} in {structure!r} returned a "
+                    f"module holding no {', '.join(map(symbol_to_str, missing))}; it "
+                    f"holds {module.get_output_shape()}. A builder's module holds "
+                    "each atom it is given among its outputs, or its ground atoms "
+                    "at the variables it does not read."
                 )
             modules.append(self._translated(module, list(members)))
+            modules += [
+                self._ground(atom, variables) for atom, variables in held.items()
+            ]
         return modules
 
+    def _read_from_once(self, node: Atom) -> tuple[Symbol, ...] | None:
+        """The variables at which ``node`` is read from the atoms computed once, if it is.
+
+        It is where its ground atoms at the variables its builder's module
+        holds it at (:meth:`_held`) are all among the atoms
+        :meth:`_lower_roots` computed before any aggregation; ``None`` where
+        they are not.
+        """
+        if self._once is None:
+            return None
+        held = self._held(node)
+        variables = tuple(
+            dict.fromkeys(
+                variable
+                for argument in get_args(unwrap_structure(node.atom))
+                for variable in get_term_variables(argument)
+                if variable in held
+            )
+        )
+        ground = self._ground_atoms(node.atom, variables)
+        if not variables or ground is None or not set(ground) <= self._once:
+            return None
+        return variables
+
     def _translated(self, module: DeepLogModule, atoms: list[Symbol]) -> DeepLogModule:
-        """``module``, reading each variable over part of its argument's named domain there.
+        """``module``, reading each variable it reads over part of its argument's named domain there.
 
         A variable is fed its value's position in its own domain; where its
         argument's sort is a larger named domain, the position is translated
@@ -239,13 +433,18 @@ class Lowering:
         """
         if not isinstance(module, DeclaresDomains):
             return module
+        read = set(get_all_symbols(module.get_input_shape()))
         tables: dict[tuple[int, int], torch.Tensor] = {}
         for atom in atoms:
             arguments = get_args(unwrap_structure(atom))
             for index, (argument, sort) in enumerate(
                 zip(arguments, module.domains_of(arguments), strict=True)
             ):
-                if not is_variable(argument) or not isinstance(sort, SymbolicDomain):
+                if (
+                    not is_variable(argument)
+                    or argument not in read
+                    or not isinstance(sort, SymbolicDomain)
+                ):
                     continue
                 own = self._compiler.domain(argument)
                 if own == sort:
@@ -267,41 +466,67 @@ class Lowering:
         return _Translated(module, tables) if tables else module
 
     def _ground(self, atom: Symbol, binders: tuple[Symbol, ...]) -> DeepLogModule:
-        """The module reading ``atom`` as its ground atom at its ``binders``' values.
+        """The module reading ``atom`` from its ground atoms at its ``binders``' values.
 
-        Its inputs are the binders, whose values an aggregation feeds as their
-        positions in their domains, and the ground atoms, one for each
-        combination of the binders' values, named by substituting them.
+        A binder the level ranges over gives the atom its axis; for each other,
+        an input gives its value per row, a named value as its position in its
+        domain and a number as itself, and the atom is read at that value. The
+        ground atoms are the last input (:meth:`_ground_atoms`).
 
         Raises:
-            ValueError: If a binder's values have no names, so its ground atoms
-                have none.
+            ValueError: If a binder's domain does not write its values, so the
+                ground atoms have no names.
         """
-        names = []
-        for binder in binders:
-            domain = self._compiler.domain(binder)
-            if not isinstance(domain, SymbolicDomain):
-                raise ValueError(
-                    f"{symbol_to_str(atom)} has no builder and reads "
-                    f"{symbol_to_str(binder)}, whose values have no names, so it "
-                    f"has no ground atoms to read; register a builder for "
-                    f"{'/'.join(map(str, get_predicate(unwrap_structure(atom))))} "
-                    f"in {structure_of(atom)!r}."
-                )
-            names.append(domain.values)
-        bare = unwrap_structure(atom)
-        ground = [
-            retag(
-                apply_substitution(bare, dict(zip(binders, values, strict=True))), atom
+        ground = self._ground_atoms(atom, binders)
+        if ground is None:
+            raise ValueError(
+                f"{symbol_to_str(atom)} has no builder and reads a variable of "
+                f"{', '.join(map(symbol_to_str, binders))} whose values have no "
+                "names, so it has no ground atoms to read; register a builder for "
+                f"{'/'.join(map(str, get_predicate(unwrap_structure(atom))))} "
+                f"in {structure_of(atom)!r}."
             )
-            for values in product(*names)
-        ]
+        domains = [self._compiler.domain(binder) for binder in binders]
+        given = tuple(binder for binder in binders if binder not in self._own)
+        axes = tuple(v for v in free_variables(atom) if v in self._own and v in binders)
         return WrappedModule(
-            partial(_look_up, tuple(map(len, names))),
-            (*(SymTensor([binder]) for binder in binders), SymTensor(ground)),
+            partial(
+                _look_up,
+                tuple(map(len, domains)),
+                tuple(
+                    None if isinstance(domain, SymbolicDomain) else domain.as_tensor()
+                    for domain, binder in zip(domains, binders, strict=True)
+                    if binder in given
+                ),
+                tuple(binders.index(binder) for binder in given),
+                tuple(binders.index(binder) for binder in axes),
+            ),
+            (*(SymTensor([binder]) for binder in given), SymTensor(ground)),
             SymTensor([atom]),
             name="ground",
         )
+
+    def _ground_atoms(
+        self, atom: Symbol, variables: tuple[Symbol, ...]
+    ) -> list[Symbol] | None:
+        """``atom`` at each combination of ``variables``' values, the last changing fastest.
+
+        A value is substituted as its domain writes it
+        (:attr:`~deeplog.variable.Domain.values`). ``None`` if a variable's
+        domain does not write its values.
+        """
+        try:
+            names = [self._compiler.domain(variable).values for variable in variables]
+        except ValueError:
+            return None
+        bare = unwrap_structure(atom)
+        return [
+            retag(
+                apply_substitution(bare, dict(zip(variables, values, strict=True))),
+                atom,
+            )
+            for values in product(*names)
+        ]
 
     def _lower_unary_nodes(self, nodes: list[UnaryOp]) -> list[DeepLogModule]:
         """Apply each operator's function to its operand's column."""
@@ -327,6 +552,40 @@ class Lowering:
             )
             for node in nodes
         ]
+
+    def _lower_aggregation_ops(self, nodes: list[AggregationOp]) -> list[DeepLogModule]:
+        """Aggregate each node's operands' columns with its algebra's aggregator, in one module.
+
+        Raises:
+            NotImplementedError: If a node's algebra has no aggregator for its
+                operation.
+        """
+        groups: dict[frozenset[Symbol], list[AggregationOp]] = {}
+        for node in nodes:
+            over = frozenset(free_variables(self._column(node))) & self._own
+            groups.setdefault(over, []).append(node)
+        modules = []
+        for members in groups.values():
+            inputs = list(
+                dict.fromkeys(
+                    self._column(o) for node in members for o in node.operands
+                )
+            )
+            position = {column: index for index, column in enumerate(inputs)}
+            modules.append(
+                AggregationOpModule(
+                    inputs,
+                    [
+                        (
+                            self._column(node),
+                            aggregator(node, self._compiler),
+                            [position[self._column(o)] for o in node.operands],
+                        )
+                        for node in members
+                    ],
+                )
+            )
+        return modules
 
     def _lower_transformations(
         self, nodes: list[Transformation]
@@ -429,10 +688,11 @@ class Lowering:
         to different cores, since a core cannot read its own output. Each leaf
         of a lump reads the column of the child that feeds it.
         """
-        groups: dict[tuple[int, int], dict[Symbol, CircuitNode]] = {}
+        groups: dict[tuple, dict[Symbol, CircuitNode]] = {}
         feeds: dict[Symbol, Symbol] = {}
         for lump in lumps:
-            group = groups.setdefault((id(lump.circuit), heights[id(lump)]), {})
+            over = frozenset(free_variables(self._column(lump))) & self._own
+            group = groups.setdefault((id(lump.circuit), heights[id(lump)], over), {})
             group.setdefault(self._column(lump), lump)
             feeds.update((leaf, self._column(fed)) for leaf, fed in lump.boundary)
         cores = [
@@ -505,14 +765,15 @@ class Lowering:
             for node in nodes
             for binder, domain in self._sorts.binders(node).items()
         }
-        enclosing = self._compiler, self._binders, self._bound
+        enclosing = self._compiler, self._binders, self._bound, self._own
         self._compiler = self._compiler._binding(domains)
         self._binders = self._binders | domains.keys()
+        self._own = frozenset()
         self._bound = self._reading(nodes, self._bound)
         try:
             reports = list(builder(nodes, self))
         finally:
-            self._compiler, self._binders, self._bound = enclosing
+            self._compiler, self._binders, self._bound, self._own = enclosing
         if len(reports) != len(nodes):
             raise ValueError(
                 f"The {operation!r} builder reported {len(reports)} columns for "
@@ -601,13 +862,8 @@ def _reached(aggregations: Sequence[Aggregation]) -> set[int]:
 
 
 def _read(atom: Symbol, binders: Sequence[Symbol]) -> tuple[Symbol, ...]:
-    """The ``binders`` among ``atom``'s arguments, in the order they first occur.
-
-    The variable a test ``=(V, v)`` tests is not among them: outside
-    ``boolean``, where the compiler builds the test, it is the label of ``V``'s
-    value ``v``, whichever value ``V`` takes.
-    """
-    arguments = get_args(atom)[1:] if atom[0] == "=" else get_args(atom)
+    """The ``binders`` among ``atom``'s arguments, in the order they first occur."""
+    arguments = get_args(atom)
     return tuple(
         dict.fromkeys(
             variable
@@ -646,26 +902,84 @@ class _Translated(DeepLogModule):
         return self._module(*inputs)
 
 
-def _look_up(sizes: tuple[int, ...], *x: Tensor) -> Tensor:
-    """The column of the last of ``x`` at the position the others give, row-major.
+def _look_up(
+    sizes: tuple[int, ...],
+    numbers: tuple[Tensor | None, ...],
+    given: tuple[int, ...],
+    axes: tuple[int, ...],
+    *x: Tensor,
+) -> Tensor:
+    """The last of ``x``, a column per combination of values, at the values the others give.
 
-    Each but the last holds a position per row, in a domain of the size at its
-    place in ``sizes``.
+    The columns are the combinations of values of variables of the sizes
+    ``sizes``, row-major. The variables at ``given`` are read at a value per
+    row, each from one of the others of ``x``: a position, or, where
+    ``numbers`` gives the domain's numbers, one of them. The result has an axis
+    for each variable at ``axes``, in that order, behind its one column.
+
+    Raises:
+        ValueError: If a number is not one of its domain's.
     """
-    *positions, table = x
-    index = torch.zeros(table.shape[0], 1, dtype=torch.long, device=table.device)
-    for position, size in zip(positions, sizes, strict=True):
-        index = index * size + position.reshape(-1, 1).long()
-    return table.gather(1, index)
+    *values, table = x
+    batch = table.shape[0]
+    table = table.reshape(batch, *sizes).permute(
+        0, *(1 + k for k in given), *(1 + k for k in axes)
+    )
+    if given:
+        index = torch.zeros(batch, dtype=torch.long, device=table.device)
+        for value, k, domain in zip(values, given, numbers, strict=True):
+            position = value.reshape(-1, 1)
+            if domain is not None:
+                matches = position == domain.to(position.device).reshape(1, -1)
+                found = matches.any(dim=1)
+                if not bool(found.all()):
+                    raise ValueError(
+                        f"A variable is given {position[~found][0].item()}, which is "
+                        "not a value of its domain."
+                    )
+                position = matches.int().argmax(dim=1, keepdim=True)
+            index = index * sizes[k] + position.reshape(-1).long()
+        table = table.reshape(batch, -1, *table.shape[1 + len(given) :])
+        table = table[torch.arange(batch, device=table.device), index]
+    return table.unsqueeze(1)
 
 
-def _gather(roots: Sequence[FormulaNode]) -> list[FormulaNode]:
+def _spread(values: Tensor, x: Tensor) -> Tensor:
+    """``values``, one row per value, along an axis behind one column, for every row of ``x``."""
+    return (
+        values.to(x.device)
+        .unsqueeze(0)
+        .unsqueeze(0)
+        .expand(x.shape[0], 1, *values.shape)
+    )
+
+
+def _atoms_beneath(roots: Sequence[FormulaNode]) -> list[Atom]:
+    """Every atom beneath ``roots``, at any depth, aggregations entered, each once."""
+    found: list[Atom] = []
+    seen: set[int] = set()
+    stack = list(roots)
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, Atom):
+            found.append(node)
+        stack.extend(children(node))
+    return found
+
+
+def _gather(
+    roots: Sequence[FormulaNode], given: Collection[FormulaNode] = ()
+) -> list[FormulaNode]:
     """The level under ``roots``: every node reachable without entering an aggregation.
 
-    Each node once, children before parents, in fold order.
+    Each node once, children before parents, in fold order. A node of ``given``
+    is left out, with what only it reaches.
     """
     level: list[FormulaNode] = []
-    seen: set[int] = set()
+    seen: set[int] = {id(node) for node in given}
     # An explicit stack rather than recursion, as in fold: a chain of casts can
     # be thousands deep.
     stack: list[tuple[FormulaNode, bool]] = [(root, False) for root in reversed(roots)]
@@ -702,12 +1016,15 @@ def _lump_heights(level: list[FormulaNode]) -> dict[int, int]:
     """The number of lumps on the longest path down from each node, itself included.
 
     A lump that reaches another has the greater height, so the lumps of one
-    circuit at one height never read each other.
+    circuit at one height never read each other. A child outside ``level``,
+    whose column the level reads as an input, counts none.
     """
     heights: dict[int, int] = {}
     for node in level:
         below = () if isinstance(node, Aggregation) else children(node)
-        heights[id(node)] = max((heights[id(child)] for child in below), default=0)
+        heights[id(node)] = max(
+            (heights.get(id(child), 0) for child in below), default=0
+        )
         heights[id(node)] += isinstance(node, CircuitNode)
     return heights
 
@@ -725,6 +1042,8 @@ def _name(node: FormulaNode, column: Callable[[FormulaNode], Symbol]) -> Symbol:
             return _operator_name(operator, column(operand))
         case BinaryOp(operator, lhs, rhs):
             return _operator_name(operator, column(lhs), column(rhs))
+        case AggregationOp(operation, operands):
+            return _aggregation_op_name(operation, [column(o) for o in operands])
         case Aggregation():
             return _aggregation_name(node, column)
     assert_never(node)
@@ -761,6 +1080,14 @@ def _aggregation_name(
             ),
         ),
         structure,
+    )
+
+
+def _aggregation_op_name(operation: str, operands: Sequence[Symbol]) -> Symbol:
+    """The operation over ``("operands", ...)`` of the operands' names, labelled with their algebra."""
+    return with_structure(
+        (operation, ("operands", *map(without_structure, operands))),
+        _shared_structure(operation, operands),
     )
 
 

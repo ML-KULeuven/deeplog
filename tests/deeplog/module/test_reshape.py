@@ -135,3 +135,23 @@ def test_indexing_transform_3():
     result = transform(t_a.unsqueeze(1))
     assert result.shape == expected.shape
     assert (result == expected).all()
+
+
+def test_a_transformation_keeps_each_input_s_dtype():
+    """A variable's positions stay integers beside probabilities, and columns keep their order.
+
+    The first output takes ``x`` from the second input between two columns of
+    the first.
+    """
+    transform = construct_transformation(
+        (SymTensor(["a", "c"]), SymTensor(["x"]), SymTensor(["n"])),
+        (SymTensor(["a", "x", "c"]), SymTensor(["n"])),
+    )
+    probabilities = torch.tensor([[0.1, 0.3]])
+    positions = torch.tensor([[2]])
+
+    mixed, read = transform(probabilities, torch.tensor([[0.2]]), positions)
+
+    torch.testing.assert_close(mixed, torch.tensor([[0.1, 0.2, 0.3]]))
+    assert read.dtype == torch.int64
+    assert read.tolist() == [[2]]

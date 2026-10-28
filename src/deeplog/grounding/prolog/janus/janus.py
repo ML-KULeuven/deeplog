@@ -40,9 +40,13 @@ class JanusGrounder(PrologGrounder):
         goal: Symbol,
         open_predicates: OpenPredicates = frozenset(),
     ) -> dict[Symbol, FormulaNode]:
-        """Prove ``goal`` in ``program`` to one proof formula per ground answer."""
-        rows = self._prover.query(
-            "prove_query(Program, Prover, Query, Builder, GroundQuery, Formula)",
+        """Prove ``goal`` in ``program`` to one proof formula per ground answer.
+
+        The proof tables the goals it proves, and drops the tables when it
+        ends, with every other private table of the calling Prolog thread.
+        """
+        (row,) = self._prover.query(
+            "prove_answers(Program, Prover, Query, Builder, Answers)",
             {
                 "Program": self._prover.consult(
                     _clauses(program, frozenset(open_predicates))
@@ -52,7 +56,7 @@ class JanusGrounder(PrologGrounder):
                 "Builder": ProofBuilder(),
             },
         )
-        return {row["GroundQuery"]: row["Formula"] for row in rows}
+        return {ground: formula for ground, formula in row["Answers"]}
 
     @staticmethod
     def is_available() -> bool:

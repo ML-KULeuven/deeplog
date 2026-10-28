@@ -9,8 +9,10 @@ import torch
 
 from ...algebraic import BOOLEAN
 from ...symbol import Symbol
+from ...symbol import get_args
 from ...symbol import get_predicate
 from ...symbol import is_variable
+from ...symbol import retag
 from ...symbol import symbol_to_pretty_string
 from ...symbol import without_structure
 from ...variable import Domain
@@ -150,139 +152,96 @@ class LogProbabilityPredicate(_LabelProbabilityPredicate):
         return torch.log1p(-torch.exp(p))
 
 
-class NetworkPredicate(Predicate[torch.Tensor, torch.Tensor]):
-    """Predicate that delegates evaluation to a provided ``torch.nn.Module``.
+class NetworkPredicate(Predicate[torch.Tensor]):
+    """Predicate whose values are the output rows of a provided ``torch.nn.Module``.
 
     Always binary: the first argument is fed to the module, and the second is a
-    value that reads a row of its output.
+    value of ``domain``, which lists the values of the module's output rows in
+    row order. ``digit(x, v)`` is the entry of ``x``'s row at ``v``'s position.
 
-    Given a ``domain``, which lists the values of the module's output rows in row
-    order, the second argument ranges over it: an atom reads the row at its
-    value's position, whether the value is written or a variable holds it.
-    Without a domain, the second argument ranges over the values, and a written
-    value is its row: a whole number from 0 up to the number of rows.
-
-    Ground atoms sharing a first argument — ``digit(i1,0) … digit(i1,9)``, the
-    usual "one classifier, N mutually exclusive values" pattern — are distinct
-    evaluations over the *same* image. The first argument is therefore taken
-    unexpanded (see :attr:`~deeplog.formula.predicates.predicate.Predicate.distinct_arguments`): the module runs once
-    per distinct image, and :meth:`forward_predicate` selects each evaluation's
-    row from that result.
+    It reads only the first arguments of the atoms it is given, and computes
+    every value of each, running the module once per distinct first argument:
+    asked for ``digit(i1, 2)`` and ``digit(i2, D)``, it computes ``digit(i1, 0)``
+    to ``digit(i1, 9)`` and ``digit(i2, 0)`` to ``digit(i2, 9)``, in that order.
+    A second argument only asks for an atom: a written value must be one of the
+    domain's, written as the domain writes it
+    (:attr:`~deeplog.variable.Domain.values`), and a variable may stand there.
     """
-
-    distinct_arguments = (0,)
-
-    #: The values of the module's output rows, in row order, or ``None`` when
-    #: each value is its row.
-    _values: torch.Tensor | None
 
     def __init__(
         self,
         atoms: Iterable[Symbol],
         *,
         module: torch.nn.Module,
-        domain: Domain | None = None,
+        domain: Domain,
     ):
-        """Compute ``atoms`` through ``module``.
+        """Compute every value of each first argument of ``atoms`` through ``module``.
 
         Raises:
-            ValueError: If ``domain``'s values are not distinct scalars, or a
-                written value is not one of them, or, without a domain, not a
-                row.
+            ValueError: If ``domain`` does not write its values, an atom is not
+                binary, its first argument is a written number, which names no
+                input, or its second is a written value not in ``domain``.
         """
         atoms = list(atoms)
-        values = None if domain is None else domain.as_tensor()
-        if values is not None and (
-            values.dim() != 1 or values.unique().numel() != values.numel()
-        ):
-            name = (
-                "/".join(map(str, get_predicate(without_structure(atoms[0]))))
-                if atoms
-                else type(self).__name__
-            )
-            raise ValueError(
-                f"The domain of {name} holds {tuple(values.shape)} values that "
-                "are not distinct scalars, so they name no rows."
-            )
-        super().__init__(atoms, (_VALUES, _VALUES if domain is None else domain))
-        self._module = module
-        self.register_buffer("_values", values, persistent=False)
-
-    def resolve_argument(self, symbol: Symbol, index: int, /) -> float | Symbol:
-        """The module's input, or, without a domain, the row a written value reads.
-
-        The first argument is a number it writes, or else a variable. Without a
-        domain, the second is a variable or a row, a whole number from 0; with
-        one, a written value is read as a value of the domain instead.
-
-        Raises:
-            ValueError: If, without a domain, the second argument writes no row.
-        """
-        value = number_of(symbol)
-        if index == 0:
-            return symbol if value is None else value
-        if is_variable(symbol):
-            return symbol
-        if value is not None and value.is_integer() and value >= 0:
-            return value
-        raise ValueError(
-            f"{symbol_to_pretty_string(symbol)} is not a row of the module of "
-            f"{self._name}, which has no domain, so its values are its rows from 0."
+        functor, arity = (
+            get_predicate(without_structure(atoms[0])) if atoms else ("network", 2)
         )
+        name = f"{functor}/{arity}"
+        try:
+            values = domain.values
+        except ValueError as error:
+            raise ValueError(
+                f"The domain of {name} does not write the values its rows stand "
+                f"for: {error}"
+            ) from None
+        written = set(values)
+        inputs: dict[Symbol, None] = {}
+        for atom in atoms:
+            arguments = get_args(without_structure(atom))
+            if len(arguments) != 2:
+                raise ValueError(f"{name} is binary; it is given {atom}.")
+            first, second = arguments
+            if number_of(first) is not None:
+                raise ValueError(
+                    f"{name} feeds its module the input its first argument names, "
+                    f"and the number {symbol_to_pretty_string(first)} names none."
+                )
+            if not is_variable(second) and second not in written:
+                raise ValueError(
+                    f"{symbol_to_pretty_string(second)} is not a value of the "
+                    f"domain of {name}."
+                )
+            inputs[first] = None
+        computed = [
+            retag((functor, first, value), atoms[0])
+            for first in inputs
+            for value in values
+        ]
+        super().__init__(computed, (_VALUES, domain), ignore_arguments=(1,))
+        self._module = module
+        self._rows = len(values)
 
-    def forward_predicate(
-        self, inputs: torch.Tensor, values: torch.Tensor
+    def _run(
+        self, x_per_position: list[torch.Tensor | None], batch_size: int
     ) -> torch.Tensor:
-        """Run ``inputs`` through the wrapped module and read the row of each value.
+        """The module's rows on the distinct first arguments, one entry per atom."""
+        (inputs,) = x_per_position
+        assert inputs is not None
+        rows = self.forward_predicate(inputs.reshape(-1, *inputs.shape[2:]))
+        return rows.reshape(batch_size, -1)
 
-        ``inputs`` holds one row per (batch item, *distinct* first argument);
-        ``values`` one per (batch item, evaluation). The module therefore runs
-        once per distinct image, and its output is expanded over the
-        evaluations that share it before each evaluation reads the row of its
-        value.
+    def forward_predicate(self, inputs: torch.Tensor) -> torch.Tensor:
+        """The module's output on ``inputs``, a row of one entry per value for each.
 
         Raises:
-            ValueError: If the module's output does not have one row per value
-                of the domain, or a value is not in the domain or, without a
-                domain, not a row.
+            ValueError: If the module's output does not have one row per input
+                of one entry per value of the domain.
         """
         output = self._module(inputs)
-        rows = self._rows(values, output)
-        slots = self.evaluation_slots(0).to(output.device)
-        batch_size = values.shape[0] // self._nr_evaluations
-        output = output.view(batch_size, -1, *output.shape[1:])[:, slots]
-        output = output.reshape(batch_size * self._nr_evaluations, *output.shape[2:])
-        return output[torch.arange(output.shape[0]), rows]
-
-    def _rows(self, values: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
-        """The row of ``output`` each of ``values`` reads.
-
-        Raises:
-            ValueError: If ``output`` does not have one row per value of the
-                domain, or a value is not in the domain or, without a domain,
-                not a row.
-        """
-        if self._values is None:
-            count = output.shape[1]
-            found = (values == values.round()) & (values >= 0) & (values < count)
-            if not bool(found.all()):
-                raise ValueError(
-                    f"{self._name} is given the value "
-                    f"{values[~found][0].item()}, which is not a row of its "
-                    f"module's {count} rows."
-                )
-            return values.to(torch.long)
-        if output.dim() < 2 or output.shape[1] != len(self._values):
+        if output.shape[1:] != (self._rows,):
             raise ValueError(
                 f"The module of {self._name} gives rows of shape "
-                f"{tuple(output.shape[1:])}, where its domain has "
-                f"{len(self._values)} values."
+                f"{tuple(output.shape[1:])}, where its domain has {self._rows} "
+                "values."
             )
-        matches = torch.eq(values.unsqueeze(-1), self._values.to(values.device))
-        found = matches.any(dim=-1)
-        if not bool(found.all()):
-            raise ValueError(
-                f"{self._name} is given the value "
-                f"{values[~found][0].item()}, which is not in its domain."
-            )
-        return matches.int().argmax(dim=-1)
+        return output

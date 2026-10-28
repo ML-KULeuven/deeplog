@@ -34,6 +34,7 @@ from ..symbol import retag
 from ..symbol import structure_of
 from ..symbol import symbol_to_pretty_string
 from ..symbol import symbol_to_str
+from ..symbol import with_structure
 from ..symbol import without_structure
 from .deeplogformulafactory import DeepLogFormulaFactory
 from .symbolic_factory import SymbolicFormulaFactory
@@ -165,6 +166,41 @@ class Transformation(_ValueHashed, FormulaNodeDisplay):
 
 
 @dataclass(frozen=True, repr=False)
+class AggregationOp(_ValueHashed, FormulaNodeDisplay):
+    """``operation`` applied to ``operands``: its algebra's aggregator over their values.
+
+    Its value is the aggregator for ``operation``
+    (:attr:`~deeplog.algebraic.AlgebraicStructure.aggregation_fns`) of the
+    algebra its operands share, over their values in order, as an
+    :class:`Aggregation` aggregates its body's values over the assignments of
+    its binders.
+
+    Raises:
+        ValueError: If there is no operand, since its operands give it its
+            algebra.
+    """
+
+    operation: str
+    operands: tuple[FormulaNode, ...]
+    __hash__ = _ValueHashed.__hash__
+
+    def __post_init__(self) -> None:
+        """Refuse a node of no operand, then hash it."""
+        if not self.operands:
+            raise ValueError(
+                f"{self.operation}[] has no operand, so no algebra to aggregate in; "
+                "write the aggregator's value over nothing in its place."
+            )
+        super().__post_init__()
+
+    @property
+    def structure(self) -> str | None:
+        """The structure every operand shares, or ``None`` if they disagree."""
+        found = {operand.structure for operand in self.operands}
+        return found.pop() if len(found) == 1 else None
+
+
+@dataclass(frozen=True, repr=False)
 class Aggregation(_ValueHashed, FormulaNodeDisplay):
     """An aggregation over ``binders`` applying ``operation`` to ``child``.
 
@@ -175,7 +211,11 @@ class Aggregation(_ValueHashed, FormulaNodeDisplay):
 
     Each binder is a variable. ``binders`` and ``params`` are tuples (not lists)
     so the node stays hashable and immutable; :func:`fold` converts ``binders``
-    back to a list at the factory call boundary.
+    back to a list at the factory call boundary. An ``expectation`` over binders
+    without a distribution is given the one its binders have independently in
+    probability: the product of a factor ``v(V)`` per binder ``V``, where ``v``
+    is ``V``'s name with its leading underscores dropped and its first letter in
+    lowercase.
 
     Raises:
         ValueError: If a binder is not a variable.
@@ -188,7 +228,7 @@ class Aggregation(_ValueHashed, FormulaNodeDisplay):
     __hash__ = _ValueHashed.__hash__
 
     def __post_init__(self) -> None:
-        """Refuse a binder that is not a variable, then hash the node."""
+        """Refuse a binder that is not a variable, give an expectation its distribution, then hash the node."""
         for binder in self.binders:
             if not is_variable(binder):
                 raise ValueError(
@@ -196,6 +236,8 @@ class Aggregation(_ValueHashed, FormulaNodeDisplay):
                     f"which is not a variable; a variable starts with an uppercase "
                     f"letter or an underscore."
                 )
+        if self.operation == "expectation" and self.binders and not self.params:
+            object.__setattr__(self, "params", (_independent(self.binders),))
         super().__post_init__()
 
     @property
@@ -291,7 +333,7 @@ class CircuitNode(FormulaNodeDisplay):
 
 
 #: A formula node is either still-*symbolic* (``Atom``/``UnaryOp``/``BinaryOp``/
-#: ``Transformation``/``Aggregation``) or a graph-backed
+#: ``Transformation``/``AggregationOp``/``Aggregation``) or a graph-backed
 #: :class:`~deeplog.formula.ast.CircuitNode`,
 #: whose fine internal structure lives in the circuit rather than nested objects.
 #:
@@ -300,7 +342,15 @@ class CircuitNode(FormulaNodeDisplay):
 #: :func:`~deeplog.shape.sole_structure` over a module's output symbols. Both
 #: read a label off data rather than off an object — an AST node carries it on
 #: its atom, a module on the symbols naming its outputs.
-FormulaNode = Atom | UnaryOp | BinaryOp | Transformation | Aggregation | CircuitNode
+FormulaNode = (
+    Atom
+    | UnaryOp
+    | BinaryOp
+    | Transformation
+    | AggregationOp
+    | Aggregation
+    | CircuitNode
+)
 
 
 def fold[T](
@@ -364,6 +414,8 @@ def operands(node: FormulaNode) -> tuple[FormulaNode, ...]:
         return (node.operand,)
     if isinstance(node, Transformation):
         return (node.child,)
+    if isinstance(node, AggregationOp):
+        return node.operands
     if isinstance(node, Aggregation):
         return (*node.params, node.child)
     raise TypeError(f"Unknown formula node: {node!r}")
@@ -388,6 +440,10 @@ def _eliminate[T](
             return factory.create_binary_node(operator, result(lhs), result(rhs))
         case Transformation(structure, child):
             return factory.create_transformation(structure, result(child))
+        case AggregationOp(operation, operands):
+            return factory.create_aggregation_op(
+                operation, [result(operand) for operand in operands]
+            )
         case Aggregation(operation, binders, params, child):
             return factory.create_aggregation(
                 operation, list(binders), [result(p) for p in params], result(child)
@@ -415,6 +471,8 @@ def children(node: FormulaNode) -> tuple[FormulaNode, ...]:
             return (lhs, rhs)
         case Transformation(_, child):
             return (child,)
+        case AggregationOp(_, operands):
+            return operands
         case Aggregation(_, _, params, child):
             return (*params, child)
         case CircuitNode():
@@ -454,6 +512,8 @@ def map_children(
             return BinaryOp(operator, f(lhs), f(rhs))
         case Transformation(structure, child):
             return Transformation(structure, f(child))
+        case AggregationOp(operation, operands):
+            return AggregationOp(operation, tuple(f(operand) for operand in operands))
         case Aggregation(operation, binders, params, child):
             return Aggregation(
                 operation, binders, tuple(f(p) for p in params), f(child)
@@ -506,6 +566,8 @@ def _datum(node: FormulaNode) -> str:
             return _DISPLAY.create_atom(atom)
         case UnaryOp(operator, _) | BinaryOp(operator, _, _):
             return operator
+        case AggregationOp(operation, _):
+            return operation
         case Transformation(structure, _):
             return structure
         case Aggregation(operation, binders, _, _):
@@ -543,3 +605,31 @@ class _DisplayFactory(SymbolicFormulaFactory):
 
 
 _DISPLAY = _DisplayFactory()
+
+
+def _independent(binders: tuple[Symbol, ...]) -> FormulaNode:
+    """The product in probability of a factor ``v(V)`` per binder ``V``.
+
+    Raises:
+        ValueError: If a binder's name is only underscores, or two binders give
+            one predicate.
+    """
+    factors: dict[str, FormulaNode] = {}
+    for binder in binders:
+        name = binder[0].lstrip("_")
+        if not name:
+            raise ValueError(
+                f"expectation binds {symbol_to_pretty_string(binder)}, which names "
+                f"no predicate to distribute it; give the expectation a distribution."
+            )
+        predicate = name[0].lower() + name[1:]
+        if predicate in factors:
+            raise ValueError(
+                f"expectation binds two variables distributed by {predicate}/1; "
+                f"give the expectation a distribution."
+            )
+        factors[predicate] = Atom(with_structure((predicate, binder), PROBABILITY.name))
+    product, *rest = factors.values()
+    for factor in rest:
+        product = BinaryOp(PROBABILITY.product, product, factor)
+    return product

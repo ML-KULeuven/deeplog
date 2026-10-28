@@ -19,24 +19,26 @@ def bracket_aware_split(
     """
     A simple function that performs similar to the string split function, but does not split when it is inside brackets.
     :param s: The string to split.
-    :param split_str:  The string to split on.
+    :param split_str:  The string to split on, of one or more characters.
     :param l_bracket: The left-handed brackets to take into account.
     :param r_bracket: right-handed brackets to take into account.
     :return: An iterable over all string splits.
     """
     depth = 0
-    current_string = ""
-    for sym in s:
-        if depth == 0 and sym == split_str:
-            yield current_string
-            current_string = ""
-        else:
-            current_string += sym
-            if sym in l_bracket:
-                depth += 1
-            elif sym in r_bracket:
-                depth -= 1
-    yield current_string
+    start = 0
+    position = 0
+    while position < len(s):
+        if depth == 0 and s.startswith(split_str, position):
+            yield s[start:position]
+            position += len(split_str)
+            start = position
+            continue
+        if s[position] in l_bracket:
+            depth += 1
+        elif s[position] in r_bracket:
+            depth -= 1
+        position += 1
+    yield s[start:]
 
 
 def foldr[T](func: Callable[[T, T], T], iterable: Reversible[T]) -> T:

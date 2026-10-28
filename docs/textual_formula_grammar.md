@@ -1,6 +1,6 @@
 # DeepLog textual formula grammar
 
-This document specifies the textual format that is parsed into DeepLog formulas. The goal is to describe a surface syntax that can be read and written by users while still mapping one-to-one to the formula's node types (aggregation, transformation, binary/unary operator, and leaf).
+This document specifies the textual format that is parsed into DeepLog formulas. The goal is to describe a surface syntax that can be read and written by users while still mapping one-to-one to the formula's node types (aggregation, aggregation of operands, transformation, binary/unary operator, and leaf).
 
 ## Lexical elements
 
@@ -20,6 +20,7 @@ Formula        ::= Aggregation
                  | BinaryExpr
                  | UnaryExpr
                  | Transformation
+                 | AggregationOp
                  | Leaf
 
 Aggregation    ::= Identifier "(" BinderList [";" ParamList] ")" ":" Formula
@@ -37,11 +38,16 @@ BinaryOp       ::= Identifier                      # e.g. and, or, plus, times, 
 UnaryExpr      ::= PrefixOp UnaryExpr
                  | "(" Formula ")"
                  | Transformation
+                 | AggregationOp
 PrefixOp       ::= Identifier                      # e.g. not, negate
 
 Transformation ::= "(" Formula ")" "_" Structure
 
 # Parentheses group sub-formulas; appending `_structure` turns the group into a transformation node.
+
+AggregationOp  ::= Identifier "[" Formula { "," Formula } "]"
+
+# Example: sum[p(a)_real, p(b)_real]
 
 Leaf           ::= SymbolLiteral "_" Structure
 
@@ -53,7 +59,7 @@ Leaf           ::= SymbolLiteral "_" Structure
 
 1. **Aggregation scope** – the `:` separates the binders (and optional parameters) from the body. `sum(X, Y; q(X)_probability): f(X, Y)_probability` binds `X` and `Y` inside both the parameter formulas and `f`. Nested aggregations are still written `sum(X): sum(Y): ...`.
 2. **Binder domains** – a binder ranges over a [`Domain`](../src/deeplog/variable.py), and the aggregation enumerates it. A *regular* variable's domain is declared per variable in the compiler's `variables` (`{("N1",): Domain.of_tensor(torch.arange(10))}`); an undeclared binder is a *reification* variable and inherits the values of the compiler's `reification` structure, `BOOLEAN` by default — so `sum(Burglary, Earthquake): ...` ranges over `{false, true}` without being told. A reification variable's structure is not derivable from the atoms it appears in (`burglary[B]_probability` reifies a *boolean* `B`), which is why it is one statement about the model rather than one per binder. A structure that declares no enumerable values hands out no domain at all, so a binder over `probability` is refused rather than silently enumerated as if it were boolean.
-3. **Aggregation operators** – in `Op(Var1, Var2; ψ1, ψ2): expr`, `Op` is one of the aggregators of `expr`'s algebra (`sum` in `real` and `probability`, `exists` and `forall` in `boolean`), or `expectation`, and the extra parameter formulas follow the `;`. A compiler computes an aggregator by enumerating the binders, or with the builder it is given for the operation.
+3. **Aggregation operators** – in `Op(Var1, Var2; ψ1, ψ2): expr`, `Op` is one of the aggregators of `expr`'s algebra (`sum` in `real` and `probability`, `exists` and `forall` in `boolean`), or `expectation`, and the extra parameter formulas follow the `;`. A compiler computes an aggregator by enumerating the binders, or with the builder it is given for the operation. Written `Op[ψ1, ψ2]`, an aggregation of operands applies `Op`, an aggregator of the algebra its operands share, to their values: `sum[p(a)_real, p(b)_real]` is `p(a) + p(b)`. It binds nothing and takes one operand at least.
 4. **Binary operator precedence** – **all binary operators share one precedence level** (no classical tiers such as `times` vs `plus`). They associate to the left (`a plus b plus c` parses as `(a plus b) plus c`). Parentheses **must** be used whenever you need to force a different evaluation order.
 5. **Unary operators** – any identifier before an expression denotes a unary operation. Parentheses without a suffix are also part of `UnaryExpr`, so `not (a or b)` parses as a unary operator whose operand is the grouped formula. Nested unary chains work because the grammar is right-recursive (`not negate leaf`). Transformations are listed as a third alternative, so expressions like `(φ)_probability times (ψ)_probability` remain valid without extra parentheses. A functor written against its parentheses makes an atom, as in Prolog: `q(x_bar)_boolean` is the atom `q(x_bar)`, while `q (x_bar)_boolean` applies the operator `q` to a cast.
 6. **Transformations** – appending `_structure` to a parenthesized formula turns it into a transformation node. Example: `(burglary_boolean)_probability`.
@@ -66,6 +72,7 @@ Leaf           ::= SymbolLiteral "_" Structure
 | Grammar construct                | Formula node                                                     |
 |----------------------------------|------------------------------------------------------------------|
 | `Op(Var1, Var2; ψ1, ψ2): φ`      | `Aggregation(Op, (Var1, Var2), (ψ1, ψ2), φ)`                      |
+| `Op[ψ1, ψ2]`                     | `AggregationOp(Op, (ψ1, ψ2))`                                    |
 | `(ψ)_structure`                  | `Transformation(structure, ψ)`                                   |
 | `lhs Op rhs`                     | `BinaryOp(Op, lhs, rhs)`                                         |
 | `Op ψ` (unary prefix)            | `UnaryOp(Op, ψ)`                                                 |

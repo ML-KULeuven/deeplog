@@ -2,14 +2,24 @@
 """Tests for deeplog.algebraic — structures, operators, and the registry."""
 
 import math
+import pickle
 
 import pytest
 import torch
 
+from deeplog import Compiler
+from deeplog import Predicate
+from deeplog import get_all_symbols
+from deeplog import parse_formula
+from deeplog import parse_formula_to_module
+from deeplog import without_structure
 from deeplog.algebraic import BOOLEAN
+from deeplog.algebraic import GODEL
 from deeplog.algebraic import LOGPROBABILITY
+from deeplog.algebraic import LUKASIEWICZ
 from deeplog.algebraic import MPE
 from deeplog.algebraic import PROBABILITY
+from deeplog.algebraic import PRODUCT
 from deeplog.algebraic import REAL
 from deeplog.algebraic import Algebra
 from deeplog.algebraic import AlgebraicStructure
@@ -597,3 +607,160 @@ def test_a_log_space_sum_of_zeros_is_zero_with_a_zero_gradient():
     assert added.item() == summed.item() == -math.inf
     assert a.grad.item() == b.grad.item() == 0.0
     assert values.grad.abs().sum().item() == 0.0
+
+
+# --- T-norm algebras ---
+
+TNORM_ALGEBRAS = [GODEL, PRODUCT, LUKASIEWICZ]
+
+#: Truth values that float64 holds exactly, and whose sums and products it holds too.
+QUARTERS = torch.linspace(0, 1, 5, dtype=torch.float64)
+
+
+def _triples():
+    """Every triple of :data:`QUARTERS`, as three tensors."""
+    return torch.cartesian_prod(QUARTERS, QUARTERS, QUARTERS).unbind(dim=1)
+
+
+@pytest.mark.parametrize("algebra", TNORM_ALGEBRAS, ids=lambda algebra: algebra.name)
+def test_a_tnorm_algebra_has_the_connectives_and_quantifiers_of_boolean(algebra):
+    """A formula written for ``boolean`` reads under a t-norm, which adds ``implies``."""
+    assert algebra.operators == BOOLEAN.operators | {"implies"}
+    assert algebra.aggregations == BOOLEAN.aggregations
+
+
+@pytest.mark.parametrize("algebra", TNORM_ALGEBRAS, ids=lambda algebra: algebra.name)
+def test_and_is_a_tnorm(algebra):
+    """Commutative, associative and monotone, with one as its identity."""
+    conjoin = algebra.operator_fns["and"]
+    a, b, c = _triples()
+    torch.testing.assert_close(conjoin(a, b), conjoin(b, a))
+    torch.testing.assert_close(conjoin(conjoin(a, b), c), conjoin(a, conjoin(b, c)))
+    torch.testing.assert_close(conjoin(a, torch.ones_like(a)), a)
+    assert (conjoin(a, c)[b <= c] >= conjoin(a, b)[b <= c]).all()
+
+
+@pytest.mark.parametrize("algebra", TNORM_ALGEBRAS, ids=lambda algebra: algebra.name)
+def test_or_is_the_conorm_dual_to_and(algebra):
+    """De Morgan under the standard negation: ``a or b`` is ``not (not a and not b)``."""
+    functions = algebra.operator_fns
+    negate = functions["not"]
+    a, b, _ = _triples()
+    torch.testing.assert_close(negate(a), 1 - a)
+    torch.testing.assert_close(
+        functions["or"](a, b), negate(functions["and"](negate(a), negate(b)))
+    )
+
+
+@pytest.mark.parametrize("algebra", TNORM_ALGEBRAS, ids=lambda algebra: algebra.name)
+def test_implies_is_the_residuum_of_and(algebra):
+    """``a and c <= b`` exactly when ``c <= a implies b``."""
+    functions = algebra.operator_fns
+    a, b, c = _triples()
+    assert ((functions["and"](a, c) <= b) == (c <= functions["implies"](a, b))).all()
+
+
+@pytest.mark.parametrize("algebra", TNORM_ALGEBRAS, ids=lambda algebra: algebra.name)
+def test_on_the_two_truth_values_a_tnorm_algebra_is_boolean(algebra):
+    """Fuzzy logic extends classical logic: on 0 and 1 the connectives are its own."""
+    functions = algebra.operator_fns
+    a, b = torch.cartesian_prod(*2 * [torch.tensor([0.0, 1.0])]).unbind(dim=1)
+    for operator in ("and", "or"):
+        torch.testing.assert_close(
+            functions[operator](a, b), BOOLEAN.operator_fns[operator](a, b)
+        )
+    torch.testing.assert_close(functions["not"](a), BOOLEAN.operator_fns["not"](a))
+    torch.testing.assert_close(functions["implies"](a, b), torch.maximum(1 - a, b))
+
+
+@pytest.mark.parametrize("algebra", TNORM_ALGEBRAS, ids=lambda algebra: algebra.name)
+def test_a_quantifier_is_its_connective_over_the_domain(algebra):
+    """``forall`` folds ``and`` over the assignments and ``exists`` folds ``or``."""
+    torch.manual_seed(0)
+    values = torch.rand(4, 5, 1, dtype=torch.float64)
+    for quantifier, connective in (("forall", "and"), ("exists", "or")):
+        folded = values[:, 0]
+        for index in range(1, values.shape[1]):
+            folded = algebra.operator_fns[connective](folded, values[:, index])
+        torch.testing.assert_close(algebra.aggregation_fns[quantifier](values), folded)
+
+
+def test_godel_is_an_algebra_and_the_other_tnorms_are_no_semirings():
+    """A semiring's product distributes over its sum, which only the minimum does.
+
+    At one half, the product gives ``0.375`` where distributing gives
+    ``0.4375``, and Łukasiewicz ``0.5`` where distributing gives ``0``.
+    """
+
+    def distributes(algebra):
+        conjoin, disjoin = algebra.operator_fns["and"], algebra.operator_fns["or"]
+        a, b, c = _triples()
+        return torch.equal(
+            conjoin(a, disjoin(b, c)), disjoin(conjoin(a, b), conjoin(a, c))
+        )
+
+    assert isinstance(GODEL, Algebra)
+    assert not isinstance(GODEL, Semifield)
+    assert distributes(GODEL)
+    for algebra in (PRODUCT, LUKASIEWICZ):
+        assert not isinstance(algebra, Semiring)
+        assert not distributes(algebra)
+
+
+def test_the_product_residuum_has_a_gradient_where_its_antecedent_is_zero():
+    """``b / a`` is not differentiated where ``a <= b`` selects one instead."""
+    a = torch.tensor([0.0, 0.5, 0.8], requires_grad=True)
+    b = torch.tensor([0.0, 0.7, 0.2], requires_grad=True)
+    PRODUCT.operator_fns["implies"](a, b).sum().backward()
+    torch.testing.assert_close(a.grad, torch.tensor([0.0, 0.0, -0.2 / 0.8**2]))
+    torch.testing.assert_close(b.grad, torch.tensor([0.0, 0.0, 1 / 0.8]))
+
+
+@pytest.mark.parametrize("algebra", TNORM_ALGEBRAS, ids=lambda algebra: algebra.name)
+def test_a_tnorm_algebra_is_registered_under_its_name(algebra):
+    """So a formula names it without the compiler being told, and it pickles."""
+    assert get_algebraic_structure(algebra.name) is algebra
+    assert pickle.loads(pickle.dumps(algebra)) is algebra  # noqa: S301
+
+
+@pytest.mark.parametrize("algebra", TNORM_ALGEBRAS, ids=lambda algebra: algebra.name)
+def test_a_formula_is_evaluated_under_the_tnorm_it_names(algebra):
+    """One formula, labelled with a t-norm, computes that t-norm's connectives."""
+    name = algebra.name
+    module = parse_formula_to_module(
+        f"(a_{name} and b_{name}) implies (c_{name} or not a_{name})"
+    )
+    values = torch.tensor([[0.9, 0.6, 0.2], [0.7, 0.8, 0.1], [0.3, 0.4, 0.5]])
+    a, b, c = values.unbind(dim=1)
+    functions = algebra.operator_fns
+    expected = functions["implies"](
+        functions["and"](a, b), functions["or"](c, functions["not"](a))
+    )
+    assert [
+        without_structure(atom) for atom in get_all_symbols(module.get_input_shape())
+    ] == [("a",), ("b",), ("c",)]
+    torch.testing.assert_close(module(values), expected.unsqueeze(1))
+
+
+@pytest.mark.parametrize("algebra", TNORM_ALGEBRAS, ids=lambda algebra: algebra.name)
+def test_a_formula_quantifies_under_the_tnorm_it_names(algebra):
+    """``forall`` and ``exists`` over a variable's domain, through the compiler."""
+
+    class Truth(Predicate):
+        def __init__(self, atoms):
+            super().__init__(atoms, (Domain.of_values(),))
+
+        def forward_predicate(self, x):
+            return x
+
+    values = torch.tensor([0.9, 0.6, 0.8])
+    compiler = Compiler(
+        variables={("X",): Domain.of_tensor(values)},
+        atom_builders={("holds", 1, algebra.name): Truth},
+    )
+    for quantifier in ("forall", "exists"):
+        module = compiler.compile(
+            parse_formula(f"{quantifier}(X): holds(X)_{algebra.name}")
+        )
+        expected = algebra.aggregation_fns[quantifier](values.reshape(1, 3, 1))
+        torch.testing.assert_close(module(), expected)

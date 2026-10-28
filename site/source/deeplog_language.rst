@@ -50,6 +50,7 @@ Grammar summary
                     | BinaryExpr
                     | UnaryExpr
                     | Transformation
+                    | AggregationOp
                     | Leaf
 
    Aggregation    ::= Identifier "(" BinderList [";" ParamList] ")" ":" Formula
@@ -62,9 +63,12 @@ Grammar summary
    UnaryExpr      ::= PrefixOp UnaryExpr
                     | "(" Formula ")"
                     | Transformation
+                    | AggregationOp
    PrefixOp       ::= Identifier
 
    Transformation ::= "(" Formula ")" "_" Structure
+
+   AggregationOp  ::= Identifier "[" Formula { "," Formula } "]"
 
    Leaf           ::= SymbolLiteral "_" Structure
 
@@ -73,6 +77,10 @@ Key semantics
 
 * **Aggregation scope**: ``Op(X, Y; params): body`` binds ``X`` and ``Y`` in
   the body and parameter formulas.
+* **Aggregations of operands**: ``Op[phi, psi]`` applies the aggregator ``Op``
+  of its operands' algebra to their values, as ``Op(X): body`` applies it to
+  the body's values at each value of ``X``. It binds nothing and takes one
+  operand at least.
 * **Operator precedence**: all binary operators share one precedence level and
   associate to the left; use parentheses to enforce evaluation order.
 * **Unary operators**: any identifier can act as a unary prefix operator. A
@@ -84,7 +92,8 @@ Key semantics
 * **Leaves**: every leaf pairs a symbol literal with its structure via the
   ``_structure`` suffix.
 * **Structure names**: the built-in structures are ``_boolean``,
-  ``_probability``, ``_logprobability``, ``_real``, and ``_mpe``.
+  ``_probability``, ``_logprobability``, ``_real``, ``_mpe``, and the fuzzy
+  ``_godel``, ``_product`` and ``_lukasiewicz``.
 
 Underscores are reserved for ``_structure`` suffixes. Predicate names that
 include underscores should be quoted inside the symbol literal (e.g.
@@ -102,6 +111,10 @@ operators are interpreted across a formula. The most common structures are:
   scores.
 * **Log-probability**: log-space weighted formulas (``_logprobability``).
 * **Real**: real numbers (``_real``), such as a network's logits or a count.
+* **Fuzzy**: truth values in ``[0, 1]`` under a t-norm: Gödel's minimum
+  (``_godel``), the product (``_product``) or Łukasiewicz's (``_lukasiewicz``).
+  Each reads ``and`` as its t-norm, ``or`` as the dual conorm, ``not`` as
+  ``1 - x`` and ``implies`` as the t-norm's residuum.
 
 Structures are attached to leaves (``predicate(args)_structure``) and can be
 changed mid-formula using transformations such as ``(expr)_probability``. This
@@ -113,7 +126,9 @@ them.
 A structure also declares its aggregators: the operations an aggregation over
 one of its formulas can name. ``real`` and ``probability`` aggregate with
 ``sum``, ``logprobability`` with ``sum`` as log-sum-exp, and ``boolean`` with
-``exists`` and ``forall``. Counting a Boolean formula's models is therefore a
+``exists`` and ``forall``. A fuzzy structure has the same two quantifiers:
+``forall`` is its t-norm over the variable's domain, and ``exists`` its conorm.
+Counting a Boolean formula's models is therefore a
 ``sum`` over the formula cast into ``real``, where ``true`` is 1.
 
 Structure classes
@@ -140,7 +155,14 @@ adds and the operator that carries it:
 ``Algebra`` and ``Semifield``, which is what makes a conditional probability
 ``E[q and e] divide E[e]`` an ordinary formula rather than a special construct;
 ``LOGPROBABILITY`` divides by subtracting, because that is what division is in
-log space. Custom structures use whichever classes provide the roles they have.
+log space. ``GODEL`` is an ``Algebra`` too: the minimum distributes over the
+maximum. ``PRODUCT`` and ``LUKASIEWICZ`` are plain structures, because their
+``and`` does not distribute over their ``or``, so a formula over them is
+evaluated as it is written. Custom structures use whichever classes provide
+the roles they have. An operator's function applies element by element: it
+receives its operands as tensors of one shape and computes each entry of its
+result from the operands' entries at that position, so an evaluator can apply
+it to many nodes of a circuit in one call.
 
 .. code-block:: python
 
@@ -186,6 +208,9 @@ Examples
    (=(Burglary,true)_boolean or =(Earthquake,true)_boolean)_probability
      times p(Burglary)_probability
 
+   # Fuzzy structure: the same connectives, under the Łukasiewicz t-norm
+   forall(X): smokes(X)_lukasiewicz implies cancer(X)_lukasiewicz
+
 Predicates
 ----------
 
@@ -214,6 +239,7 @@ Mapping to AST nodes
 Syntax                          AST node
 ------------------------------  --------------------------------------------------
 ``Op(V1, V2; p1): body``         ``Aggregation(Op, (V1, V2), (p1,), body)``
+``Op[phi, psi]``                 ``AggregationOp(Op, (phi, psi))``
 ``(phi)_structure``              ``Transformation(structure, phi)``
 ``lhs Op rhs``                   ``BinaryOp(Op, lhs, rhs)``
 ``Op phi``                       ``UnaryOp(Op, phi)``

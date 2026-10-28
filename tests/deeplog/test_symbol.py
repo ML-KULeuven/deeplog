@@ -78,23 +78,29 @@ def test_empty_list():
     assert parse_symbol("[]") == ("nil",)
 
 
-bracketed_examples = [
-    ("f((a,b))", ("f", (",", ("a",), ("b",)))),
-    ("f((a;b))", ("f", (";", ("a",), ("b",)))),
-    ("f(a is b)", ("f", ("is", ("a",), ("b",)))),
-    ("(a;b),c", (",", (";", ("a",), ("b",)), ("c",))),
-    ("(a,b),c", (",", (",", ("a",), ("b",)), ("c",))),
-    ("a,b;c", (";", (",", ("a",), ("b",)), ("c",))),
-    ("a:-(b;c),d", (":-", ("a",), (",", (";", ("b",), ("c",)), ("d",)))),
-    ("(a is b) is c", ("is", ("is", ("a",), ("b",)), ("c",))),
+written_examples = [
+    ("is(Z,+(N1,N2))", ("is", ("Z",), ("+", ("N1",), ("N2",)))),
+    (",(;(a,b),c)", (",", (";", ("a",), ("b",)), ("c",))),
+    ("f((,(a,b)))", ("f", (",", ("a",), ("b",)))),
+    ("f(x,(,(a,b)),(a,b))", ("f", ("x",), (",", ("a",), ("b",)), ("a,b",))),
+    ("f(;(a,b))", ("f", (";", ("a",), ("b",)))),
+    (":-(a,(,(;(b,c),d)))", (":-", ("a",), (",", (";", ("b",), ("c",)), ("d",)))),
+    ("(a _ s) _ t", ("_", ("_", ("a",), ("s",)), ("t",))),
+    ("f(a _ s,b)", ("f", ("_", ("a",), ("s",)), ("b",))),
 ]
 
 
-@pytest.mark.parametrize(["symbol_str", "symbol"], bracketed_examples)
-def test_brackets_group_and_are_written_as_in_prolog(symbol_str, symbol):
-    """The text is SWI-Prolog's ``writeq`` of the term, up to spaces around ``is``."""
-    assert parse_symbol(symbol_str) == symbol
+@pytest.mark.parametrize(["symbol_str", "symbol"], written_examples)
+def test_a_symbol_is_written_as_the_text_that_reads_back(symbol_str, symbol):
+    """Every functor is written before its arguments, and brackets group."""
     assert symbol_to_str(symbol) == symbol_str
+    assert parse_symbol(symbol_str) == symbol
+
+
+@pytest.mark.parametrize("symbol_str", ["X is Y", "a , b , c", "a :- b", "N1 + N2"])
+def test_a_prolog_operator_is_part_of_a_constant(symbol_str):
+    """Prolog's operators are read by the Prolog grounding's parser, not here."""
+    assert parse_symbol(symbol_str) == (symbol_str,)
 
 
 def test_redundant_brackets_are_dropped():
@@ -111,8 +117,6 @@ def test_infix_functor_parsing():
     assert parse_symbol("a _ b") == ("_", ("a",), ("b",))
     #    assert parse_symbol("a_b") == ("_", ("a",), ("b",))
     assert parse_symbol("aux0") == ("aux0",)
-    assert parse_symbol("X is Y") == ("is", ("X",), ("Y",))
-    assert parse_symbol("a , b , c") == (",", ("a",), (",", ("b",), ("c",)))
 
 
 rule_examples = [

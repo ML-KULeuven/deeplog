@@ -127,6 +127,13 @@ PROGRAMS = {
         "?- addition(i1,i2,S).",
         {("digit", 2)},
     ),
+    "infix_arithmetic": (
+        "addition(I1,I2,S) :- between(0,9,N1), between(0,9,N2), "
+        "digit(I1,N1), digit(I2,N2), S is (N1 + N2 * 1) mod 10.\n"
+        "digit(I,N).\n"
+        "?- addition(i1,i2,S).",
+        {("digit", 2)},
+    ),
     "multi_digit_addition": (
         """
         classify(I,N).

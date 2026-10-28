@@ -23,6 +23,7 @@ from deeplog import reshape
 from deeplog.shape import SymTensor
 
 
+FALSE = ("false",)
 TRUE = ("true",)
 
 BURGLARY = ("Burglary",)
@@ -34,8 +35,24 @@ EARTHQUAKE_ATOM = ("=", EARTHQUAKE, TRUE)
 BURGLARY_BOOL_SYM = ("_", BURGLARY_ATOM, ("boolean",))
 EARTHQUAKE_BOOL_SYM = ("_", EARTHQUAKE_ATOM, ("boolean",))
 
-BURGLARY_PROB_SYM = ("_", BURGLARY_ATOM, ("probability",))
-EARTHQUAKE_PROB_SYM = ("_", EARTHQUAKE_ATOM, ("probability",))
+BURGLARY_PROB_SYM = ("_", ("burglary", TRUE), ("probability",))
+EARTHQUAKE_PROB_SYM = ("_", ("earthquake", TRUE), ("probability",))
+NOT_BURGLARY_PROB_SYM = ("_", ("burglary", FALSE), ("probability",))
+NOT_EARTHQUAKE_PROB_SYM = ("_", ("earthquake", FALSE), ("probability",))
+
+#: The inputs of an expectation over ``Burglary`` and ``Earthquake`` without a
+#: distribution: each binder's factor at each of its values.
+DISTRIBUTION = [
+    NOT_BURGLARY_PROB_SYM,
+    BURGLARY_PROB_SYM,
+    NOT_EARTHQUAKE_PROB_SYM,
+    EARTHQUAKE_PROB_SYM,
+]
+
+
+def _both(probabilities: torch.Tensor) -> torch.Tensor:
+    """Each column ``p``, a binder's probability of true, as its factor ``(1 - p, p)``."""
+    return torch.stack([1 - probabilities, probabilities], dim=-1).flatten(-2)
 
 
 def _expectation(binders, child):
@@ -63,16 +80,14 @@ def test_posterior_disjunction_evidence():
     )
     module = reshape(
         Compiler().compile(_posterior(joint, evidence)),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+        input=SymTensor(DISTRIBUTION),
     )
 
-    assert module.get_input_shape() == SymTensor(
-        [BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]
-    )
+    assert module.get_input_shape() == SymTensor(DISTRIBUTION)
     assert len(list(module.get_output_shape())) == 1
 
     # P(B)=0.8 ; P(B∨E)=1-0.2*0.7=0.86 ; posterior = 0.8/0.86
-    result = module(torch.tensor([[0.8, 0.3]]))
+    result = module(_both(torch.tensor([[0.8, 0.3]])))
     torch.testing.assert_close(result, torch.tensor([[0.8 / 0.86]]))
 
 
@@ -89,13 +104,11 @@ def test_posterior_distinct_symbol_sets():
     evidence = _expectation([EARTHQUAKE], Atom(EARTHQUAKE_BOOL_SYM))
     module = reshape(
         Compiler().compile(_posterior(joint, evidence)),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+        input=SymTensor(DISTRIBUTION),
     )
 
-    assert module.get_input_shape() == SymTensor(
-        [BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]
-    )
-    result = module(torch.tensor([[0.8, 0.3]]))
+    assert module.get_input_shape() == SymTensor(DISTRIBUTION)
+    result = module(_both(torch.tensor([[0.8, 0.3]])))
     torch.testing.assert_close(result, torch.tensor([[0.8]]))
 
 
@@ -108,10 +121,10 @@ def test_posterior_impossible_evidence_stays_finite():
     evidence = _expectation([EARTHQUAKE], Atom(EARTHQUAKE_BOOL_SYM))
     module = reshape(
         Compiler().compile(_posterior(joint, evidence)),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+        input=SymTensor(DISTRIBUTION),
     )
 
-    result = module(torch.tensor([[0.8, 0.0]]))
+    result = module(_both(torch.tensor([[0.8, 0.0]])))
     assert torch.isfinite(result).all()
 
 
@@ -159,12 +172,12 @@ def _wmc(joint: bool) -> str:
         return (
             "(sum(Burglary, Earthquake): "
             "(=(Burglary,true)_boolean and =(Earthquake,true)_boolean)_probability "
-            "times (=(Burglary,true)_probability times =(Earthquake,true)_probability))"
+            "times (b_probability times e_probability))"
         )
     return (
         "(sum(Earthquake): "
         "(=(Earthquake,true)_boolean)_probability "
-        "times (=(Earthquake,true)_probability))"
+        "times (e_probability))"
     )
 
 
@@ -173,7 +186,7 @@ def test_posterior_via_parser_divide_syntax():
     text = f"{_wmc(True)} divide {_wmc(False)}"
     module = reshape(
         parse_formula_to_module(text),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+        input=SymTensor(["b _ probability", "e _ probability"]),
     )
     torch.testing.assert_close(
         module(torch.tensor([[0.8, 0.3]])), torch.tensor([[0.8]])
@@ -191,11 +204,11 @@ def test_parser_divide_that_is_no_posterior_is_a_plain_ratio():
     disjunctive = (
         "(sum(Burglary, Earthquake): "
         "(=(Burglary,true)_boolean or =(Earthquake,true)_boolean)_probability "
-        "times (=(Burglary,true)_probability times =(Earthquake,true)_probability))"
+        "times (b_probability times e_probability))"
     )
     module = reshape(
         parse_formula_to_module(f"{disjunctive} divide {_wmc(False)}"),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+        input=SymTensor(["b _ probability", "e _ probability"]),
     )
     torch.testing.assert_close(
         module(torch.tensor([[0.8, 0.3]])), torch.tensor([[3 * 0.8 * 0.3 / 0.3]])
@@ -219,12 +232,12 @@ def test_operator_above_a_division_composes():
 
     module = reshape(
         compiler.compile(BinaryOp("times", _posterior(joint, evidence), other)),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+        input=SymTensor(DISTRIBUTION),
     )
 
     # P(B|E) = 0.24/0.3 = 0.8, times E[B] = 0.8 -> 0.64
     torch.testing.assert_close(
-        module(torch.tensor([[0.8, 0.3]])), torch.tensor([[0.64]])
+        module(_both(torch.tensor([[0.8, 0.3]]))), torch.tensor([[0.64]])
     )
 
 
@@ -239,9 +252,9 @@ def test_division_nested_under_a_division():
 
     module = reshape(
         compiler.compile(_posterior(_posterior(joint, evidence), other)),
-        input=SymTensor([BURGLARY_PROB_SYM, EARTHQUAKE_PROB_SYM]),
+        input=SymTensor(DISTRIBUTION),
     )
 
     torch.testing.assert_close(
-        module(torch.tensor([[0.8, 0.3]])), torch.tensor([[1.0]])
+        module(_both(torch.tensor([[0.8, 0.3]]))), torch.tensor([[1.0]])
     )

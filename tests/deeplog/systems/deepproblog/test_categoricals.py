@@ -23,6 +23,7 @@ import pytest
 import torch
 
 from deeplog import Compiler
+from deeplog import Domain
 from deeplog import NetworkPredicate
 from deeplog import to_dict
 from deeplog.grounding.prolog import JanusGrounder
@@ -465,7 +466,7 @@ def _neural_compiler():
     return Compiler(
         atom_builders={
             ("m_digit", 2, "probability"): partial(
-                NetworkPredicate, module=_Passthrough()
+                NetworkPredicate, module=_Passthrough(), domain=Domain.of(range(3))
             )
         }
     )

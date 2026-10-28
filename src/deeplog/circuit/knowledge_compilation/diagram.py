@@ -79,7 +79,7 @@ class DiagramAlgebra[T](DeepLogFormulaFactory[T]):
             f"structure's other operators have no logical reading."
         )
 
-    # A circuit has no node for the three eliminators below: they are the part
+    # A circuit has no node for the four eliminators below: they are the part
     # of the formula algebra a circuit cannot express.
 
     def create_transformation(self, structure: str, child: T) -> T:
@@ -87,6 +87,13 @@ class DiagramAlgebra[T](DeepLogFormulaFactory[T]):
         raise NotImplementedError(
             f"{type(self).__name__} folds circuit nodes; a circuit has no "
             f"transformation, only the structure it was built in."
+        )
+
+    def create_aggregation_op(self, operation: str, operands: Sequence[T]) -> T:
+        """Unreachable: a circuit holds no aggregation."""
+        raise NotImplementedError(
+            f"{type(self).__name__} folds circuit nodes; a circuit has no "
+            f"aggregation, only operators."
         )
 
     def create_aggregation(

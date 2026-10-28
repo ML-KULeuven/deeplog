@@ -6,15 +6,19 @@ and one package per grounder under :mod:`deeplog.grounding`.
 """
 
 from .algebraic import BOOLEAN
+from .algebraic import GODEL
 from .algebraic import LOGPROBABILITY
+from .algebraic import LUKASIEWICZ
 from .algebraic import MPE
 from .algebraic import PROBABILITY
+from .algebraic import PRODUCT
 from .algebraic import REAL
 from .algebraic import Algebra
 from .algebraic import AlgebraicStructure
 from .algebraic import Semifield
 from .algebraic import Semiring
 from .formula.ast import Aggregation
+from .formula.ast import AggregationOp
 from .formula.ast import Atom
 from .formula.ast import BinaryOp
 from .formula.ast import FormulaNode
@@ -95,6 +99,7 @@ __all__ = [
     "UnaryOp",
     "BinaryOp",
     "Transformation",
+    "AggregationOp",
     "Aggregation",
     "parse_formula",
     "parse_dimacs_cnf",
@@ -108,6 +113,9 @@ __all__ = [
     "LOGPROBABILITY",
     "REAL",
     "MPE",
+    "GODEL",
+    "PRODUCT",
+    "LUKASIEWICZ",
     # What atoms mean
     "Predicate",
     "NetworkPredicate",

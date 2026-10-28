@@ -17,7 +17,7 @@ def parse_dimacs_cnf(dimacs: str) -> FormulaNode:
 
     Variable ``i`` is the variable ``Vi``, and the literal ``i`` its test
     ``=(Vi,true)``, so ``expectation(V1, ..., Vn): φ`` is the probability that
-    the formula ``φ`` holds. A negative literal is the negation of its test, a
+    the formula ``φ`` holds when each ``Vi`` is true with probability ``vi(true)``. A negative literal is the negation of its test, a
     clause the disjunction of its literals, and the formula the conjunction of
     its clauses. An empty clause is ``false``, and a clause holding a literal and
     its negation ``true``.

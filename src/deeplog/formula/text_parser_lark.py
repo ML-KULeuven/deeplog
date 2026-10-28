@@ -11,6 +11,7 @@ from ..module.deeplog_module import DeepLogModule
 from ..symbol import Symbol
 from ..symbol import parse_symbol
 from .ast import Aggregation
+from .ast import AggregationOp
 from .ast import Atom
 from .ast import BinaryOp
 from .ast import FormulaNode
@@ -41,10 +42,12 @@ binary: unary (IDENT unary)*
 ?unary: prefix
       | transformation
       | grouped
+      | aggregation_op
       | leaf
 
 prefix.-1: IDENT unary
 grouped: "(" deeplogfactory ")"
+aggregation_op: IDENT "[" deeplogfactory ("," deeplogfactory)* "]"
 transformation: grouped STRUCT_SUFFIX
 leaf: symbol STRUCT_SUFFIX
 
@@ -133,6 +136,9 @@ def _build(node: Tree, args: list, text: str) -> object:
         op, binders, *rest = args
         params, child = rest if len(rest) == 2 else ((), rest[0])
         return Aggregation(_token_value(op), binders, params, child)
+    if name == "aggregation_op":
+        op, *operands = args
+        return AggregationOp(_token_value(op), tuple(operands))
     if name == "binders":
         return tuple(parse_symbol(_token_value(token)) for token in args)
     if name == "params":

@@ -97,13 +97,6 @@ class AddingPredicate(Predicate[torch.Tensor, torch.Tensor]):
         return lhs + rhs
 
 
-class NumericFirstArgument(AddingPredicate):
-    distinct_arguments = (0,)
-
-    def resolve_argument(self, symbol, index, /):
-        return float(symbol[0]) if index == 0 else symbol
-
-
 def test_predicate_names_its_columns_by_the_atoms_it_is_given():
     atoms = [
         with_structure(("adding", ("x",), ("a",)), "real"),
@@ -170,11 +163,6 @@ def test_predicate_expands_repeated_symbols_alongside_constants():
 
     # x + 2 (constant row), then x + a
     torch.testing.assert_close(result, torch.tensor([[5.0, 8.0]]))
-
-
-def test_predicate_rejects_unexpanded_position_carrying_constants():
-    with pytest.raises(ValueError, match="distinct_arguments"):
-        NumericFirstArgument([("numeric", ("0.5",), ("a",))])
 
 
 class Distance(Predicate[torch.Tensor, torch.Tensor]):
@@ -281,3 +269,33 @@ def test_a_predicate_can_give_each_atom_its_own_domain():
 def test_a_predicate_gives_one_domain_per_argument():
     with pytest.raises(ValueError, match="gives 2 domains for an atom of 1 arguments"):
         Weight([("w", ("green",))], (VALUES, VALUES))
+
+
+class _Seen(Predicate[torch.Tensor]):
+    """A predicate over ``domain``, recording the values it is given."""
+
+    def __init__(self, atoms, domain):
+        super().__init__(atoms, (domain,))
+        self.given: list[torch.Tensor] = []
+
+    def forward_predicate(self, value):
+        self.given.append(value)
+        return torch.zeros(value.shape[0])
+
+
+@pytest.mark.parametrize(
+    ("values", "written", "element"),
+    [
+        (torch.tensor([2**53, 2**53 + 1]), "9007199254740993", 2**53 + 1),
+        (torch.tensor([0.1, 0.2], dtype=torch.float64), "0.1", 0.1),
+    ],
+    ids=["an integer past float64", "a float64"],
+)
+def test_a_written_number_is_the_domain_s_own_element(values, written, element):
+    """It reaches the predicate in the domain's dtype, as an aggregation feeds it."""
+    seen = _Seen([("seen", (written,))], Domain.of_tensor(values))
+
+    seen(torch.zeros(1, 0))
+
+    assert seen.given[0].dtype == values.dtype
+    assert seen.given[0].tolist() == [element]

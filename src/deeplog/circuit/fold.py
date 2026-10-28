@@ -12,7 +12,7 @@ So a circuit is a sub-algebra of the formula AST, and folding one needs no
 interface of its own: the same
 :class:`~deeplog.formula.deeplogformulafactory.DeepLogFormulaFactory` that
 :func:`deeplog.formula.ast.fold` drives over a tree drives this over a graph.
-An algebra that only ever meets circuit nodes raises on the three eliminators a
+An algebra that only ever meets circuit nodes raises on the four eliminators a
 circuit has no node for.
 """
 

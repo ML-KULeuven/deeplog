@@ -1,22 +1,23 @@
 #  Copyright (c) 2024-2026. KU Leuven
-"""Tests for the network predicate: the rows its values read, and its sharing of inputs.
+"""Tests for the network predicate: the rows it computes, and the atoms read from them.
 
-An atom reads the row at its value's position in the predicate's domain, or,
-without a domain, the row its value numbers.
-
-Ground atoms that share a first argument (``digit(i1,0) … digit(i1,2)``) are
-distinct evaluations over the same input, so the predicate asks for that image
-once and the wrapped module sees one row per distinct argument rather than one
-per evaluation.
+The predicate reads only the first arguments of the atoms it is given and
+computes every value of each, one row of the module's output per distinct
+first argument. An atom is the entry of its first argument's row at its value's
+position in the predicate's domain.
 """
 
 import pytest
 import torch
 from torch import nn
 
+from deeplog import Compiler
 from deeplog import Domain
 from deeplog import NetworkPredicate
 from deeplog import SymTensor
+from deeplog import parse_formula
+from deeplog import reshape
+from deeplog import with_structure
 
 
 class RecordingClassifier(nn.Module):
@@ -38,57 +39,56 @@ class RecordingClassifier(nn.Module):
         return x * self.weight + offsets
 
 
-def _predicate(module, images):
-    """The ``digit/2`` predicate over ``images x {0, 1, 2}``."""
-    atoms = [
-        ("digit", (image,), (str(n),))
-        for image in images
-        for n in range(module.n_classes)
-    ]
-    return NetworkPredicate(atoms, module=module)
+_CLASSES = Domain.of(range(3))
+
+
+def _digit(image, value):
+    return with_structure(("digit", (image,), (value,)), "probability")
 
 
 def _inputs(*batch_values):
     """One input row per distinct image, for each batch item."""
-    images = torch.tensor([[[v] for v in values] for values in batch_values])
-    return images, torch.zeros(len(batch_values), 0)
+    return torch.tensor([[[v] for v in values] for values in batch_values])
 
 
-def test_predicate_asks_for_each_image_once():
-    predicate = _predicate(RecordingClassifier(), ("i1", "i2"))
+def test_it_computes_every_value_of_each_first_argument():
+    """Asked for one value of ``i1`` and a variable of ``i2``, it computes all six."""
+    predicate = NetworkPredicate(
+        [_digit("i1", "2"), _digit("i2", "D")],
+        module=RecordingClassifier(),
+        domain=_CLASSES,
+    )
 
-    # Six evaluations, two images: the interface names each image once.
-    assert predicate.get_input_shape() == (
-        SymTensor([("i1",), ("i2",)]),
-        SymTensor([]),
+    assert predicate.get_input_shape() == (SymTensor([("i1",), ("i2",)]),)
+    assert predicate.get_output_shape() == SymTensor(
+        [_digit(image, str(v)) for image in ("i1", "i2") for v in range(3)]
     )
 
 
-def test_module_runs_once_per_distinct_first_argument():
+def test_its_module_runs_once_on_the_distinct_first_arguments():
     module = RecordingClassifier()
-    predicate = _predicate(module, ("i1", "i2"))
+    predicate = NetworkPredicate(
+        [_digit("i1", "0"), _digit("i1", "1"), _digit("i2", "0")],
+        module=module,
+        domain=_CLASSES,
+    )
 
-    predicate(*_inputs([5.0, 7.0]))
-
-    assert module.rows_seen == [2]
-
-
-def test_shared_inputs_give_the_per_evaluation_values():
-    module = RecordingClassifier()
-    predicate = _predicate(module, ("i1", "i2"))
-
-    result = predicate(*_inputs([5.0, 7.0]))
+    result = predicate(_inputs([5.0, 7.0]))
 
     # digit(image, n) = value * weight + n, for value in (5, 7) and n in 0..2.
-    expected = torch.tensor([[10.0, 11.0, 12.0, 14.0, 15.0, 16.0]])
-    torch.testing.assert_close(result, expected)
+    assert module.rows_seen == [2]
+    torch.testing.assert_close(
+        result, torch.tensor([[10.0, 11.0, 12.0, 14.0, 15.0, 16.0]])
+    )
 
 
-def test_shared_inputs_preserve_the_batch_dimension():
+def test_it_keeps_the_batch_dimension():
     module = RecordingClassifier()
-    predicate = _predicate(module, ("i1", "i2"))
+    predicate = NetworkPredicate(
+        [_digit("i1", "0"), _digit("i2", "0")], module=module, domain=_CLASSES
+    )
 
-    result = predicate(*_inputs([5.0, 7.0], [1.0, 3.0]))
+    result = predicate(_inputs([5.0, 7.0], [1.0, 3.0]))
 
     assert module.rows_seen == [4]  # two batch items, two distinct images each
     expected = torch.tensor(
@@ -97,97 +97,123 @@ def test_shared_inputs_preserve_the_batch_dimension():
     torch.testing.assert_close(result, expected)
 
 
-def test_distinct_first_arguments_are_all_evaluated():
-    module = RecordingClassifier(n_classes=1)
-    predicate = _predicate(module, ("i1", "i2", "i3"))
-
-    result = predicate(*_inputs([5.0, 7.0, 9.0]))
-
-    assert module.rows_seen == [3]  # nothing shared, nothing to skip
-    torch.testing.assert_close(result, torch.tensor([[10.0, 14.0, 18.0]]))
-
-
-def test_gradients_reach_the_module_through_shared_inputs():
+def test_gradients_reach_the_module():
     module = RecordingClassifier()
-    predicate = _predicate(module, ("i1", "i2"))
+    predicate = NetworkPredicate(
+        [_digit("i1", "0"), _digit("i2", "0")], module=module, domain=_CLASSES
+    )
 
-    predicate(*_inputs([5.0, 7.0])).sum().backward()
+    predicate(_inputs([5.0, 7.0])).sum().backward()
 
-    # d/dweight of sum over the six evaluations of (value * weight + n).
+    # d/dweight of sum over the six entries of (value * weight + n).
     assert module.weight.grad is not None
     torch.testing.assert_close(module.weight.grad, torch.tensor(3 * (5.0 + 7.0)))
 
 
-def _read(domain, value, *inputs):
-    """What ``digit(i1, value)`` reads from the scores ``[10, 11, 12]`` of one image."""
-    predicate = NetworkPredicate(
-        [("digit", ("i1",), (value,))], module=RecordingClassifier(), domain=domain
+def _compiled(domain, value):
+    """``digit(i1, value)`` compiled over ``domain``, ``value`` a variable or written."""
+    compiler = Compiler(
+        atom_builders={
+            ("digit", 2, "probability"): lambda atoms: NetworkPredicate(
+                atoms, module=RecordingClassifier(), domain=domain
+            )
+        }
     )
-    images = torch.tensor([[[5.0]]])
-    return predicate(images, *(inputs or (torch.zeros(1, 0),))).item()
+    return compiler.compile(parse_formula(f"digit(i1,{value})_probability"))
 
 
 @pytest.mark.parametrize(
     ("domain", "value", "row"),
     [
-        (Domain.of(range(1, 4)), "2", 1),
-        (Domain.of(["sister", "uncle", "aunt"]), "uncle", 1),
+        (Domain.of(range(1, 4)), "3", 2),
+        (Domain.of(["zero", "one", "two"]), "one", 1),
         (Domain.of_tensor(torch.tensor([1, 2, 3])), "3", 2),
-        (None, "2", 2),
+        (Domain.of_tensor(torch.tensor([0.5, 1.5, 2.5])), "1.5", 1),
     ],
-    ids=["numbers from 1", "names", "tensor of numbers", "no domain"],
+    ids=["numbers from 1", "names", "tensor of numbers", "tensor of floats"],
 )
 def test_a_written_value_reads_the_row_of_its_position_in_the_domain(
     domain, value, row
 ):
-    assert _read(domain, value) == 10.0 + row
+    """The scores of an image of 5 are 10, 11 and 12."""
+    module = _compiled(domain, value)
+
+    assert module(torch.tensor([[[5.0]]])).item() == 10.0 + row
 
 
 @pytest.mark.parametrize(
-    ("domain", "value", "row"),
-    [(Domain.of_tensor(torch.tensor([1, 2, 3])), 3.0, 2), (None, 1.0, 1)],
-    ids=["domain", "no domain"],
+    ("domain", "given", "row"),
+    [(Domain.of_tensor(torch.tensor([1, 2, 3])), 3.0, 2), (_CLASSES, 1, 1)],
+    ids=["a number", "a named value's position"],
 )
 def test_a_variable_is_given_a_value_and_reads_the_row_of_its_position(
-    domain, value, row
+    domain, given, row
 ):
-    assert _read(domain, "N", torch.tensor([[value]])) == 10.0 + row
+    """``N`` is free, so the caller gives its value, and the atom reads that row."""
+    module = reshape(
+        _compiled(domain, "N"), input=(SymTensor([("i1",)]), SymTensor([("N",)]))
+    )
+
+    assert module(torch.tensor([[[5.0]]]), torch.tensor([[given]])).item() == 10.0 + row
 
 
 @pytest.mark.parametrize(
     ("domain", "value", "message"),
     [
         (Domain.of(range(1, 4)), "0", "0 is not a value of the domain of digit/2"),
-        (None, "uncle", "uncle is not a row of the module of digit/2"),
-        (None, "1.5", "1.5 is not a row"),
-        (None, "-1", "-1 is not a row"),
+        (_CLASSES, "uncle", "uncle is not a value of the domain of digit/2"),
+        (
+            Domain.of_tensor(torch.tensor([1, 2, 3])),
+            "2.0",
+            "2.0 is not a value of the domain of digit/2",
+        ),
     ],
-    ids=["outside the domain", "a name without a domain", "a fraction", "negative"],
+    ids=["outside the domain", "a name", "another numeral"],
 )
 def test_a_written_value_that_reads_no_row_is_refused(domain, value, message):
     with pytest.raises(ValueError, match=message):
-        _read(domain, value)
+        NetworkPredicate(
+            [_digit("i1", value)], module=RecordingClassifier(), domain=domain
+        )
 
 
-@pytest.mark.parametrize(
-    ("domain", "value", "message"),
-    [
-        (Domain.of_tensor(torch.tensor([1, 2, 3])), 0.0, "0.0, which is not in"),
-        (None, 3.0, "3.0, which is not a row of its module's 3 rows"),
-        (None, 0.5, "0.5, which is not a row"),
-    ],
-    ids=["outside the domain", "past the last row", "a fraction"],
-)
-def test_a_given_value_that_reads_no_row_is_refused(domain, value, message):
-    with pytest.raises(ValueError, match=message):
-        _read(domain, "N", torch.tensor([[value]]))
+def test_a_given_value_that_reads_no_row_is_refused():
+    module = reshape(
+        _compiled(Domain.of_tensor(torch.tensor([1, 2, 3])), "N"),
+        input=(SymTensor([("i1",)]), SymTensor([("N",)])),
+    )
+
+    with pytest.raises(ValueError, match="given 0.0, which is not a value"):
+        module(torch.tensor([[[5.0]]]), torch.tensor([[0.0]]))
+
+
+def test_a_written_number_as_the_input_is_refused():
+    with pytest.raises(ValueError, match="the number 5 names none"):
+        NetworkPredicate(
+            [_digit("5", "0")], module=RecordingClassifier(), domain=_CLASSES
+        )
 
 
 def test_a_module_without_a_row_per_value_is_refused():
+    predicate = NetworkPredicate(
+        [_digit("i1", "2")], module=RecordingClassifier(), domain=Domain.of(range(4))
+    )
+
     with pytest.raises(ValueError, match="where its domain has 4 values"):
-        _read(Domain.of(range(4)), "2")
+        predicate(_inputs([5.0]))
 
 
-def test_a_domain_of_repeated_values_is_refused():
-    with pytest.raises(ValueError, match="not distinct scalars"):
-        _read(Domain.of_tensor(torch.tensor([1, 1, 2])), "1")
+@pytest.mark.parametrize(
+    ("domain", "message"),
+    [
+        (Domain.of_tensor(torch.tensor([1, 1, 2])), "holds 1 twice"),
+        (Domain.of_tensor(torch.randn(3, 2)), "have no names"),
+        (Domain.of_values(), "have no names"),
+    ],
+    ids=["a number twice", "vectors", "the values"],
+)
+def test_a_domain_that_writes_no_values_is_refused(domain, message):
+    with pytest.raises(ValueError, match=message):
+        NetworkPredicate(
+            [_digit("i1", "1")], module=RecordingClassifier(), domain=domain
+        )

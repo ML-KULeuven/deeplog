@@ -3,10 +3,13 @@ import pytest
 import torch
 
 from deeplog import SymTensor
+from deeplog import WrappedModule
 from deeplog import compose_modules
 from deeplog.module.module_circuit import ModuleCircuit
 
+from ._utils import Counted
 from ._utils import DummyModule
+from ._utils import values_along
 
 
 class TestModuleCircuit:
@@ -55,6 +58,30 @@ class TestModuleCircuit:
         # input a=2  →  b=4, c=6  →  transformation merges into [4,6]  →  sum=10
         result = circuit(torch.FloatTensor([[2.0]]))
         assert pytest.approx(10.0) == float(result)
+
+    def test_a_transformation_takes_each_output_it_reads_from_once(self):
+        """Reading three symbols of one output takes that output once, not three times.
+
+        The grid holds a=1, b=2, c=3 and d=4, so the reader gives 100d + 10a + c = 413.
+        """
+        grid = SymTensor([["a", "b"], ["c", "d"]])
+        producer = DummyModule(
+            SymTensor(["w", "x", "y", "z"]), grid, lambda t: t.reshape(-1, 2, 2)
+        )
+        reader = DummyModule(
+            SymTensor(["d", "a", "c"]),
+            SymTensor("e"),
+            lambda t: 100 * t[:, :1] + 10 * t[:, 1:2] + t[:, 2:],
+        )
+        circuit = ModuleCircuit(
+            [producer, reader], SymTensor("e"), SymTensor(["w", "x", "y", "z"])
+        )
+
+        (transformation,) = (
+            m for m in circuit._sub_modules if m is not producer and m is not reader
+        )
+        assert transformation.get_input_shape() == grid
+        assert float(circuit(torch.FloatTensor([[1, 2, 3, 4]]))) == pytest.approx(413)
 
     def test_no_external_inputs_evaluates_single_row(self):
         """A circuit whose leaves are all baked has no inputs; it yields one row.
@@ -218,3 +245,112 @@ def test_compose_refuses_an_input_shape_holding_a_produced_symbol(count):
 
     with pytest.raises(ValueError, match="which the modules produce"):
         compose_modules(modules, SymTensor("b"), input_shape=SymTensor(["a", "b"]))
+
+
+# --- A composition over variables ------------------------------------------------
+
+a = ("a",)
+X, Y = ("X",), ("Y",)
+p_x, q_y, r_xy = ("p", X), ("q", Y), ("r", X, Y)
+
+
+def test_a_value_holding_a_variable_has_its_axis_behind_its_symbols():
+    """``p(X)`` over the 3 values of ``X`` is given as ``(batch, 1, 3)``."""
+    circuit = ModuleCircuit(
+        [
+            values_along(X, torch.tensor([1.0, 2.0, 3.0])),
+            WrappedModule(
+                lambda v, a: 10 * v * a,
+                (SymTensor([X]), SymTensor([a])),
+                SymTensor([p_x]),
+            ),
+        ],
+        SymTensor([p_x]),
+    )
+
+    torch.testing.assert_close(
+        circuit(torch.tensor([[1.0], [2.0]])),
+        torch.tensor([[[10.0, 20.0, 30.0]], [[20.0, 40.0, 60.0]]]),
+    )
+
+
+def test_each_module_is_called_once_per_assignment_of_the_variables_it_reads():
+    """``p(X)`` at the 3 values of ``X``, ``q(Y)`` at the 2 of ``Y``, ``r(X,Y)`` at the 6 pairs."""
+    scale, shift, add = (
+        Counted(lambda v: 10 * v),
+        Counted(lambda v, a: v + a),
+        Counted(lambda p, q: p + q),
+    )
+    circuit = ModuleCircuit(
+        [
+            values_along(X, torch.tensor([1.0, 2.0, 3.0])),
+            values_along(Y, torch.tensor([0.1, 0.2])),
+            WrappedModule(scale, SymTensor([X]), SymTensor([p_x])),
+            WrappedModule(shift, (SymTensor([Y]), SymTensor([a])), SymTensor([q_y])),
+            WrappedModule(add, (SymTensor([p_x]), SymTensor([q_y])), SymTensor([r_xy])),
+        ],
+        SymTensor([r_xy]),
+    )
+
+    result = circuit(torch.tensor([[5.0]]))
+
+    assert (scale.rows, shift.rows, add.rows) == ([3], [2], [6])
+    expected = 10 * torch.tensor([1.0, 2.0, 3.0])[:, None] + torch.tensor([5.1, 5.2])
+    torch.testing.assert_close(result, expected.reshape(1, 1, 3, 2))
+
+
+def test_a_value_over_no_variable_is_computed_once_per_batch_row():
+    """``q`` reads no variable, so it runs on the batch alone, however many ``X`` it meets."""
+    once = Counted(lambda a: 2 * a)
+    circuit = ModuleCircuit(
+        [
+            values_along(X, torch.tensor([1.0, 2.0, 3.0])),
+            WrappedModule(once, SymTensor([a]), SymTensor([("q",)])),
+            WrappedModule(
+                lambda v, q: v * q,
+                (SymTensor([X]), SymTensor([("q",)])),
+                SymTensor([p_x]),
+            ),
+        ],
+        SymTensor([p_x]),
+    )
+
+    torch.testing.assert_close(
+        circuit(torch.tensor([[1.0]])), torch.tensor([[[2.0, 4.0, 6.0]]])
+    )
+    assert once.rows == [1]
+
+
+def test_a_module_giving_a_variable_it_does_not_read_gives_its_axis_behind_its_symbols():
+    """Ground atoms ``t(0) .. t(2)`` read as ``t(X)`` along ``X``: the same tensor, reshaped."""
+    ground = SymTensor([("t", (str(i),)) for i in range(3)])
+    t_x = ("t", X)
+    relabel = WrappedModule(
+        lambda table: table.reshape(table.shape[0], 1, 3), ground, SymTensor([t_x])
+    )
+    times = WrappedModule(
+        lambda t, a: t * a, (SymTensor([t_x]), SymTensor([a])), SymTensor([p_x])
+    )
+    circuit = ModuleCircuit(
+        [relabel, times],
+        SymTensor([p_x]),
+        input_shape=(ground, SymTensor([a])),
+    )
+
+    torch.testing.assert_close(
+        circuit(
+            torch.tensor([[1.0, 2.0, 3.0], [1.0, 1.0, 1.0]]),
+            torch.tensor([[1.0], [2.0]]),
+        ),
+        torch.tensor([[[1.0, 2.0, 3.0]], [[2.0, 2.0, 2.0]]]),
+    )
+
+
+def test_a_module_binding_a_variable_without_its_axis_raises():
+    """``Score1`` is a variable, so a head giving it as a plain column binds it with no axis."""
+    extractor = DummyModule(SymTensor("raw"), SymTensor("hidden"), lambda x: 2 * x)
+    head = DummyModule(SymTensor("hidden"), SymTensor(["Score1"]), lambda x: x + 1)
+    circuit = ModuleCircuit([extractor, head], SymTensor(["Score1"]))
+
+    with pytest.raises(ValueError, match=r"binds Score1.*lowercase \(score1\)"):
+        circuit(torch.tensor([[1.0]]))

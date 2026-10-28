@@ -14,6 +14,7 @@ import pickle
 import pytest
 
 from deeplog import Aggregation
+from deeplog import AggregationOp
 from deeplog import Atom
 from deeplog import BinaryOp
 from deeplog import Compiler
@@ -410,3 +411,29 @@ def test_a_shared_memo_never_answers_for_a_node_that_is_gone():
     ]
 
     assert len({lump.node for lump in lumps}) == 3
+
+
+def test_an_aggregation_of_operands_takes_one_at_least():
+    """Its operands give it its algebra, so with none it has no aggregator to apply."""
+    with pytest.raises(ValueError, match="no operand"):
+        AggregationOp("sum", ())
+
+
+def test_an_aggregation_of_operands_is_a_value_of_its_operands_algebra():
+    """The algebra all its operands share, and none where they disagree."""
+    a, b = Atom(("_", ("a",), ("probability",))), Atom(("_", ("b",), ("godel",)))
+
+    assert AggregationOp("sum", (a, a)).structure == "probability"
+    assert AggregationOp("sum", (a, b)).structure is None
+
+
+def test_rewriting_and_folding_keep_an_aggregation_of_operands():
+    """``map_children`` rebuilds it over its operands, and interning shares an operand."""
+    formula = parse_formula("sum[a_probability, a_probability, b_probability]")
+
+    assert formula.operands[0] is formula.operands[1]
+    assert map_children(formula, lambda child: child) == formula
+    assert repr(formula) == (
+        "AggregationOp(sum, Atom(a_probability), Atom(a_probability), "
+        "Atom(b_probability))"
+    )

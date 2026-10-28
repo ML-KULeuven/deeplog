@@ -61,13 +61,13 @@ Details
   variable's or a written ``true`` or ``false``, by its label, a number or an
   input; use ``_probability`` or ``_logprobability`` to select semiring.
 * **NetworkPredicate**: registered under a binary predicate of the user's
-  choosing, with its module bound, as
-  ``atom_builders={("digit", 2, "probability"): partial(NetworkPredicate, module=net)}``;
+  choosing, with its module and domain bound, as
+  ``atom_builders={("digit", 2, "probability"): partial(NetworkPredicate, module=net, domain=Domain.of(range(10)))}``;
   delegates evaluation to a provided ``torch.nn.Module``. The predicate
-  passes the first argument through the module, and the second argument reads a
-  row of its output. Given a domain, which lists the values of the module's
-  output rows in row order, an atom reads the row at its value's position;
-  without one, a value is its row, counting from 0.
+  passes the first argument through the module, whose output rows stand for
+  the domain's values in order, and ``digit(x, v)`` is the entry of ``x``'s row
+  at ``v``'s position. It computes every value of each first argument it is
+  given, running the module once per distinct first argument.
 * **Your own predicate**: declares the domain of each argument, its sort, with
   ``domains``. Over a named or a tensor domain, a value written there is read as
   a variable there holds it; over the values, ``Domain.of_values()``, the
