@@ -76,9 +76,17 @@ allowed_builtin(between(_,_,_)).
 allowed_builtin(nth0(_,_,_)).
 allowed_builtin(member(_,_)).
 allowed_builtin(length(_,_)).
+allowed_builtin(=(_,_)).
+allowed_builtin(\=(_,_)).
+allowed_builtin(==(_,_)).
 allowed_builtin(\==(_,_)).
-allowed_builtin(=:=(_,_)).
 allowed_builtin(is(_,_)).
+allowed_builtin(=:=(_,_)).
+allowed_builtin(=\=(_,_)).
+allowed_builtin(<(_,_)).
+allowed_builtin(>(_,_)).
+allowed_builtin(=<(_,_)).
+allowed_builtin(>=(_,_)).
 
 %! is_builtin(+Prover, +Goal) is semidet.
 %  Goal is a builtin: an SWI-Prolog builtin a program may call, or one

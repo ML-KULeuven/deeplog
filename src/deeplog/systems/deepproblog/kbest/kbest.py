@@ -39,6 +39,7 @@ from ..parser import get_fact_atom
 from ..parser import get_fact_label
 from ..parser import get_label
 from ..solver import EngineResult
+from ..solver import query_answers
 from ..transformation import remove_labeled_rules
 from .probabilistic_factory import ProbabilisticFactory
 
@@ -165,19 +166,21 @@ class KBestJanusGrounder(JanusGrounder):
 
     def get_result(
         self,
-        program,
+        program: Program,
         goal: Symbol,
         evaluator: Callable[[Symbol], float] | None = None,
     ) -> EngineResult:
         """Prove a single ``goal`` with k-best search."""
         program_id = self._kbest.consult(_clauses(program))
         prob_factory = ProbabilisticFactory(evaluator)
-        formulas = self._kbest_ground(program_id, goal, prob_factory)
+        formulas = query_answers(
+            goal, self._kbest_ground(program_id, goal, prob_factory)
+        )
         return EngineResult(formulas, prob_factory.labels, prob_factory.variables)
 
     def get_query_result(
         self,
-        program,
+        program: Program,
         evaluator: Callable[[Symbol], float] | None = None,
     ) -> EngineResult:
         """Evaluate every query with k-best search, conditioned on constraints."""
@@ -186,9 +189,8 @@ class KBestJanusGrounder(JanusGrounder):
         evidence = self._build_evidence(program, program_id, prob_factory)
         all_formulas: dict[Symbol, FormulaNode] = {}
         for query in filter(is_query, program):
-            for answer, formula in self._kbest_ground(
-                program_id, query[2], prob_factory
-            ).items():
+            proofs = self._kbest_ground(program_id, query[2], prob_factory)
+            for answer, formula in query_answers(query[2], proofs).items():
                 all_formulas[answer] = (
                     formula
                     if evidence is None

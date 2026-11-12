@@ -14,6 +14,7 @@ from deeplog.symbol import parse_symbol
 from deeplog.symbol import symbol_to_pretty_string
 from deeplog.symbol import with_structure
 from deeplog.systems.deepproblog import Solver
+from deeplog.systems.deepproblog.proofs import FALSE
 
 from ...testing_formulas import leaf
 from ...testing_formulas import operands
@@ -78,6 +79,19 @@ class TestEngines:
 
         result = engine.get_query_result(program)
         assert set(result.formulas) == {("a", ("0",)), ("a", ("1",))}
+
+    def test_a_ground_query_without_a_proof_is_false(self, engine_class):
+        """A ground query nothing proves is an answer, whose formula is false."""
+        engine = engine_class()
+        program = tuple(
+            str_to_rules("0.5::n(3).\nt :- n(4).\nu(X) :- n(X), n(4).\n?- t.\n?- u(X).")
+        )
+
+        assert engine.get_query_result(program).formulas == {parse_symbol("t"): FALSE}
+        assert engine.get_result(program, parse_symbol("t")).formulas == {
+            parse_symbol("t"): FALSE
+        }
+        assert engine.get_result(program, parse_symbol("u(X)")).formulas == {}
 
     def test_rule_with_label(self, engine_class):
         engine = engine_class()

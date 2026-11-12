@@ -142,7 +142,7 @@ class Lowering:
         ranges over the domain its arguments there give it, from then on.
 
         Raises:
-            ValueError: If no node is given, or if two nodes name one column.
+            ValueError: If two nodes name one column.
         """
         return self._lower_above(nodes, ())
 
@@ -232,8 +232,6 @@ class Lowering:
         Nothing at or beneath a node of ``given`` is built. No node of ``nodes``
         is among them.
         """
-        if not nodes:
-            raise ValueError("At least one formula is required.")
         undeclared = {
             variable: domain
             for variable, domain in self._sorts.free(nodes).items()

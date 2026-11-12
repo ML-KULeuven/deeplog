@@ -141,9 +141,8 @@ class Compiler:
 
         Raises:
             TypeError: If a mapping is given beside formulas.
-            ValueError: If no formula is given, two formulas are given one name,
-                or a name is labelled with an algebra its formula's value is not
-                in.
+            ValueError: If two formulas are given one name, or a name is
+                labelled with an algebra its formula's value is not in.
         """
         if len(formulas) == 1 and isinstance(formulas[0], Mapping):
             named = [
@@ -159,8 +158,6 @@ class Compiler:
                         "formula, not both."
                     )
                 named.append(((f"@{i}",), formula))
-        if not named:
-            raise ValueError("At least one formula is required.")
         circuits = CircuitFactory(self._structures)
         interned: dict[FormulaNode, FormulaNode] = {}
         built: dict[int, tuple[FormulaNode, FormulaNode]] = {}

@@ -81,9 +81,11 @@ The lightweight parser reads compound terms and lists as :func:`~deeplog.parse_s
 operators itself; it is not the full ISO Prolog grammar. Known limitations:
 
 * Only ``#``-prefixed full-line comments are ignored. Inline ``%`` or ``/* */`` comments are treated as atoms.
-* Operator declarations are not recognised. Besides the fixed connectives ``:-``, ``?-``, ``::``, ``','``, ``';'``,
-  ``is`` and ``not/1``, and the arithmetic operators ``+ - * / // mod rem div ^ /\ \/ xor << >>``, which are read with
-  Prolog's priorities (``Z is (N1 + N2) mod 10``), every other functor must be written in prefix form.
+* Operator declarations are not recognised. Besides the fixed connectives ``:-``, ``?-``, ``::``, ``','``, ``';'``
+  and ``not/1``, Prolog's operators of priority 700 (``is``, unification ``= \=``, identity ``== \==``, the
+  standard order of terms ``@< @> @=< @>=`` and arithmetic comparison ``=:= =\= < > =< >=``), and the arithmetic
+  operators ``+ - * / // mod rem div ^ /\ \/ xor << >>``, which are read with Prolog's priorities
+  (``Z is (N1 + N2) mod 10``, ``X + 1 =:= Y * 2``), every other functor must be written in prefix form.
 * Atoms are not unquoted: ``'has space'`` becomes the literal functor ``"'has space'"`` (quotes included). Escape
   sequences are not interpreted.
 * Numbers are parsed greedily as atoms; there is no automatic float/integer detection beyond what built-ins do when

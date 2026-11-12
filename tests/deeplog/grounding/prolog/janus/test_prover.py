@@ -91,6 +91,29 @@ def test_an_allowed_swi_builtin_needs_no_registration():
     }
 
 
+@pytest.mark.parametrize(
+    ("goal", "answer"),
+    [
+        ("=(f(X), f(a))", "=(f(a), f(a))"),
+        ("\\=(f(a), f(b))", "\\=(f(a), f(b))"),
+        ("==(a, a)", "==(a, a)"),
+        ("\\==(a, b)", "\\==(a, b)"),
+        ("=:=(+(1, 1), 2)", "=:=(+(1, 1), 2)"),
+        ("=\\=(1, 2)", "=\\=(1, 2)"),
+        ("<(2, 10)", "<(2, 10)"),
+        (">(10, 9)", ">(10, 9)"),
+        ("=<(3, 3)", "=<(3, 3)"),
+        (">=(3, 3)", ">=(3, 3)"),
+    ],
+)
+def test_unification_identity_and_arithmetic_comparison_need_no_registration(
+    goal, answer
+):
+    prover = JanusProver(HERE / "toy_engine.pl")
+
+    assert _answers(prover, FACTS, goal) == {parse_symbol(answer)}
+
+
 def test_a_builtin_belongs_to_the_prover_that_added_it():
     def square(lhs, rhs):
         yield {rhs: (str(int(lhs[0]) ** 2),)}

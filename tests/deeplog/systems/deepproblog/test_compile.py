@@ -467,3 +467,23 @@ def test_a_program_is_counted(monkeypatch):
 
     assert calls == [1]
     torch.testing.assert_close(module(), torch.tensor([[1 - 0.4 * 0.7]]))
+
+
+def test_a_result_without_an_answer_compiles_to_a_module_with_no_column():
+    program = tuple(str_to_rules("0.5::n(3).\nt(X) :- n(X), n(4).\n?- t(X)."))
+    result = Solver(SimpleGrounder()).get_query_result(program)
+    assert result.formulas == {}
+
+    module = compile_to_module(result, Compiler())
+
+    assert list(get_all_symbols(module.get_output_shape())) == []
+    assert module().shape == (1, 0)
+
+
+def test_a_ground_query_without_a_proof_has_probability_zero():
+    program = tuple(str_to_rules("0.5::n(3).\nt :- n(4).\nu :- n(3).\n?- t.\n?- u."))
+    result = Solver(SimpleGrounder()).get_query_result(program)
+
+    module = compile_to_module(result, Compiler())
+
+    torch.testing.assert_close(module(), torch.tensor([[0.0, 0.5]]))

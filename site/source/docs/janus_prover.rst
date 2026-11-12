@@ -92,7 +92,8 @@ The library
        an instance of an open predicate, is not ground after proving its rule body.
 
 The SWI-Prolog builtins a program may call are ``between/3``, ``nth0/3``, ``member/2``,
-``length/2``, ``\==/2``, ``=:=/2`` and ``is/2``.
+``length/2``, ``=/2``, ``\=/2``, ``==/2``, ``\==/2``, ``is/2``, ``=:=/2``, ``=\=/2``, ``</2``,
+``>/2``, ``=</2`` and ``>=/2``.
 
 Only these exports are public. Anything else in the library can change in any release, so a
 prover never calls into the library with a module prefix.

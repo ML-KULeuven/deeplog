@@ -37,6 +37,7 @@ from deeplog.systems.deepproblog import KBestJanusGrounder
 from deeplog.systems.deepproblog import Solver
 from deeplog.systems.deepproblog import compile_to_module
 from deeplog.systems.deepproblog.kbest.kbest import expand_annotated_disjunctions
+from deeplog.systems.deepproblog.proofs import FALSE
 from deeplog.util import as_tuple
 from deeplog.variable import OPEN
 from deeplog.variable import atom_asserting
@@ -107,7 +108,7 @@ def test_simple_ad_query(engine_class):
 
 @pytest.mark.parametrize("engine_class", mutex_engines)
 def test_ad_mutex_within_proof(engine_class):
-    """`?- a, b.` over `0.3::a; 0.7::b.` must not produce a proof.
+    """`?- a, b.` over `0.3::a; 0.7::b.` must not produce a proof, so it is false.
 
     Only k-best filters conflicting AD branches at proof-construction time.
     SimpleGrounder and JanusGrounder now emit the conjunction and rely on
@@ -116,9 +117,8 @@ def test_ad_mutex_within_proof(engine_class):
     engine = _make_engine(engine_class)
     program = tuple(str_to_rules("0.3::a; 0.7::b.\n?- a, b."))
     result = engine.get_query_result(program)
-    # The conflicting proof was dropped → no ground goal for `a, b`.
-    assert (",", ("a",), ("b",)) not in result.formulas
-    assert result.formulas == {}
+    # The conflicting proof was dropped, so the ground goal `a, b` is false.
+    assert result.formulas == {(",", ("a",), ("b",)): FALSE}
 
 
 @pytest.mark.parametrize("engine_class", all_engines)

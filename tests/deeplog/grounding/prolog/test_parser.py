@@ -6,6 +6,7 @@ import pytest
 from deeplog import parse_symbol
 from deeplog.grounding.prolog import split_list
 from deeplog.grounding.prolog import str_to_rules
+from deeplog.grounding.prolog import symbol_to_prolog_str
 from deeplog.grounding.prolog.parser import iter_clauses
 from deeplog.grounding.prolog.parser import parse_term
 
@@ -120,7 +121,7 @@ def test_infix_arithmetic_is_read_with_prolog_priorities(text, term):
 
 @pytest.mark.parametrize(
     "text",
-    ["1e-5", "-3", "'a-b'", "X - -1", "a =:= b + 1", "2 ** 3", "a+"],
+    ["1e-5", "-3", "'a-b'", "X - -1", "a -> b", "2 ** 3", "a+"],
     ids=[
         "exponent",
         "signed number",
@@ -134,3 +135,50 @@ def test_infix_arithmetic_is_read_with_prolog_priorities(text, term):
 def test_text_that_is_not_only_infix_arithmetic_stays_one_atom(text):
     """Only operands joined by arithmetic operators read as arithmetic."""
     assert parse_term(text) == (text,)
+
+
+@pytest.mark.parametrize(
+    ["text", "term"],
+    [
+        ("X > 2", ">(X,2)"),
+        ("X < 2", "<(X,2)"),
+        ("X >= -1", ">=(X,-1)"),
+        ("X =< 2", "=<(X,2)"),
+        ("X =:= 2", "=:=(X,2)"),
+        ("X =\\= 2", "=\\=(X,2)"),
+        ("X = f(a)", "=(X,f(a))"),
+        ("X \\= 2", "\\=(X,2)"),
+        ("X == Y", "==(X,Y)"),
+        ("X \\== Y", "\\==(X,Y)"),
+        ("X @=< Y", "@=<(X,Y)"),
+        ("X<Y", "<(X,Y)"),
+        ("X + 1 =:= Y * 2", "=:=(+(X,1),*(Y,2))"),
+        ("X << 2 > 3", ">(<<(X,2),3)"),
+        ("Z is X / 2", "is(Z,/(X,2))"),
+        ("f(X > 2)", "f(>(X,2))"),
+        ("big :- n(X), X > 2", ":-(big,(n(X),>(X,2)))"),
+    ],
+)
+def test_an_operator_of_priority_700_is_read_around_it(text, term):
+    """It takes arithmetic as its operands and is an operand of ``,``."""
+    assert parse_term(text) == parse_term(term)
+
+
+@pytest.mark.parametrize("text", ["a = b = c", "X < Y < Z", "X is Y > 2"])
+def test_text_holding_two_operators_of_priority_700_stays_one_atom(text):
+    """Neither of two such operators takes the other as an operand, as in Prolog."""
+    assert parse_term(text) == (text,)
+
+
+@pytest.mark.parametrize(
+    ("name", "rendered"),
+    [
+        ("\\==", r"'\\=='"),
+        (r"'a\b'", r"'\'a\\b\''"),
+        ("it's", r"'it\'s'"),
+        ("a b", "'a b'"),
+        ("a", "a"),
+    ],
+)
+def test_a_name_is_rendered_as_the_prolog_atom_with_its_text(name, rendered):
+    assert symbol_to_prolog_str(("p", (name,))) == f"p({rendered})"

@@ -68,18 +68,15 @@ def compile_to_module(result: EngineResult, compiler: Compiler) -> DeepLogModule
     equal proofs still get one column each.
 
     Raises:
-        ValueError: If ``result`` has no formula, a random atom whose label is
-            not itself has a predicate that already has a builder in
-            ``compiler``, or a label is neither a number nor an atom in
-            probability.
+        ValueError: If a random atom whose label is not itself has a predicate
+            that already has a builder in ``compiler``, or a label is neither a
+            number nor an atom in probability.
     """
     lifting = _Lifting(result)
     queries = [lifting.expectation(formula) for formula in result.formulas.values()]
     if result.evidence is not None:
         evidence = lifting.expectation(result.evidence)
         queries = [lifting.posterior(query, evidence) for query in queries]
-    if not queries:
-        raise ValueError("The engine result holds no formula to compile.")
     compiler = compiler.declaring(
         {variable.binder: variable.domain for variable in lifting.variables},
         lifting.labelling(compiler),

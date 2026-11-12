@@ -20,10 +20,35 @@ from .program import RuleType
 from .program import create_rule
 
 
-#: The operators :func:`parse_term` reads before arithmetic, in the order it
-#: splits a term on them: a term is read around the first one outside brackets.
-#: ``is`` is split on only where space surrounds it.
-_OPERATORS = (":-", "?-", "::", ";", ",", " is ")
+#: The operators :func:`parse_term` reads first, in the order it splits a term
+#: on them: a term is read around the first one outside brackets.
+_OPERATORS = (":-", "?-", "::", ";", ",")
+
+#: Prolog's operators of priority 700, which :func:`parse_term` reads after
+#: :data:`_OPERATORS` and before arithmetic: ``is``, unification ``=`` and
+#: ``\=``, identity ``==`` and ``\==``, the standard order of terms ``@<``,
+#: ``@>``, ``@=<`` and ``@>=``, and arithmetic comparison ``=:=``, ``=\=``,
+#: ``<``, ``>``, ``=<`` and ``>=``.
+_PRIORITY_700 = frozenset(
+    (
+        "is",
+        "=",
+        "\\=",
+        "==",
+        "\\==",
+        "@<",
+        "@>",
+        "@=<",
+        "@>=",
+        "=:=",
+        "=\\=",
+        "<",
+        ">",
+        "=<",
+        ">=",
+    )
+)
+_PRIORITY_700_HINT = re.compile(r"[=<>@]|\bis\b")
 
 #: Prolog's infix arithmetic operators and their priorities. The lower the
 #: priority, the tighter the operator binds; ``^`` groups to the right, the
@@ -45,7 +70,7 @@ _ARITHMETIC_PRIORITIES = {
     "^": 200,
 }
 _ARITHMETIC_HINT = re.compile(r"[-+*/\\^<>]|\b(?:xor|rem|mod|div)\b")
-_ARITHMETIC_TOKEN = re.compile(
+_TOKEN = re.compile(
     r"""
     (?P<space>\s+)
     | (?P<number>\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)
@@ -61,16 +86,23 @@ _ARITHMETIC_TOKEN = re.compile(
 def parse_term(text: str) -> Symbol:
     """Read the Prolog term ``text``.
 
-    A term is read around the first of ``:-``, ``?-``, ``::``, ``;``, ``,`` and
-    ``is`` outside brackets; ``,`` and ``;`` group to the right. Otherwise, text
-    made of operands joined by the arithmetic operators ``+ - * / // mod rem div
-    ^ /\\ \\/ xor << >>`` is read with Prolog's priorities and associativity:
-    ``Z is (N1 + N2) mod 10`` is ``is(Z, mod(+(N1, N2), 10))``. Any other text
-    is read by :func:`~deeplog.symbol.parse_symbol`, with each argument read as
-    a Prolog term.
+    A term is read around the first of ``:-``, ``?-``, ``::``, ``;`` and ``,``
+    outside brackets; ``,`` and ``;`` group to the right. Otherwise, text
+    holding one of Prolog's operators of priority 700 outside brackets is read
+    around it: ``is``, unification ``= \\=``, identity ``== \\==``, the standard
+    order of terms ``@< @> @=< @>=`` and arithmetic comparison
+    ``=:= =\\= < > =< >=``, so ``X + 1 =:= Y * 2`` is ``=:=(+(X, 1), *(Y, 2))``.
+    Text holding two of them is not. Otherwise, text made of operands joined by
+    the arithmetic operators ``+ - * / // mod rem div ^ /\\ \\/ xor << >>`` is
+    read with Prolog's priorities and associativity: ``Z is (N1 + N2) mod 10``
+    is ``is(Z, mod(+(N1, N2), 10))``. Any other text is read by
+    :func:`~deeplog.symbol.parse_symbol`, with each argument read as a Prolog
+    term.
     """
     text = text.strip()
     term = _parse_operator(text)
+    if term is None:
+        term = _parse_priority_700(text)
     if term is None:
         term = _parse_arithmetic(text)
     if term is None:
@@ -99,19 +131,41 @@ def _parse_operator(text: str) -> Symbol | None:
     return None
 
 
+def _parse_priority_700(text: str) -> Symbol | None:
+    """Read ``text`` around its one operator of :data:`_PRIORITY_700`, or return ``None``."""
+    if not _PRIORITY_700_HINT.search(text):
+        return None
+    tokens = _tokens(text)
+    if tokens is None:
+        return None
+    found = [
+        (start, end)
+        for kind, start, end in tokens
+        if kind in ("name", "symbol") and text[start:end] in _PRIORITY_700
+    ]
+    if len(found) != 1:
+        return None
+    ((start, end),) = found
+    left, right = text[:start], text[end:]
+    if not left.strip() or not right.strip():
+        return None
+    return text[start:end], parse_term(left), parse_term(right)
+
+
 def _parse_arithmetic(text: str) -> Symbol | None:
     """Read ``text`` as infix arithmetic, or return ``None`` if it is not.
 
     ``N1 + N2 * 2`` is ``+(N1, *(N2, 2))``: the operands are read on their own
     and the operators bind by their Prolog priority. Only text that alternates
     operands and arithmetic operators is read, so a lone atom, a signed number
-    and ``X =:= Y + 1`` (an operator this does not read) all return ``None``.
+    and ``2 ** 3`` (an operator this does not read) all return ``None``.
     """
     if not _ARITHMETIC_HINT.search(text):
         return None
-    tokens = _arithmetic_tokens(text)
-    if tokens is None or len(tokens) < 3 or len(tokens) % 2 == 0:
+    spans = _tokens(text)
+    if spans is None or len(spans) < 3 or len(spans) % 2 == 0:
         return None
+    tokens = [(kind, text[start:end]) for kind, start, end in spans]
     operands, operators = tokens[0::2], tokens[1::2]
     if any(kind == "symbol" for kind, _ in operands) or any(
         kind not in ("symbol", "name") or text not in _ARITHMETIC_PRIORITIES
@@ -125,18 +179,19 @@ def _parse_arithmetic(text: str) -> Symbol | None:
     return tree
 
 
-def _arithmetic_tokens(text: str) -> list[tuple[str, str]] | None:
+def _tokens(text: str) -> list[tuple[str, int, int]] | None:
     """Split ``text`` into its operands and operators, or ``None`` if it cannot.
 
-    Each token is ``(kind, text)``. A ``term`` is an operand: a number, a quoted
-    atom, a bracketed group, or a name or quoted atom with its arguments. A
-    ``symbol`` is a run of symbol characters and a ``name`` a bare identifier,
-    either of which may be an operator.
+    Each token is ``(kind, start, end)``, spanning ``text[start:end]``. A
+    ``term`` is an operand: a number, a quoted atom, a bracketed group, or a
+    name or quoted atom with its arguments. A ``symbol`` is a run of symbol
+    characters and a ``name`` a bare identifier, either of which may be an
+    operator.
     """
-    tokens: list[tuple[str, str]] = []
+    tokens: list[tuple[str, int, int]] = []
     position = 0
     while position < len(text):
-        match = _ARITHMETIC_TOKEN.match(text, position)
+        match = _TOKEN.match(text, position)
         if match is None:
             return None
         kind, start, position = match.lastgroup, match.start(), match.end()
@@ -153,7 +208,7 @@ def _arithmetic_tokens(text: str) -> list[tuple[str, str]] | None:
             kind, position = "term", end
         elif kind in ("number", "quoted"):
             kind = "term"
-        tokens.append((str(kind), text[start:position]))
+        tokens.append((str(kind), start, position))
     return tokens
 
 
@@ -341,9 +396,10 @@ def _try_render_prolog_list(symbol: Symbol) -> str | None:
 
 
 def _quote_prolog_atom(s: str) -> str:
+    """``s`` as Prolog reads it back: bare where it can be, else quoted and escaped."""
     if _is_prolog_bare_token(s):
         return s
-    escaped = s.replace("'", "\\'")
+    escaped = s.replace("\\", "\\\\").replace("'", "\\'")
     return f"'{escaped}'"
 
 

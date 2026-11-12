@@ -23,6 +23,7 @@ from deeplog.systems.deepproblog import compile_to_module
 # White-box: ProbabilisticFactory is k-best-internal (not public API); the two
 # scalar-probability tests below reach into it directly by module path.
 from deeplog.systems.deepproblog.kbest.probabilistic_factory import ProbabilisticFactory
+from deeplog.systems.deepproblog.proofs import FALSE
 from deeplog.variable import indicated_values
 
 from ....testing_formulas import leaf
@@ -123,6 +124,20 @@ def test_get_result_grounds_a_goal_as_the_exact_grounder_does():
     )
 
 
+def test_a_ground_query_without_a_proof_is_false():
+    """K-best answers a ground query nothing proves as the exact solver does."""
+    program = tuple(
+        str_to_rules("0.5::n(3).\nt :- n(4).\nu(X) :- n(X), n(4).\n?- t.\n?- u(X).")
+    )
+    kbest = KBestJanusGrounder(k=2)
+
+    assert kbest.get_query_result(program).formulas == {parse_symbol("t"): FALSE}
+    assert kbest.get_result(program, parse_symbol("t")).formulas == {
+        parse_symbol("t"): FALSE
+    }
+    assert kbest.get_result(program, parse_symbol("u(X)")).formulas == {}
+
+
 def test_conjunction_in_rule_body():
     code = """
     0.9::a.
@@ -219,7 +234,7 @@ q :- not(a), a.
 ?-q."""
     program = tuple(str_to_rules(code))
     result = KBestJanusGrounder(k=5).get_query_result(program)
-    assert result.formulas == {}
+    assert result.formulas == {parse_symbol("q"): FALSE}
 
 
 def test_consistency_positive_then_naf_same_rv():
@@ -231,7 +246,7 @@ q :- a, not(a).
 ?-q."""
     program = tuple(str_to_rules(code))
     result = KBestJanusGrounder(k=5).get_query_result(program)
-    assert result.formulas == {}
+    assert result.formulas == {parse_symbol("q"): FALSE}
 
 
 def test_double_negation_equals_positive():
@@ -255,14 +270,14 @@ def test_triple_negation_equals_single_negation():
 
 def test_negation_over_deterministically_succeeding_predicate_kills_branch():
     # `not(g)` where `g` succeeds deterministically (no facts, just a
-    # rule body that always holds) must fail the branch — no proofs.
+    # rule body that always holds) must fail the branch: no proof, so false.
     code = """0.5::a.
 g :- between(0, 0, _).
 q :- not(g), a.
 ?-q."""
     program = tuple(str_to_rules(code))
     result = KBestJanusGrounder(k=1).get_query_result(program)
-    assert result.formulas == {}
+    assert result.formulas == {parse_symbol("q"): FALSE}
 
 
 def test_negation_over_unknown_predicate_raises():

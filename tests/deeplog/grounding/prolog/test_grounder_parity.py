@@ -173,6 +173,64 @@ PROGRAMS = {
         "?- burglary.\n?- alarm.",
         {("burglary", 0), ("earthquake", 0)},
     ),
+    "arithmetic_comparison": (
+        "n(-1). n(2). n(2.0). n(9). n(10).\n"
+        "big(X) :- n(X), X > 9.\n"
+        "small(X) :- n(X), <(X, 10).\n"
+        "?- big(X).\n?- small(X).\n"
+        "?- n(X), n(Y), X =< Y.\n"
+        "?- n(X), n(Y), X >= Y.\n"
+        "?- n(X), n(Y), X =:= Y.\n"
+        "?- n(X), n(Y), X =\\= Y.\n"
+        "?- n(X), n(Y), X * 5 =:= Y + 0.",
+        {("n", 1)},
+    ),
+    "integer_arithmetic": (
+        "n(-7). n(-2). n(3). n(10).\n"
+        + "".join(
+            f"?- n(X), n(Y), Z is X {operator} Y.\n"
+            for operator in (
+                *("+", "-", "*", "/", "//", "rem", "mod", "div", "^"),
+                *("/\\", "\\/", "xor", "<<", ">>"),
+            )
+        ),
+        set(),
+    ),
+    "float_arithmetic": (
+        "x(-2.5). x(0.5). x(3). x(1.0e+04).\n"
+        + "".join(
+            f"?- x(X), x(Y), Z is X {operator} Y.\n"
+            for operator in ("+", "-", "*", "/")
+        )
+        + "?- x(X), Z is X ^ 2.\n?- x(X), Z is X * 1.0e-05.",
+        set(),
+    ),
+    "a_number_on_the_left_of_is": (
+        "x(2). x(2.0). x(3).\n?- x(X), 4 is X * 2.\n?- x(X), 4.0 is X * 2.",
+        set(),
+    ),
+    "unification_and_identity": (
+        "t(a). t(f(b)). t(2). t(2.0).\n"
+        "u(Y) :- t(X), Y = f(X).\n"
+        "?- u(Y).\n"
+        "?- t(X), t(Y), X = Y.\n"
+        "?- t(X), t(Y), X \\= Y.\n"
+        "?- t(X), t(Y), X == Y.\n"
+        "?- t(X), t(Y), X \\== Y.\n"
+        "?- t(X), X = f(Y).\n"
+        "?- X \\== Y, X = a, Y = a.",
+        set(),
+    ),
+    "operators_holding_a_backslash": (
+        "n(3). n(4).\n"
+        "t(X) :- n(X), \\==(X, 4).\n"
+        "?- t(X).\n?- n(X), X \\= 4.\n?- n(X), X =\\= 4.",
+        {("n", 1)},
+    ),
+    "a_name_holding_a_backslash": (
+        "said('a\\\\b\\nc').\necho(X) :- said(X).\n?- echo(X).",
+        set(),
+    ),
 }
 
 

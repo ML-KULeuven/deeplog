@@ -200,6 +200,63 @@ def test_added_builtin_binds_its_arguments(grounder):
     assert result == {parse_symbol("square(2,4)"): TRUE}
 
 
+@pytest.mark.parametrize("grounder", _grounders())
+def test_arithmetic_compares_and_divides_numbers(grounder):
+    """10 is above 9 by value, 3 / 2 is 1.5 and 4 / 2 is 2."""
+    program = tuple(
+        str_to_rules(
+            "n(3). n(4). n(10).\n"
+            "big(X) :- n(X), X > 9.\n"
+            "half(X, Y) :- n(X), Y is X / 2."
+        )
+    )
+    assert set(grounder.ground(program, parse_symbol("big(X)"))) == {
+        parse_symbol("big(10)")
+    }
+    assert set(grounder.ground(program, parse_symbol("half(X, Y)"))) == {
+        parse_symbol("half(3, 1.5)"),
+        parse_symbol("half(4, 2)"),
+        parse_symbol("half(10, 5)"),
+    }
+
+
+@pytest.mark.parametrize("grounder", _grounders())
+def test_less_or_equal_is_prologs(grounder):
+    """Prolog writes it ``=<``; ``<=`` is no builtin."""
+    program = tuple(str_to_rules("t :- 2 =< 3.\nu :- <=(2, 3)."))
+    assert set(grounder.ground(program, parse_symbol("t"))) == {parse_symbol("t")}
+    with pytest.raises(UnknownPredicateException):
+        grounder.ground(program, parse_symbol("u"))
+
+
+@pytest.mark.parametrize(
+    ("goal", "answers"),
+    [
+        ("left(Y)", {"left(f(1))", "left(f(2))"}),
+        ("right(Y)", {"right(f(1))", "right(f(2))"}),
+        ("both(Y)", {"both(1)", "both(2)"}),
+        ("inside(X, Z)", {"inside(h(1), 2)"}),
+        ("bound(X)", {"bound(2)"}),
+    ],
+)
+@pytest.mark.parametrize("grounder", _grounders())
+def test_unification_binds_for_the_rest_of_the_body(grounder, goal, answers):
+    """``=`` binds an unbound variable on either side, inside compound terms too."""
+    program = tuple(
+        str_to_rules(
+            "n(1). n(2).\n"
+            "left(Y) :- n(X), Y = f(X).\n"
+            "right(Y) :- n(X), f(X) = Y.\n"
+            "both(Y) :- f(Y) = f(X), n(X).\n"
+            "inside(X, Z) :- g(X, h(Z)) = g(h(1), Y), Y = h(2).\n"
+            "bound(X) :- n(X), X = 2."
+        )
+    )
+    assert set(grounder.ground(program, parse_symbol(goal))) == {
+        parse_symbol(answer) for answer in answers
+    }
+
+
 @pytest.mark.parametrize(
     "grounder_type",
     [SimpleGrounder, JanusGrounder]

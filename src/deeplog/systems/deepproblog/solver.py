@@ -28,6 +28,7 @@ from deeplog import VariableAtoms
 from deeplog import apply_substitution
 from deeplog import calculate_mgu
 from deeplog import get_predicate
+from deeplog import get_term_variables
 from deeplog.grounding.prolog import PrologGrounder
 from deeplog.grounding.prolog import RuleType
 from deeplog.grounding.prolog import create_rule
@@ -52,7 +53,8 @@ from .transformation import remove_labeled_rules
 class EngineResult:
     """Result of proving a goal: proof formulas and the atom labels for them."""
 
-    #: Maps ground goals to proof formulas (the boolean proof structure).
+    #: Maps ground goals to proof formulas (the boolean proof structure). A
+    #: ground goal nothing proves maps to ``false``, so its probability is 0.
     formulas: dict[Symbol, FormulaNode]
     #: Maps ground atom symbols to their probability labels, for the atoms of the
     #: formulas and every atom asserting a value of one of :attr:`variables`.
@@ -139,6 +141,18 @@ def _reattach_labels(
     return labels
 
 
+def query_answers(
+    goal: Symbol, proofs: dict[Symbol, FormulaNode]
+) -> dict[Symbol, FormulaNode]:
+    """The formula of each answer to the query ``goal``, given the ``proofs`` of each.
+
+    A ground ``goal`` without a proof is an answer, whose formula is false.
+    """
+    if proofs or any(get_term_variables(goal)):
+        return proofs
+    return {goal: FALSE}
+
+
 class Solver:
     """A DeepProbLog solver over a plain :class:`~deeplog.grounding.prolog.PrologGrounder`."""
 
@@ -153,7 +167,9 @@ class Solver:
     def get_result(self, program: tuple[RuleType, ...], goal: Symbol) -> EngineResult:
         """Prove a single ``goal`` and return its formulas + labels."""
         plain, open_predicates, declarations, variables = _detach_labels(program)
-        formulas = self._grounder.ground(plain, goal, open_predicates)
+        formulas = query_answers(
+            goal, self._grounder.ground(plain, goal, open_predicates)
+        )
         leaves = _leaves(formulas.values())
         instances = instantiate(variables, leaves)
         return EngineResult(
@@ -175,9 +191,8 @@ class Solver:
 
         all_formulas: dict[Symbol, FormulaNode] = {}
         for query in filter(is_query, plain):
-            for answer, formula in self._grounder.ground(
-                plain, query[2], open_predicates
-            ).items():
+            proofs = self._grounder.ground(plain, query[2], open_predicates)
+            for answer, formula in query_answers(query[2], proofs).items():
                 all_formulas[answer] = (
                     formula if evidence is None else conjoin(formula, evidence)
                 )

@@ -1849,10 +1849,16 @@ def test_one_formula_under_two_names_is_two_columns_computed_once():
     )
 
 
-def test_compile_requires_a_formula():
-    """There is no module with no columns."""
-    with pytest.raises(ValueError, match="At least one formula"):
-        Compiler().compile()
+@pytest.mark.parametrize("formulas", [(), ({},)], ids=["formulas", "mapping"])
+def test_no_formula_compiles_to_a_module_with_no_column(formulas):
+    """A column per formula: none for none, on a row per row of whatever it is fed."""
+    module = Compiler().compile(*formulas)
+
+    assert list(get_all_symbols(module.get_input_shape())) == []
+    assert list(get_all_symbols(module.get_output_shape())) == []
+    assert module().shape == (1, 0)
+    fed = reshape(module, input=SymTensor(["x _ probability"]))
+    assert fed(torch.tensor([[0.1], [0.2], [0.3]])).shape == (3, 0)
 
 
 # --- Atoms ------------------------------------------------------------------
