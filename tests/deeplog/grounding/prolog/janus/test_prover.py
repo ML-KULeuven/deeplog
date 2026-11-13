@@ -11,6 +11,8 @@ from deeplog.grounding.prolog import UnknownPredicateException
 from deeplog.grounding.prolog.janus.prover import JANUS_AVAILABLE
 from deeplog.symbol import parse_symbol
 
+from ....testing_prolog import prolog_stack_limit
+
 
 pytestmark = pytest.mark.skipif(not JANUS_AVAILABLE, reason="janus_swi not installed")
 
@@ -81,6 +83,19 @@ def test_a_non_ground_open_predicate_raises():
 
     with pytest.raises(ValueError, match=r"\('leaf', 1\) is not ground"):
         _answers(prover, FACTS, "leaf(X)")
+
+
+def test_a_goal_that_runs_out_of_prolog_memory_raises():
+    prover = JanusProver(HERE / "toy_engine.pl")
+
+    with (
+        prolog_stack_limit(64 * 2**20),
+        pytest.raises(MemoryError, match="Stack limit"),
+    ):
+        _answers(prover, FACTS, "length(L, 10000000)")
+    assert _answers(prover, FACTS, "length([a,b], N)") == {
+        parse_symbol("length([a,b], 2)")
+    }
 
 
 def test_an_allowed_swi_builtin_needs_no_registration():

@@ -16,7 +16,6 @@ from deeplog.symbol import get_predicate
 
 from ..grounder import Builtin
 from ..grounder import UnknownPredicateException
-from ..parser import parse_term
 
 
 try:
@@ -94,8 +93,10 @@ class JanusProver:
         """The solutions of ``goal``, run in the prover's module.
 
         A goal that reaches ``unknown_predicate/1`` raises
-        :class:`~deeplog.grounding.prolog.UnknownPredicateException`, and one that
-        reaches ``non_ground_open_predicate/1`` raises :class:`ValueError`.
+        :class:`~deeplog.grounding.prolog.UnknownPredicateException`, one that
+        reaches ``non_ground_open_predicate/1`` raises :class:`ValueError`, and
+        one that runs out of Prolog's memory, such as its stack limit, raises
+        :class:`MemoryError`.
         """
         try:
             yield from janus.query(f"{self._module}:({goal})", dict(bindings))
@@ -115,19 +116,29 @@ class JanusProver:
         ]
 
 
-def _translate(err: Exception) -> Exception | None:
-    """The Python exception for an error DeepLog's Prolog library throws, if any."""
-    thrown = parse_term(repr(err))
-    if len(thrown) != 3 or thrown[0] != "error" or len(thrown[1]) != 3:
+def _translate(err: PrologError) -> Exception | None:
+    """The Python exception for an error a query throws, if it has one.
+
+    The error is matched as a Prolog term, not read back from its text: the text
+    of its context, such as a stack overflow's frames, need not parse.
+    """
+    error = {"Error": err.term}
+    if janus.query_once("Error = error(resource_error(_), _)", error)["truth"]:
+        return MemoryError(f"Prolog ran out of memory: {str(err).splitlines()[0]}")
+    thrown = janus.query_once(
+        "Error = error(_Formal, _), _Formal =.. [_Kind, _Name, Arity],"
+        " atom(_Kind), atom(_Name), integer(Arity),"
+        " atom_string(_Kind, Kind), atom_string(_Name, Name)",
+        error,
+    )
+    if not thrown["truth"]:
         return None
-    kind, name, arity = thrown[1]
-    if kind == "unknown_procedure":
-        return UnknownPredicateException(
-            f"No clauses known for {(name[0], int(arity[0]))}."
-        )
-    if kind == "open_predicate_not_ground":
+    predicate = (thrown["Name"], thrown["Arity"])
+    if thrown["Kind"] == "unknown_procedure":
+        return UnknownPredicateException(f"No clauses known for {predicate}.")
+    if thrown["Kind"] == "open_predicate_not_ground":
         return ValueError(
-            f"Open predicate instance of {(name[0], int(arity[0]))} is not ground "
+            f"Open predicate instance of {predicate} is not ground "
             "after proving its rule body."
         )
     return None

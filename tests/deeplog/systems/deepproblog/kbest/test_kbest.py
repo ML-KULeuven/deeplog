@@ -11,6 +11,9 @@ from deeplog import Compiler
 from deeplog import Domain
 from deeplog import NetworkPredicate
 from deeplog import UnaryOp
+from deeplog import get_all_symbols
+from deeplog import to_dict
+from deeplog import with_structure
 from deeplog.grounding.prolog import JanusGrounder
 from deeplog.grounding.prolog import UnknownPredicateException
 from deeplog.grounding.prolog import str_to_rules
@@ -24,10 +27,12 @@ from deeplog.systems.deepproblog import compile_to_module
 # scalar-probability tests below reach into it directly by module path.
 from deeplog.systems.deepproblog.kbest.probabilistic_factory import ProbabilisticFactory
 from deeplog.systems.deepproblog.proofs import FALSE
+from deeplog.util import as_tuple
 from deeplog.variable import indicated_values
 
 from ....testing_formulas import leaf
 from ....testing_formulas import operands
+from ....testing_prolog import prolog_stack_limit
 
 
 pytestmark = pytest.mark.skipif(
@@ -138,6 +143,33 @@ def test_a_ground_query_without_a_proof_is_false():
     assert kbest.get_result(program, parse_symbol("u(X)")).formulas == {}
 
 
+def test_k_bounds_the_proofs_of_each_answer():
+    """``k`` proofs for each answer to a query with variables, not ``k`` in all."""
+    code = """
+    0.4::edge(a,b).
+    0.5::edge(b,c).
+    0.6::edge(a,c).
+    0.9::edge(c,d).
+    path(X,Y) :- edge(X,Y).
+    path(X,Y) :- edge(X,Z), path(Z,Y).
+    ?- path(a,X).
+    """
+    program = tuple(str_to_rules(code))
+
+    def proofs(k):
+        result = KBestJanusGrounder(k=k).get_query_result(program)
+        return {answer: str(formula) for answer, formula in result.formulas.items()}
+
+    assert proofs(1) == {
+        parse_symbol("path(a,c)"): "edge(a,c)_boolean",
+        parse_symbol("path(a,d)"): "edge(a,c)_boolean and edge(c,d)_boolean",
+        parse_symbol("path(a,b)"): "edge(a,b)_boolean",
+    }
+    assert proofs(2)[parse_symbol("path(a,c)")] == (
+        "edge(a,c)_boolean or (edge(a,b)_boolean and edge(b,c)_boolean)"
+    )
+
+
 def test_conjunction_in_rule_body():
     code = """
     0.9::a.
@@ -161,6 +193,28 @@ def test_unknown_predicate_raises():
     program = tuple(str_to_rules(code))
     with pytest.raises(UnknownPredicateException):
         KBestJanusGrounder(k=1).get_query_result(program)
+
+
+def test_left_recursion_runs_out_of_memory_saying_why():
+    """The search does not table its calls, so it expands ``path(a,Z)`` without end."""
+    code = """
+    0.4::edge(a,b).
+    0.5::edge(b,c).
+    path(X,Y) :- edge(X,Y).
+    path(X,Y) :- path(X,Z), edge(Z,Y).
+    ?- path(a,X).
+    """
+    program = tuple(str_to_rules(code))
+
+    with (
+        prolog_stack_limit(64 * 2**20),
+        pytest.raises(MemoryError, match="left-recursive"),
+    ):
+        KBestJanusGrounder(k=3).get_query_result(program)
+    result = KBestJanusGrounder(k=1).get_query_result(
+        tuple(str_to_rules(PROGRAM_THREE_FACTS))
+    )
+    assert str(_single_formula(result)) == "a_boolean"
 
 
 def test_a_builtin_belongs_to_the_grounder_that_added_it():
@@ -504,7 +558,8 @@ def test_categorical_with_tensor_input():
         "classifier(img1, 2) :: class(img1, bishop); "
         "classifier(img1, 3) :: class(img1, king); "
         "classifier(img1, 4) :: class(img1, queen).\n"
-        "?-class(img1, Class).\n"
+        "piece :- class(img1, Class).\n"
+        "?-piece.\n"
     )
     evaluator = NeuralPredicateEvaluator(
         tensors={("img1",): torch.tensor([0.1, 0.6, 0.1, 0.1, 0.1])},
@@ -516,16 +571,13 @@ def test_categorical_with_tensor_input():
     )
     program = tuple(str_to_rules(code))
     result = KBestJanusGrounder(k=1).get_query_result(program, evaluator=evaluator)
-    # Top-1 proof: rook (the index-1 entry, score 0.6) — selection alone
-    # demonstrates the heuristic correctly read the network output. The
+    # The top proof of `piece` is rook (the index-1 entry, score 0.6): selection
+    # alone demonstrates the heuristic correctly read the network output. The
     # leaf is keyed directly on the AD branch's head atom; the network
     # probability lives in the labels mapping (unwrapped from the
     # categorical wrapping by the engine before reaching the factory).
-    assert set(result.formulas.keys()) == {("class", ("img1",), ("rook",))}
-    assert (
-        str(result.formulas[("class", ("img1",), ("rook",))])
-        == "class(img1,rook)_boolean"
-    )
+    assert set(result.formulas.keys()) == {("piece",)}
+    assert str(result.formulas[("piece",)]) == "class(img1,rook)_boolean"
     assert result.labels[("class", ("img1",), ("rook",))] == (
         "classifier",
         ("img1",),
@@ -540,6 +592,71 @@ def test_categorical_with_tensor_input():
     # The evaluator is independently sanity-checked: classifier(img1, 1)
     # must give the rook's probability.
     assert evaluator(("classifier", ("img1",), ("1",))) == pytest.approx(0.6)
+
+
+@pytest.mark.parametrize(
+    "disjunction",
+    [
+        "nn(classifier, [X], Y, [0..1]) :: symbol(X,Y).",
+        "classifier(X,0)::symbol(X,0); classifier(X,1)::symbol(X,1).",
+    ],
+    ids=["neural", "enumerated"],
+)
+def test_a_disjunction_with_variables_chooses_for_each_instance(disjunction):
+    """``symbol(i0,_)`` and ``symbol(i1,_)`` are two choices, as the exact solver has it.
+
+    One choice over every image would keep only the proofs where both images
+    show the same symbol, and read the second image's branch as already chosen.
+    """
+    program = tuple(
+        str_to_rules(
+            disjunction + "\ng(A,B) :- symbol(i0,A), symbol(i1,B).\n?- g(A,B)."
+        )
+    )
+    tensors = {("i0",): torch.tensor([0.2, 0.8]), ("i1",): torch.tensor([0.4, 0.6])}
+    atom_builders = {
+        ("classifier", 2, "probability"): partial(
+            NetworkPredicate, module=_DummyClassifier(), domain=Domain.of(range(2))
+        ),
+    }
+
+    def probabilities(result):
+        module = compile_to_module(result, Compiler(atom_builders=atom_builders))
+        inputs = [
+            tensors[symbol][None, None]
+            for shape in as_tuple(module.get_input_shape())
+            for symbol in get_all_symbols(shape)
+        ]
+        return to_dict(module(*inputs), module.get_output_shape())
+
+    evaluator = NeuralPredicateEvaluator(tensors, atom_builders)
+    kbest = probabilities(
+        KBestJanusGrounder(k=10).get_query_result(program, evaluator=evaluator)
+    )
+    exact = probabilities(Solver(JanusGrounder()).get_query_result(program))
+
+    assert kbest.keys() == exact.keys()
+    assert len(kbest) == 4
+    for answer, probability in exact.items():
+        torch.testing.assert_close(kbest[answer], probability)
+    answer = with_structure(parse_symbol("g(0,1)"), "probability")
+    torch.testing.assert_close(kbest[answer], torch.tensor([0.2 * 0.6]))
+
+
+def test_a_disjunction_of_atoms_with_a_variable_chooses_for_each_instance():
+    """``0.3::a(X); 0.7::b(X).`` chooses between ``a(i0)`` and ``b(i0)`` apart from ``i1``."""
+    program = tuple(
+        str_to_rules("0.3::a(X); 0.7::b(X).\n?- a(i0), b(i1).\n?- a(i0), b(i0).")
+    )
+    module = compile_to_module(
+        KBestJanusGrounder(k=10).get_query_result(program), Compiler()
+    )
+
+    values = to_dict(module(), module.get_output_shape())
+    two = with_structure((",", ("a", ("i0",)), ("b", ("i1",))), "probability")
+    one = with_structure((",", ("a", ("i0",)), ("b", ("i0",))), "probability")
+    torch.testing.assert_close(values[two], torch.tensor([0.3 * 0.7]))
+    torch.testing.assert_close(values[one], torch.tensor([0.0]))
 
 
 def test_naf_over_categorical_two_branch():

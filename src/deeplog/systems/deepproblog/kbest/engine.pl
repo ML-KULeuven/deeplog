@@ -5,20 +5,22 @@
 
 :- module(deeplog_kbest, [kbest_prove_query/8]).
 :- use_module(library(heaps)).
+:- use_module(library(assoc)).
 :- use_module(deeplog(grounding)).
 :- include("heuristics.pl").
 
 % --- Entry point -----------------------------------------------------------
 
-% Enumerates up to K top-ranked proof formulas for Query; each solution
-% returns the corresponding (GroundQuery, Formula) pair. Python collects the
-% set and folds them with factory.disjoin to build the per-goal result.
+% Enumerates up to K top-ranked proof formulas for each answer to Query; each
+% solution returns one (GroundQuery, Formula) pair. Python collects the set
+% and folds them with factory.disjoin to build the per-answer result.
 kbest_prove_query(ID, Prover, QuerySymbol, Factory, K, HeuristicName, GroundQuery, Formula) :-
     from_symbol(QuerySymbol, Query),
     initial_heuristic(HeuristicName, InitialHeur),
     py_call(Factory:get_true(), InitFormula),
     singleton_heap(Heap, InitialHeur, n([ID:Query], Query, InitFormula, [])),
-    step(Heap, K, Prover, Factory, [], Proofs),
+    empty_assoc(Found),
+    step(Heap, Query, K, Prover, Factory, Found, [], Proofs),
     member(GroundTerm-Formula, Proofs),
     to_symbol(GroundTerm, GroundQuery).
 
@@ -26,27 +28,57 @@ initial_heuristic(pp, H) :- partial_probability(H).
 initial_heuristic(gm, H) :- geometric_mean(H).
 
 % --- Heap step loop --------------------------------------------------------
+%
+% Found maps each answer, as answer_key/2 writes it, to the number of its
+% proofs found so far. A proof is kept while its answer has fewer than K. A
+% partial proof whose GroundTerm is ground has its answer already, and is
+% dropped unexpanded once that answer has K. The search ends when the heap is
+% empty, or when the one answer of a ground Query has K proofs.
 
-step(Heap, _, _, _, Proofs, FinalProofs) :-
+step(Heap, _, _, _, _, _, Proofs, FinalProofs) :-
     empty_heap(Heap), !,
     reverse(Proofs, FinalProofs).
 
-step(_, K, _, _, Proofs, FinalProofs) :-
-    length(Proofs, L), L >= K, !,
+step(_, Query, K, _, _, Found, Proofs, FinalProofs) :-
+    ground(Query), proofs_found(Query, Found, N), N >= K, !,
     reverse(Proofs, FinalProofs).
 
-step(Heap, K, Prover, Factory, Acc, Proofs) :-
+step(Heap, Query, K, Prover, Factory, Found, Acc, Proofs) :-
     get_from_heap(Heap, Heur, n(Goals, GroundTerm, Formula, Assigned), RestHeap),
     (   Goals == []
-    ->  step(RestHeap, K, Prover, Factory, [GroundTerm-Formula|Acc], Proofs)
+    ->  answer_key(GroundTerm, Answer),
+        proofs_found(Answer, Found, N),
+        (   N >= K
+        ->  step(RestHeap, Query, K, Prover, Factory, Found, Acc, Proofs)
+        ;   N1 is N + 1,
+            put_assoc(Answer, Found, N1, Found1),
+            step(RestHeap, Query, K, Prover, Factory, Found1,
+                 [GroundTerm-Formula|Acc], Proofs)
+        )
+    ;   ground(GroundTerm), proofs_found(GroundTerm, Found, N), N >= K
+    ->  step(RestHeap, Query, K, Prover, Factory, Found, Acc, Proofs)
     ;   findall(NewHeur-NewNode,
                 expand(Heur, n(Goals, GroundTerm, Formula, Assigned), Prover, Factory, NewHeur, NewNode),
                 Children),
         foldl(add_pair, Children, RestHeap, NewHeap),
-        step(NewHeap, K, Prover, Factory, Acc, Proofs)
+        step(NewHeap, Query, K, Prover, Factory, Found, Acc, Proofs)
     ).
 
 add_pair(Key-Value, H0, H1) :- add_to_heap(H0, Key, Value, H1).
+
+% The answer GroundTerm is, the same for every variant of it.
+answer_key(GroundTerm, Answer) :-
+    (   ground(GroundTerm)
+    ->  Answer = GroundTerm
+    ;   copy_term(GroundTerm, Answer),
+        numbervars(Answer, 0, _)
+    ).
+
+proofs_found(Answer, Found, N) :-
+    (   get_assoc(Answer, Found, N0)
+    ->  N = N0
+    ;   N = 0
+    ).
 
 % --- Node expansion --------------------------------------------------------
 %
@@ -107,7 +139,9 @@ expand(Heur, n([_:Goal|Rest], GT, F, A), Prover, _, Heur, n(Rest, GT, F, A)) :-
 
 % Categorical (annotated-disjunction) fact: enforces per-proof mutual
 % exclusivity. AD branches arrive in the program with their probability
-% wrapped as '@cat'(InnerLabel, CatId, ValueIdx). The clause head
+% wrapped as '@cat'(InnerLabel, CatId, ValueIdx), where CatId holds the
+% variables the branches share, so it names one ground instance of the
+% AD once Goal is ground. The clause head
 % matches this shape directly, so Prolog backtracks over each AD branch
 % as a separate proof; the non-categorical fact clause below is guarded
 % with `Label \= '@cat'(_,_,_)` to keep the two clauses mutually
@@ -133,9 +167,9 @@ expand(Heur, n([ID:Goal|Rest], GT, F, A), _, Factory, NewHeur,
         NewHeur = Heur, NewF = F, NewA = A
     ;   to_symbol(Goal, GoalSym),
         to_symbol(InnerLabel, LabelSym),
-        atom_string(CatId, CatIdStr),
+        to_symbol(CatId, CatIdSym),
         py_call(Factory:get_categorical_value(GoalSym, LabelSym,
-                                              CatIdStr, ValueIdx),
+                                              CatIdSym, ValueIdx),
                 Leaf),
         py_call(Factory:conjoin(F, Leaf), NewF),
         py_call(Factory:get_scalar_probability(LabelSym), P),
@@ -251,13 +285,13 @@ naf_dispatch(needs_cat_choice(CID, CatId),
     findall(BGoal-BIdx-BInner,
             CID:fact(BGoal, '@cat'(BInner, CatId, BIdx)),
             Branches),
-    atom_string(CatId, CatIdStr),
+    to_symbol(CatId, CatIdSym),
     (   % Per-branch positive child.
         member(BGoal-BIdx-BInner, Branches),
         to_symbol(BGoal, GoalSym),
         to_symbol(BInner, LabelSym),
         py_call(Factory:get_categorical_value(GoalSym, LabelSym,
-                                              CatIdStr, BIdx),
+                                              CatIdSym, BIdx),
                 Leaf),
         py_call(Factory:conjoin(F, Leaf), NewF),
         py_call(Factory:get_scalar_probability(LabelSym), P),
@@ -267,7 +301,7 @@ naf_dispatch(needs_cat_choice(CID, CatId),
         cat_residual_probability(Branches, Factory, 0.0, SumP),
         Residual is 1.0 - SumP,
         py_call(Factory:get_false(), False),
-        foldl(cat_branch_disjoin(CatIdStr, Factory), Branches, False, AnyBranch),
+        foldl(cat_branch_disjoin(CatIdSym, Factory), Branches, False, AnyBranch),
         py_call(Factory:negate(AnyBranch), NoBranch),
         py_call(Factory:conjoin(F, NoBranch), NewF),
         add_probability_to_heuristic(Residual, Heur, NewHeur),
@@ -275,10 +309,10 @@ naf_dispatch(needs_cat_choice(CID, CatId),
     ).
 
 % Disjoin the leaf of one AD branch onto Acc, recording it as a value.
-cat_branch_disjoin(CatIdStr, Factory, BGoal-BIdx-BInner, Acc, NewAcc) :-
+cat_branch_disjoin(CatIdSym, Factory, BGoal-BIdx-BInner, Acc, NewAcc) :-
     to_symbol(BGoal, GoalSym),
     to_symbol(BInner, LabelSym),
-    py_call(Factory:get_categorical_value(GoalSym, LabelSym, CatIdStr, BIdx),
+    py_call(Factory:get_categorical_value(GoalSym, LabelSym, CatIdSym, BIdx),
             Leaf),
     py_call(Factory:disjoin(Acc, Leaf), NewAcc).
 

@@ -37,7 +37,7 @@ class ProbabilisticFactory:
         """``evaluator`` resolves non-numeric (neural) labels."""
         self._evaluator = evaluator
         self._labels: dict[Symbol, Symbol] = {}
-        self._branches: dict[str, dict[int, Symbol]] = defaultdict(dict)
+        self._branches: dict[Symbol, dict[int, Symbol]] = defaultdict(dict)
 
     @property
     def labels(self) -> dict[Symbol, Symbol]:
@@ -53,7 +53,9 @@ class ProbabilisticFactory:
         branches are whatever atoms the disjunction listed, sharing no argument
         position, so the whole atom is the variable's position and the values are
         the atoms themselves. The outcome where none of the branches holds is the
-        variable's missing outcome, which no value names.
+        variable's missing outcome, which no value names. A disjunction with
+        variables is a variable for each ground instance of those its branches
+        share.
         """
         recognized: dict[Variable, tuple[Symbol, ...]] = {}
         for cat_id in sorted(self._branches):
@@ -93,9 +95,13 @@ class ProbabilisticFactory:
         return self.leaf(goal)
 
     def get_categorical_value(
-        self, goal: Symbol, label: Symbol, cat_id: str, value_idx: int
+        self, goal: Symbol, label: Symbol, cat_id: Symbol, value_idx: int
     ) -> FormulaNode:
-        """Create a leaf for AD branch ``(cat_id, value_idx)`` reaching ``goal``."""
+        """Create a leaf for AD branch ``(cat_id, value_idx)`` reaching ``goal``.
+
+        ``cat_id`` names the ground instance of the disjunction the branch is a
+        value of.
+        """
         self._labels[goal] = label
         self._branches[cat_id][value_idx] = goal
         return self.leaf(goal)
